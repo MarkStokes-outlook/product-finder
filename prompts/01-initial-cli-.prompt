@@ -1,0 +1,270 @@
+Build a rough-but-working local app called product-finder.
+
+Goal:
+Track products across second-hand and deal marketplaces, grouped by project, and alert me when useful listings appear.
+
+This must be a pragmatic MVP that works quickly. Avoid a long build cycle.
+
+Core concept:
+A project is a group of wanted items.
+
+Example projects:
+- The Coachhouse tools
+- Spain villa upgrades
+- Homelab hardware
+- Camera gear
+- Car parts
+
+Each project contains items I want to monitor.
+
+Sources:
+1. eBay UK
+2. Gumtree UK, if practical
+3. Facebook Marketplace, manual-assisted if scraping is not reliable/legal
+4. Other simple sources only if easy
+
+Compliance:
+- Do not bypass logins, CAPTCHAs, bot protections, or private APIs.
+- Use official APIs, RSS, public search URLs, or manual-assisted search links.
+- Facebook Marketplace should be manual-assisted unless there is a clean compliant method.
+
+Tech:
+- Python
+- SQLite
+- YAML config
+- CLI first
+- Minimal dependencies
+- No web UI unless trivial
+- Docker optional
+
+Required features:
+- Multiple projects
+- Multiple wanted items per project
+- Search terms per item
+- Max price per item
+- Expected normal price per item
+- Target deal price per item
+- Source filters
+- Distance/postcode
+- Listing quality classification:
+  - Grade A: excellent/new/lightly used
+  - Grade B: used but good
+  - Grade C: rough/heavy wear
+  - Spares/repair: broken, faulty, incomplete, for parts
+  - Unknown
+- Detect likely false bargains caused by:
+  - “spares or repairs”
+  - “faulty”
+  - “not working”
+  - “parts only”
+  - “missing battery”
+  - “no charger”
+  - “untested”
+- Store seen listings so alerts are only for new matches.
+- Calculate margin:
+  - normal_price - listing_price
+  - percentage below normal
+  - whether listing is under target deal price
+- Generate a Markdown report sorted by best deal.
+
+Suggested structure:
+product-finder/
+  README.md
+  config.example.yaml
+  pyproject.toml
+  src/product_finder/
+    __main__.py
+    cli.py
+    config.py
+    db.py
+    models.py
+    scoring.py
+    grading.py
+    sources/
+      ebay.py
+      gumtree.py
+      facebook.py
+    alerts/
+      console.py
+      markdown.py
+      webhook.py
+  data/.gitkeep
+  reports/.gitkeep
+  tests/
+
+CLI:
+- `python -m product_finder run-once`
+- `python -m product_finder watch`
+- `python -m product_finder report`
+- `python -m product_finder list-projects`
+- `python -m product_finder list-items`
+
+Example config:
+postcode: "BL0"
+radius_miles: 30
+interval_minutes: 60
+
+alerts:
+  console: true
+  markdown_report: true
+  webhook_url: ""
+
+projects:
+  - name: "The Coachhouse Tools"
+    slug: "coachhouse-tools"
+    items:
+      - name: "Track Saw"
+        terms:
+          - "track saw"
+          - "plunge saw guide rail"
+          - "Makita SP6000"
+          - "Festool TS55"
+        max_price: 400
+        normal_price: 500
+        target_deal_price: 300
+        priority: high
+        notes: "Prefer Makita, Festool, Bosch Professional or DeWalt."
+        exclude_terms:
+          - "toy"
+          - "miniature"
+
+      - name: "Mitre Saw"
+        terms:
+          - "sliding mitre saw"
+          - "DeWalt mitre saw"
+          - "Makita mitre saw"
+        max_price: 300
+        normal_price: 350
+        target_deal_price: 200
+        priority: high
+
+Scoring:
+Each listing should receive:
+- matched project
+- matched item
+- source
+- title
+- price
+- normal price
+- target deal price
+- absolute margin
+- percentage margin
+- grade
+- warning flags
+- deal score
+- URL
+
+Deal score should favour:
+- lower price vs normal price
+- under target deal price
+- better condition grade
+- high priority items
+- local listings
+
+Deal score should penalise:
+- spares/repair
+- missing parts
+- untested
+- no charger/battery where relevant
+- vague title
+- unusually low price with negative condition flags
+
+Grading:
+Implement simple rule-based grading from title and description.
+
+Examples:
+Grade A:
+- new
+- unused
+- boxed
+- excellent condition
+- barely used
+- like new
+
+Grade B:
+- good condition
+- used
+- working
+- tested
+
+Grade C:
+- worn
+- heavy use
+- tatty
+- rough
+- damaged case
+
+Spares/repair:
+- spares or repairs
+- faulty
+- not working
+- broken
+- parts only
+- untested
+- no power
+- missing motor
+
+Unknown:
+- not enough information
+
+Reports:
+Generate `reports/latest.md`.
+
+Report should group by project, then item.
+
+For each listing show:
+- title
+- price
+- estimated normal price
+- margin
+- percentage below normal
+- grade
+- warning flags
+- source
+- URL
+- first seen
+
+Alerts:
+Console alert is enough for MVP.
+Webhook support is nice-to-have.
+
+Data:
+Use SQLite.
+Tables:
+- projects
+- items
+- listings
+- listing_matches
+- alerts_sent
+
+MVP source behaviour:
+- eBay should be automated if practical.
+- Gumtree automated if simple.
+- Facebook Marketplace should generate manual search links if automation is fragile.
+- Source failures should not crash the app.
+
+README:
+Include:
+- setup
+- config
+- commands
+- source limitations
+- grading limitations
+- example report
+- known limitations
+
+Tests:
+Add lightweight tests for:
+- grading
+- scoring
+- deduplication
+- config loading
+
+Do not:
+- Build a big web UI
+- Add accounts/login
+- Bypass anti-bot systems
+- Over-engineer plugin architecture
+- Spend time on polish
+
+Build the smallest useful version that helps me spot genuine bargains quickly and avoid false bargains.

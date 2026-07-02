@@ -1,0 +1,180 @@
+{
+  "schema_version": "1.0",
+  "last_updated": "2026-01-28T00:00:00Z",
+  "domains": [
+    {
+      "id": "cognition",
+      "label": "Cognition",
+      "areas": [
+        {
+          "id": "backlog-model",
+          "label": "Backlog Model",
+          "archived": false
+        },
+        {
+          "id": "ideas-workspace",
+          "label": "Ideas Workspace",
+          "archived": false
+        },
+        {
+          "id": "migration",
+          "label": "Migration",
+          "archived": false
+        },
+        {
+          "id": "planning",
+          "label": "Planning",
+          "archived": false
+        }
+      ],
+      "archived": false
+    },
+    {
+      "id": "dev-factory",
+      "label": "Dev Factory",
+      "areas": [
+        {
+          "id": "agents",
+          "label": "Agents",
+          "archived": false
+        },
+        {
+          "id": "backlog-loader",
+          "label": "Backlog Loader",
+          "archived": false
+        },
+        {
+          "id": "github-integration",
+          "label": "Github Integration",
+          "archived": false
+        },
+        {
+          "id": "scheduler",
+          "label": "Scheduler",
+          "archived": false
+        }
+      ],
+      "archived": false
+    },
+    {
+      "id": "infra",
+      "label": "Infra",
+      "areas": [
+        {
+          "id": "docker",
+          "label": "Docker",
+          "archived": false
+        },
+        {
+          "id": "networking",
+          "label": "Networking",
+          "archived": false
+        },
+        {
+          "id": "observability",
+          "label": "Observability",
+          "archived": false
+        }
+      ],
+      "archived": false
+    },
+    {
+      "id": "kernel",
+      "label": "Kernel",
+      "areas": [
+        {
+          "id": "cli",
+          "label": "Cli",
+          "archived": false
+        },
+        {
+          "id": "config",
+          "label": "Config",
+          "archived": false
+        },
+        {
+          "id": "execution",
+          "label": "Execution",
+          "archived": false
+        },
+        {
+          "id": "safety",
+          "label": "Safety",
+          "archived": false
+        }
+      ],
+      "archived": false
+    },
+    {
+      "id": "ops",
+      "label": "Ops",
+      "areas": [
+        {
+          "id": "alerts",
+          "label": "Alerts",
+          "archived": false
+        },
+        {
+          "id": "monitoring",
+          "label": "Monitoring",
+          "archived": false
+        },
+        {
+          "id": "runtime-analysis",
+          "label": "Runtime Analysis",
+          "archived": false
+        }
+      ],
+      "archived": false
+    },
+    {
+      "id": "web-api",
+      "label": "Web Api",
+      "areas": [
+        {
+          "id": "auth",
+          "label": "Auth",
+          "archived": false
+        },
+        {
+          "id": "health",
+          "label": "Health",
+          "archived": false
+        },
+        {
+          "id": "projects",
+          "label": "Projects",
+          "archived": false
+        },
+        {
+          "id": "work-endpoints",
+          "label": "Work Endpoints",
+          "archived": false
+        }
+      ],
+      "archived": false
+    },
+    {
+      "id": "web-ui",
+      "label": "Web Ui",
+      "areas": [
+        {
+          "id": "components",
+          "label": "Components",
+          "archived": false
+        },
+        {
+          "id": "navigation",
+          "label": "Navigation",
+          "archived": false
+        },
+        {
+          "id": "operator-console",
+          "label": "Operator Console",
+          "archived": false
+        }
+      ],
+      "archived": false
+    }
+  ]
+}

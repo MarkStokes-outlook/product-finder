@@ -1,0 +1,45 @@
+Add a simple static HTML report to Product Finder.
+
+Goal:
+Generate reports/latest.html alongside reports/latest.md.
+
+Requirements:
+- No web server.
+- No framework.
+- No authentication.
+- No JavaScript unless tiny and inline.
+- Reuse the same data used for the Markdown report.
+- Group by project and item.
+- Sort listings by deal score descending.
+- Show:
+  - title
+  - price
+  - normal price
+  - saving
+  - saving %
+  - grade
+  - warning flags
+  - source
+  - first seen
+  - clickable listing URL
+- Add simple visual styling so good deals are easy to scan.
+- Highlight:
+  - excellent deals
+  - spares/repair warnings
+  - under target deal price
+- Add a command:
+  product-finder report-html
+- Update README with usage.
+- Add or update tests for HTML report generation.
+- Keep it small and boring.
+
+Do not add:
+- Flask
+- FastAPI
+- React
+- database schema changes
+- user accounts
+- background workers
+- cloud deployment
+
+This should be a thin reporting enhancement, not a web app.

@@ -1,0 +1,9 @@
+{
+  "id": "EPIC-XXX",
+  "title": "Concise epic title",
+  "description": "High-level context describing the customer or operator problem and desired outcome.",
+  "status": "idea",
+  "feature_ids": [],
+  "tags": ["ideas", "epic"],
+  "notes": "Free-form planning notes."
+}

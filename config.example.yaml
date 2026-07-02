@@ -1,0 +1,57 @@
+# product-finder configuration
+# Copy to config.yaml and edit.
+
+postcode: "BL0"
+radius_miles: 30
+interval_minutes: 60
+
+# db_path: data/product_finder.db
+# report_path: reports/latest.md
+
+alerts:
+  console: true
+  markdown_report: true
+  webhook_url: ""            # optional: POSTs JSON per new match
+
+sources:
+  ebay:
+    enabled: true
+    # Automated search needs free eBay developer keys (https://developer.ebay.com).
+    # Leave blank to fall back to manual search links.
+    app_id: ""
+    cert_id: ""
+    env: production          # or sandbox
+  gumtree:
+    enabled: true            # manual-assisted links only (no official API)
+  facebook:
+    enabled: true            # manual-assisted links only (login-walled)
+
+projects:
+  - name: "The Coachhouse Tools"
+    slug: "coachhouse-tools"
+    items:
+      - name: "Track Saw"
+        terms:
+          - "track saw"
+          - "plunge saw guide rail"
+          - "Makita SP6000"
+          - "Festool TS55"
+        max_price: 400
+        normal_price: 500
+        target_deal_price: 300
+        priority: high
+        notes: "Prefer Makita, Festool, Bosch Professional or DeWalt."
+        exclude_terms:
+          - "toy"
+          - "miniature"
+
+      - name: "Mitre Saw"
+        terms:
+          - "sliding mitre saw"
+          - "DeWalt mitre saw"
+          - "Makita mitre saw"
+        max_price: 300
+        normal_price: 350
+        target_deal_price: 200
+        priority: high
+        # sources: [ebay]    # optional per-item source filter

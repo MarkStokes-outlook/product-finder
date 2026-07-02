@@ -1,0 +1,21 @@
+{
+  "id": "FEATURE-9XX-US-0Y",
+  "feature_id": "FEATURE-9XX",
+  "title": "User facing statement",
+  "story": "As a <persona>, I want <capability> so that <outcome>.",
+  "description": "Expanded context for the story.",
+  "status": "seed",
+  "priority": "P2",
+  "size": "M",
+  "impact_area": "cognition/ideas",
+  "domain": "cognition",
+  "area": "ideas-workspace",
+  "tags": ["ideas", "story"],
+  "task_ids": [],
+  "acceptance_criteria": [
+    "Start each acceptance criterion with a verb",
+    "Capture measurable, testable behaviour"
+  ],
+  "implementation_hints": [],
+  "notes": "Optional clarifications"
+}

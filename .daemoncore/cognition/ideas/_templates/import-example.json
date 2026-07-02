@@ -1,0 +1,121 @@
+[
+  {
+    "id": "IDEA-EPIC-001",
+    "type": "epic",
+    "title": "Example Epic Title",
+    "description": "High-level context describing the customer or operator problem and desired outcome. This should explain the strategic value and overall scope of the epic.",
+    "rationale": "Why this epic is needed - explain the business case and strategic value",
+    "status": "idea",
+    "priority": "P2",
+    "tags": ["example", "template"],
+    "feature_ids": [],
+    "success_criteria": [
+      "Measurable criterion 1",
+      "Measurable criterion 2",
+      "Measurable criterion 3"
+    ],
+    "notes": "Optional: Free-form planning notes, questions, or considerations.",
+    "phase": 1
+  },
+  {
+    "id": "IDEA-FEAT-001",
+    "type": "feature",
+    "epic_id": "IDEA-EPIC-001",
+    "title": "Example Feature Name",
+    "description": "Narrative that frames the scope and intent of this feature. Explain what capabilities this feature delivers and why it matters.",
+    "version": "1.0.0",
+    "status": "idea",
+    "priority": "P2",
+    "domain": "cognition",
+    "area": "backlog-model",
+    "tags": ["example", "template"],
+    "user_story_ids": [],
+    "acceptance_criteria": [
+      "Start each criterion with a measurable condition",
+      "Describe observable behavior or outcomes",
+      "Make criteria specific and testable"
+    ],
+    "prompt_path": null,
+    "notes": "Optional: Planning commentary, open questions, or design considerations.",
+    "phase": 1
+  },
+  {
+    "id": "IDEA-US-001",
+    "type": "story",
+    "feature_id": "IDEA-FEAT-001",
+    "title": "User-facing statement of value",
+    "story": "As a <persona>, I want <capability> so that <outcome>.",
+    "description": "Expanded context for the story. Include background, constraints, or dependencies.",
+    "status": "idea",
+    "priority": "P2",
+    "size": "M",
+    "impact_area": "operator-experience",
+    "domain": "cognition",
+    "area": "backlog-model",
+    "tags": ["example", "template"],
+    "task_ids": [],
+    "acceptance_criteria": [
+      "Start each acceptance criterion with an action verb",
+      "Capture measurable, testable behavior",
+      "Focus on what, not how"
+    ],
+    "implementation_hints": [
+      "Optional: High-level technical approach",
+      "Suggested libraries, patterns, or existing code to reference"
+    ],
+    "affected_files": [
+      "src/example/file.py",
+      "src/example/related.py"
+    ],
+    "notes": "Optional: Clarifications, edge cases, or UX considerations.",
+    "phase": 1
+  },
+  {
+    "id": "IDEA-TASK-001",
+    "type": "task",
+    "user_story_id": "IDEA-US-001",
+    "title": "Discrete, actionable piece of work",
+    "description": "Implementation details for this task. Be specific about what needs to be done and any technical constraints.",
+    "status": "idea",
+    "priority": "P2",
+    "size": "S",
+    "work_type": "feature",
+    "severity": null,
+    "domain": "cognition",
+    "area": "backlog-model",
+    "tags": ["example", "template"],
+    "depends_on": [],
+    "links": [
+      {
+        "type": "related_task",
+        "target": "IDEA-TASK-002"
+      }
+    ],
+    "detected_in_version": null,
+    "fixed_in_version": null,
+    "environment": null,
+    "source": null,
+    "target_files": [
+      "src/example/file.py"
+    ],
+    "target_directories": [
+      "src/example/"
+    ],
+    "repo": null,
+    "branch": null,
+    "execution_hints": {
+      "type": "local",
+      "agent_preference": null,
+      "requires_approval": false,
+      "idempotent": true
+    },
+    "acceptance_criteria": [
+      "Optional: Specific completion criteria for this task",
+      "Unit tests pass",
+      "Code reviewed and approved"
+    ],
+    "notes": "Optional: Implementation notes, gotchas, or references.",
+    "phase": 1,
+    "prompt": "# Task Implementation Guide\n\n## Goal\nImplement [specific functionality] as defined in the task description.\n\n## Context\nThis task is part of [user story title] which aims to [story goal].\n\n## Requirements\n- Requirement 1\n- Requirement 2\n- Requirement 3\n\n## Technical Approach\n1. Step 1: [description]\n2. Step 2: [description]\n3. Step 3: [description]\n\n## Files to Modify\n- `src/example/file.py` - [what to change]\n\n## Acceptance Criteria\n- [ ] Unit tests pass\n- [ ] Code reviewed and approved\n- [ ] Documentation updated\n\n## Notes\nAdd any additional context, edge cases, or considerations here."
+  }
+]

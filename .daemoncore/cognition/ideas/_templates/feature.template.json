@@ -1,0 +1,16 @@
+{
+  "id": "FEATURE-9XX",
+  "epic_id": "EPIC-XXX",
+  "title": "Feature name",
+  "description": "Narrative that frames the scope and intent of this feature.",
+  "status": "backlog",
+  "domain": "cognition",
+  "area": "ideas-workspace",
+  "tags": ["ideas", "feature"],
+  "user_story_ids": [],
+  "acceptance_criteria": [
+    "List measurable conditions here",
+    "Add as many bullet points as required"
+  ],
+  "notes": "Optional planning commentary or questions."
+}

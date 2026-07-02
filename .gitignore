@@ -1,0 +1,37 @@
+# DaemonCore — committed (project code)
+!.daemoncore/
+!.daemoncore/agents/**
+!.daemoncore/cognition/**
+!.daemoncore/vendors/**
+!.daemoncore/implementation-notes/**
+!.daemoncore/code-review/**
+!.daemoncore/uat/**
+!.daemoncore/brand-guidelines.md
+!.daemoncore/project-AGENTS.md
+!.daemoncore/project-context.md
+!.daemoncore/project-memory.md
+!.daemoncore/README-onboarding.md
+!.daemoncore/project.personas.json
+!.daemoncore/.env.template
+!.daemoncore/HUMANS.md
+
+# DaemonCore — runtime (gitignored)
+.daemoncore/exchange/**
+.daemoncore/cache/**
+.daemoncore/logs/**
+.daemoncore/remote/**
+.daemoncore/kernel/**
+.daemoncore/outbox/**
+.daemoncore/addins/**
+.daemoncore/cognition/drift/**
+logs/
+.daemoncore/**/.DS_Store
+
+# product-finder — local runtime
+.venv/
+config.yaml
+data/*.db
+reports/latest.md
+__pycache__/
+*.egg-info/
+.pytest_cache/

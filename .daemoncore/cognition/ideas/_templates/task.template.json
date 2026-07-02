@@ -1,0 +1,20 @@
+{
+  "id": "FEATURE-9XX-US-0Y-T0Z",
+  "user_story_id": "FEATURE-9XX-US-0Y",
+  "title": "Discrete piece of work",
+  "description": "Implementation details for this task.",
+  "status": "todo",
+  "priority": "P2",
+  "size": "S",
+  "work_type": "feature",
+  "severity": null,
+  "domain": "cognition",
+  "area": "ideas-workspace",
+  "tags": ["ideas", "task"],
+  "depends_on": [],
+  "target_files": [],
+  "target_directories": [],
+  "acceptance_criteria": [],
+  "execution_hints": null,
+  "notes": "Optional extra detail"
+}
