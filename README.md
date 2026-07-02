@@ -183,6 +183,7 @@ projects:
 python -m product_finder run-once        # one search cycle, alert on new matches
 python -m product_finder watch           # run continuously at interval_minutes
 python -m product_finder report          # regenerate reports/latest.md from stored data
+python -m product_finder report-html     # regenerate reports/latest.html from stored data
 python -m product_finder list-projects   # show configured projects
 python -m product_finder list-items      # show configured items
 ```
@@ -236,6 +237,13 @@ Normal price: £500 · Target deal price: £300 · Priority: high
 
 ✅ = at or under target deal price. A **Manual searches** section at the end
 lists pre-filtered links for the non-automated sources.
+
+An HTML version (`reports/latest.html`) is generated alongside the Markdown
+report on every run — same data, with colour highlighting: green rows for
+excellent deals (score ≥ 70, no warnings), red rows for spares/repair or
+flagged listings, and an "under target" badge on prices at or below the
+target deal price. Open it in a browser; there is no server and no
+JavaScript.
 
 ---
 

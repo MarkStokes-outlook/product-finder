@@ -23,5 +23,6 @@ This file captures long-lived, repo-specific conventions that agents should resp
 
 ## Agent Usage Notes
 - 2026-07-02: MVP built from `prompts/1-initial-prompt.md` (Claude, developer role). Full package, tests, README usage docs. Not yet committed.
+- 2026-07-02: Static HTML report added from `prompts/02-web-ui.prompt` (`alerts/html.py`, `report-html` command). HTML path derives from `report_path` with `.html` suffix — no new config. Written alongside Markdown on every run.
 - Do not add web UI, accounts, or plugin architecture — explicitly out of scope.
 - Compliance is a hard constraint: no login bypass, no CAPTCHA/bot-protection evasion, official APIs or manual links only.

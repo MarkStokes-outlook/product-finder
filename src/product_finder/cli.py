@@ -8,6 +8,7 @@ import sys
 import time
 
 from . import db, runner, sources
+from .alerts import html as html_report
 from .alerts import markdown as markdown_report
 from .config import AppConfig, ConfigError, load_config
 
@@ -27,7 +28,7 @@ def _print_run_summary(cfg: AppConfig, new_alerts: list) -> None:
         print(f"Manual-assisted sources ({', '.join(skipped)}): "
               f"{len(manual)} search links in the report.")
     if cfg.alerts.markdown_report:
-        print(f"Report: {cfg.report_path}")
+        print(f"Reports: {cfg.report_path} / {html_report.html_report_path(cfg)}")
 
 
 def cmd_run_once(cfg: AppConfig) -> int:
@@ -69,6 +70,16 @@ def cmd_report(cfg: AppConfig) -> int:
     return 0
 
 
+def cmd_report_html(cfg: AppConfig) -> int:
+    conn = db.connect(cfg.db_path)
+    try:
+        path = html_report.write_html_report(conn, cfg, runner.collect_manual_links(cfg))
+    finally:
+        conn.close()
+    print(f"HTML report written to {path}")
+    return 0
+
+
 def cmd_list_projects(cfg: AppConfig) -> int:
     for project in cfg.projects:
         print(f"{project.slug}: {project.name} ({len(project.items)} item(s))")
@@ -105,6 +116,7 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("run-once", help="Run one search cycle, alert on new matches")
     sub.add_parser("watch", help="Run continuously at the configured interval")
     sub.add_parser("report", help="Regenerate the Markdown report from stored data")
+    sub.add_parser("report-html", help="Regenerate the HTML report from stored data")
     sub.add_parser("list-projects", help="List configured projects")
     sub.add_parser("list-items", help="List configured items per project")
     args = parser.parse_args(argv)
@@ -124,6 +136,7 @@ def main(argv: list[str] | None = None) -> int:
         "run-once": cmd_run_once,
         "watch": cmd_watch,
         "report": cmd_report,
+        "report-html": cmd_report_html,
         "list-projects": cmd_list_projects,
         "list-items": cmd_list_items,
     }
