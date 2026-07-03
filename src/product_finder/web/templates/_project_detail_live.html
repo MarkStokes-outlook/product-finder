@@ -1,20 +1,24 @@
 {% from "_match_table.html" import match_table %}
 
-<h2>🔥 Best deal in this project</h2>
-{% if best %}
-{% set score = best['deal_score'] or 0 %}
-<a class="deal-card" style="max-width: 22rem;" href="{{ best['url'] }}" target="_blank" rel="noopener">
-  <div class="deal-card-top">
-    <span class="score {{ 'hi' if score >= 70 else ('mid' if score >= 40 else 'lo') }}">{{ '%.0f' | format(score) }}</span>
-    <span class="badge grade-{{ 'spares' if best['grade'] == 'spares/repair' else best['grade'] }}">{{ best['grade'] }}</span>
-  </div>
-  <h3>{{ best['title'] }}</h3>
-  <div class="deal-price">£{{ '%.2f' | format(best['price']) }}</div>
-  {% if best['margin_pct'] %}
-  <div class="deal-saving">Save {{ '%.0f' | format(best['margin_pct']) }}%{% if best['under_target'] %} · under target{% endif %}</div>
-  {% endif %}
-  <p class="meta">{{ best['item_name'] }} &middot; {{ best['source'] }}</p>
-</a>
+<h2>🔥 {{ 'Hot deals in this project' if hero_deals | length > 1 else 'Best deal in this project' }}</h2>
+{% if hero_deals %}
+<div class="hero-grid">
+  {% for deal in hero_deals %}
+  {% set score = deal['deal_score'] or 0 %}
+  <a class="deal-card" href="{{ deal['url'] }}" target="_blank" rel="noopener">
+    <div class="deal-card-top">
+      <span class="score {{ 'hi' if score >= 70 else ('mid' if score >= 40 else 'lo') }}">{{ '%.0f' | format(score) }}</span>
+      <span class="badge grade-{{ 'spares' if deal['grade'] == 'spares/repair' else deal['grade'] }}">{{ deal['grade'] }}</span>
+    </div>
+    <h3>{{ deal['title'] }}</h3>
+    <div class="deal-price">£{{ '%.2f' | format(deal['price']) }}</div>
+    {% if deal['margin_pct'] %}
+    <div class="deal-saving">Save {{ '%.0f' | format(deal['margin_pct']) }}%{% if deal['under_target'] %} · under target{% endif %}</div>
+    {% endif %}
+    <p class="meta">{{ deal['item_name'] }} &middot; {{ deal['source'] }}</p>
+  </a>
+  {% endfor %}
+</div>
 {% else %}
 <div class="hero-empty">No matches yet — still watching.</div>
 {% endif %}
@@ -73,6 +77,7 @@
 </form>
 
 {% for item in items %}
+  {% set item_rows = matches_by_item.get(item['id'], []) %}
   <h3>{{ item['name'] }}{% if item['archived'] %} <span class="badge grade-unknown">archived</span>{% endif %}</h3>
   <p class="meta">
     Normal price: {% if item['normal_price'] %}£{{ '%.0f' | format(item['normal_price']) }}{% else %}&mdash;{% endif %}
@@ -89,7 +94,17 @@
       <button class="small danger" type="submit">Delete</button>
     </form>
   </p>
-  <div class="card table-card">{{ match_table(matches_by_item.get(item['id'], []), show_item=False) }}</div>
+  <details class="listings">
+    <summary>
+      {% if item_rows %}
+        <strong>{{ item_rows | length }}</strong> listing{{ 's' if item_rows | length != 1 else '' }}
+        &middot; best <strong>£{{ '%.2f' | format(item_rows[0]['price']) }}</strong> (score {{ '%.0f' | format(item_rows[0]['deal_score'] or 0) }})
+      {% else %}
+        No listings yet
+      {% endif %}
+    </summary>
+    <div class="card table-card">{{ match_table(item_rows, show_item=False, paginate=True) }}</div>
+  </details>
 {% else %}
   <div class="card empty">No items in this project yet — <a href="{{ url_for('item_new', project_id=project['id']) }}">add one</a>.</div>
 {% endfor %}

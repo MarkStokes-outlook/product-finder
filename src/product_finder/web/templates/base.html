@@ -156,6 +156,24 @@ input:focus-visible, textarea:focus-visible, select:focus-visible, button:focus-
          color: var(--text); border-left: 3px solid var(--accent);
          padding: .55rem .9rem; margin: .8rem 0; border-radius: 8px; font-size: .9rem; }
 .empty { color: var(--muted); padding: 1.2rem 0; text-align: center; }
+
+/* Collapsible per-item listings — closed by default so a project with many
+   items doesn't read as one endless, undifferentiated table. */
+details.listings { margin: .3rem 0 1.1rem; }
+details.listings > summary { cursor: pointer; list-style: none; padding: .6rem .9rem;
+  background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
+  font-size: .86rem; color: var(--muted); user-select: none; }
+details.listings > summary::-webkit-details-marker { display: none; }
+details.listings > summary::before { content: "▸  "; }
+details.listings[open] > summary::before { content: "▾  "; }
+details.listings > summary strong { color: var(--text); }
+details.listings .table-card { margin-top: .5rem; }
+
+/* Client-side pagination controls for long per-item listing tables. */
+.pagination { display: flex; align-items: center; justify-content: center; gap: .8rem;
+              padding: .6rem 0 .2rem; }
+.pagination .pg-label { min-width: 6rem; text-align: center; }
+.pagination button:disabled { opacity: .4; cursor: default; }
 </style>
 </head>
 <body>
@@ -172,5 +190,37 @@ input:focus-visible, textarea:focus-visible, select:focus-visible, button:focus-
 {% endwith %}
 {% block content %}{% endblock %}
 </main>
+<script>
+// Tiny, dependency-free pagination for long per-item listing tables (see
+// _match_table.html's paginate=True mode). Re-run after any live-refresh
+// swap since the polled fragments replace this markup wholesale.
+function pfPaginate(root) {
+  (root || document).querySelectorAll(".table-wrap[data-page-size]").forEach(function (wrap) {
+    var size = parseInt(wrap.dataset.pageSize, 10) || 10;
+    var rows = Array.prototype.slice.call(wrap.querySelectorAll("tbody tr[data-row]"));
+    var controls = wrap.querySelector(".pagination");
+    if (!controls) return;
+    if (rows.length <= size) { controls.hidden = true; return; }
+    var pages = Math.ceil(rows.length / size);
+    var page = 1;
+    var label = controls.querySelector(".pg-label");
+    var prev = controls.querySelector(".pg-prev");
+    var next = controls.querySelector(".pg-next");
+    function render() {
+      rows.forEach(function (row, i) {
+        row.hidden = i < (page - 1) * size || i >= page * size;
+      });
+      label.textContent = "Page " + page + " of " + pages;
+      prev.disabled = page <= 1;
+      next.disabled = page >= pages;
+    }
+    controls.hidden = false;
+    prev.onclick = function () { if (page > 1) { page--; render(); } };
+    next.onclick = function () { if (page < pages) { page++; render(); } };
+    render();
+  });
+}
+document.addEventListener("DOMContentLoaded", function () { pfPaginate(document); });
+</script>
 </body>
 </html>

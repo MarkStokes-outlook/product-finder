@@ -237,13 +237,18 @@ accounts, no cloud. Pages:
   plain tables further down. Polls every 15s for new results (from the
   background `watch` process) and swaps in fresh data without a full page
   reload.
-- **Project detail** (click any project) — the hub for that project: its own
-  best-deal callout, its items (add/edit/archive/delete inline, with terms,
-  prices, priority and source filters), their matched listings with
-  filter/sort controls (source, grade, warnings, sort — previously a
-  separate Listings page), and its manual search links. Items and listings
-  live here rather than on separate pages, since both only make sense in the
-  context of a project. Same live auto-refresh as the dashboard.
+- **Project detail** (click any project) — the hub for that project: a
+  best-deal callout that expands to up to 4 cards when several listings are
+  "hot" (score 70+) at once, its items (add/edit/archive/delete inline, with
+  terms, prices, priority and source filters), and their matched listings
+  with filter/sort controls (source, grade, warnings, sort — previously a
+  separate Listings page). Each item's listings sit in a collapsed-by-default
+  section (click to expand) showing a one-line preview of its count and best
+  price, and are paginated 10 at a time — so a project with hundreds of
+  listings per item stays scannable instead of turning into one giant
+  scroll. Items and listings live here rather than on separate pages, since
+  both only make sense in the context of a project. Same live auto-refresh
+  as the dashboard, plus its manual search links.
 - **Projects** — create, rename, archive/unarchive, delete, and set which
   sources apply to the whole project.
 - **Manual searches** — the Gumtree/Facebook (and keyless eBay) links grouped

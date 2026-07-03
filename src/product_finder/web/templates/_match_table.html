@@ -1,4 +1,5 @@
-{% macro match_table(rows, show_item=True) %}
+{% macro match_table(rows, show_item=True, paginate=False, page_size=10) %}
+{% if paginate %}<div class="table-wrap" data-page-size="{{ page_size }}">{% endif %}
 <table>
 <thead><tr>
   <th>Score</th><th>Title</th>{% if show_item %}<th>Project / Item</th>{% endif %}
@@ -11,7 +12,7 @@
   {% set score = row['deal_score'] or 0 %}
   {% set cls = 'warning' if (flags or row['grade'] == 'spares/repair')
      else ('excellent' if score >= 70 else '') %}
-  <tr{% if cls %} class="{{ cls }}"{% endif %}>
+  <tr{% if paginate %} data-row{% endif %}{% if cls %} class="{{ cls }}"{% endif %}>
     <td class="num"><span class="score {{ 'hi' if score >= 70 else ('mid' if score >= 40 else 'lo') }}">{{ '%.0f' | format(score) }}</span></td>
     <td><a href="{{ row['url'] }}" target="_blank" rel="noopener">{{ row['title'] }}</a></td>
     {% if show_item %}<td class="meta">{{ row['project_name'] }} / {{ row['item_name'] }}</td>{% endif %}
@@ -29,4 +30,12 @@
 {% endfor %}
 </tbody>
 </table>
+{% if paginate %}
+<div class="pagination" hidden>
+  <button type="button" class="small pg-prev">&larr; Prev</button>
+  <span class="pg-label meta"></span>
+  <button type="button" class="small pg-next">Next &rarr;</button>
+</div>
+</div>
+{% endif %}
 {% endmacro %}

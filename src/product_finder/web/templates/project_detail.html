@@ -36,6 +36,7 @@
           .then(function (html) {
             container.innerHTML = html;
             container.dataset.activity = lastActivity;
+            pfPaginate(container);
           });
       })
       .catch(function () { /* offline or transient — just try again next tick */ });

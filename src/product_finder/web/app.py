@@ -18,6 +18,10 @@ from flask import (
 from .. import db, runner, sources
 from ..config import AppConfig, ItemConfig
 
+# Deals scoring at or above this are "hot" — matches the excellent/hi score
+# band used throughout the templates (score >= 70 -> green "hi" badge).
+HOT_DEAL_SCORE = 70
+
 
 def _get_conn(cfg: AppConfig):
     if "conn" not in g:
@@ -113,22 +117,33 @@ def _project_detail_data(
         return None
     items = db.list_items(conn, project_id=project_id, include_archived=False)
     f = filters or {}
-    rows = db.query_matches(
-        conn,
-        project_id=project_id,
-        item_id=f.get("item_id"),
-        source=f.get("source"),
-        grade=f.get("grade"),
-        flagged=f.get("flagged"),
-        sort=f.get("sort", "score"),
-        limit=500,
-    )
+    # Query each item's matches separately (rather than one project-wide query
+    # split afterwards) so an item with hundreds of listings can't starve a
+    # sibling item's table of its own top results. Each table is paginated
+    # client-side, so a generous per-item cap is cheap to render.
+    selected_item_id = f.get("item_id")
     matches_by_item: dict[int, list] = {}
-    for row in rows:
-        matches_by_item.setdefault(row["item_id"], []).append(row)
-    # Best deal for the hero callout — always the true top score, independent
-    # of whatever filters the listings below are currently narrowed by.
-    hero = db.query_matches(conn, project_id=project_id, sort="score", limit=1)
+    for item in items:
+        if selected_item_id and selected_item_id != item["id"]:
+            matches_by_item[item["id"]] = []
+            continue
+        matches_by_item[item["id"]] = db.query_matches(
+            conn,
+            project_id=project_id,
+            item_id=item["id"],
+            source=f.get("source"),
+            grade=f.get("grade"),
+            flagged=f.get("flagged"),
+            sort=f.get("sort", "score"),
+            limit=500,
+        )
+    # Hero deal(s) for the callout — always the true top scores, independent
+    # of whatever filters the listings below are currently narrowed by. Only
+    # show more than one card when multiple listings clear the "hot deal"
+    # bar; otherwise fall back to just the single best match as before.
+    top_matches = db.query_matches(conn, project_id=project_id, sort="score", limit=4)
+    hot = [m for m in top_matches if (m["deal_score"] or 0) >= HOT_DEAL_SCORE]
+    hero_deals = hot if len(hot) > 1 else top_matches[:1]
     project_cfg = next(
         (p for p in db.load_project_configs(conn) if p.id == project_id), None
     )
@@ -138,7 +153,7 @@ def _project_detail_data(
         "items": items,
         "matches_by_item": matches_by_item,
         "manual_links": manual_links,
-        "best": hero[0] if hero else None,
+        "hero_deals": hero_deals,
         "filters": f,
     }
 
