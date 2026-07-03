@@ -37,3 +37,37 @@ def test_unknown():
 def test_word_boundaries():
     # "new" must not match inside other words or place names.
     assert grading.classify("Saw collection from Newcastle") == grading.UNKNOWN
+
+
+# --- Negation handling ------------------------------------------------------------
+
+
+def test_negated_fault_terms_do_not_trigger_spares_or_c_grade():
+    # "damaged case" and "faulty" are real fault terms — negated, they must
+    # not count as evidence either way.
+    assert grading.classify("Mitre saw, not faulty, no damaged case, good condition") == grading.GRADE_B
+
+
+def test_negation_scoped_to_current_sentence():
+    # "no" here is within the 3-word window of "faulty" by raw word count
+    # alone — only stopping the scan at the sentence boundary (the full
+    # stop) keeps this correctly classified as a real fault, not negated.
+    assert grading.classify("No issues found. Faulty trigger switch.") == grading.SPARES
+
+
+def test_negation_does_not_suppress_terms_that_embed_their_own_negator():
+    # "not working" / "no power" are themselves the fault phrase, not a
+    # negation of some other term — must still classify as spares/repair.
+    assert grading.classify("Saw is not working, no power") == grading.SPARES
+    assert grading.classify("Doesn't work, sold as seen") == grading.SPARES
+
+
+def test_negated_positive_claim_falls_through_to_next_grade():
+    # "not brand new" correctly fails to count as an A-grade claim, but a
+    # separate, true B-grade claim in the same text still applies.
+    assert grading.classify("Not brand new but still great condition") == grading.GRADE_B
+
+
+def test_phrase_present_negation_window_is_bounded():
+    # A negator far outside the 3-word window shouldn't reach a later fault.
+    assert grading.phrase_present("no idea why but this is faulty and untested", "faulty") is True

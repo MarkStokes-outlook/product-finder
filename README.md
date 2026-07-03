@@ -475,14 +475,28 @@ that project's manual search links. Both update themselves automatically as
   `estimatedAvailabilities` flips to `OUT_OF_STOCK` is the winning bid. It
   doesn't (and can't, via this API) confirm the sale actually completed —
   e.g. a reserve-not-met auction would still get captured as if it sold.
-- "Typical new price" is manually maintained — there's no automated
-  retailer price-watching (Amazon/Currys/etc. don't offer a public
-  listing-search API the way eBay does, and scraping them raises the same
-  ToS problem that already makes Gumtree/Facebook manual-assisted-only
-  here).
+- "Typical new price" can now auto-refresh from a human-approved retailer
+  URL (optional, off by default — see `searxng` config / `retailer_price.py`),
+  but discovering that URL is a one-time human approval step, not automated
+  end-to-end: matching a search result to the *correct* retailer page is a
+  real identity-resolution problem this deliberately doesn't try to solve
+  unsupervised. Amazon/Currys/etc. still have no public listing-search API,
+  so this only works for whatever retailer pages plain web search can find
+  and a human confirms.
 - Deal scores are heuristic; a vague title or missing description skews them.
 - No de-duplication across sources (the same saw on eBay and Gumtree counts
   twice).
+- Multi-item/price-range detection (`scoring.is_multi_item_or_price_range`)
+  only reads the listing *title*, never the description — deliberate, to
+  avoid misreading single-item markdown framing like "was £299, now £95" in
+  a description as an ambiguous range. A genuine range spelled out only in
+  the description is a known miss.
+- Negation handling in grading/warning-flag matching (`grading.phrase_present`)
+  scopes a "no"/"not" to the current comma-or-sentence-bounded clause. A
+  fault covered by one negator across a comma-joined list (e.g. "no
+  scratches, dents or cracks" only suppresses "scratches") needs its own
+  "no" to be caught — a deliberately accepted false-negative, safer than
+  letting a negator leak into an unrelated later clause.
 - Watch mode is a simple loop — no scheduling, back-off, or rate limiting
   beyond the configured interval.
 - SQLite database (`data/product_finder.db`) grows indefinitely; no pruning

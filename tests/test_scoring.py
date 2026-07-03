@@ -37,6 +37,35 @@ def test_warning_flags():
     assert scoring.warning_flags("Good condition, fully working") == []
 
 
+# --- Negation handling (see grading.phrase_present, shared by both modules) -----
+
+
+def test_warning_flags_ignores_negated_faults():
+    # The exact roadmap example, plus the other named cases — none of these
+    # are real faults, just the listing explicitly ruling them out.
+    assert scoring.warning_flags("Monitor, no dead pixels, excellent condition") == []
+    assert scoring.warning_flags("Toolbox, no cracks, mint condition") == []
+    assert scoring.warning_flags("Case has no damage, as new") == []
+    assert scoring.warning_flags("Not scratched, boxed") == []
+
+
+def test_warning_flags_still_catches_real_faults_alongside_negated_ones():
+    # A listing can truthfully rule out one fault while reporting another —
+    # negation must not become a blanket suppressor for the whole text.
+    flags = scoring.warning_flags("No dead pixels, but screen is cracked")
+    assert "broken" in flags
+    assert "not working" not in flags
+
+
+def test_warning_flags_terms_with_embedded_negation_still_fire():
+    # "not working" / "no charger" / "no battery" are themselves the fault
+    # phrase, not something an external negator cancels out.
+    flags = scoring.warning_flags("Saw not working, no charger, no battery included")
+    assert "not working" in flags
+    assert "no charger" in flags
+    assert "missing battery" in flags
+
+
 def test_margins():
     assert scoring.margins(300, 500) == (200.0, 40.0)
     assert scoring.margins(300, None) == (0.0, 0.0)
@@ -201,6 +230,51 @@ def test_live_auction_flagged_and_never_double_flagged_with_used_price():
     ev = scoring.evaluate(listing, item, product)
     assert "live auction" in ev.flags
     assert "above typical used price" not in ev.flags
+
+
+# --- Multi-item / price-range listing handling -----------------------------------
+
+
+def test_is_multi_item_detects_price_range_in_title():
+    assert scoring.is_multi_item_or_price_range(make_listing("Makita drills, various models £95 - £299", 95)) is True
+    assert scoring.is_multi_item_or_price_range(make_listing("Bosch saws £1,299-£1,499", 1299)) is True
+    assert scoring.is_multi_item_or_price_range(make_listing("Tool lot, £50 to £120", 50)) is True
+
+
+def test_is_multi_item_detects_bundle_language():
+    assert scoring.is_multi_item_or_price_range(make_listing("Job lot of power tools", 80)) is True
+    assert scoring.is_multi_item_or_price_range(make_listing("Bundle of 3 drills, choose from", 60)) is True
+
+
+def test_is_multi_item_false_for_ordinary_single_item_listing():
+    assert scoring.is_multi_item_or_price_range(make_listing("Makita LS0815FL mitre saw, boxed", 250)) is False
+
+
+def test_is_multi_item_ignores_description_only_ranges():
+    # Deliberate scoping decision (see module comment): a range spelled out
+    # only in the description, not the title, is a known, accepted miss —
+    # this guards against "was £299, now £95" single-item markdown framing
+    # in descriptions being misread as a multi-item price range.
+    listing = make_listing(
+        "Makita LS0815FL mitre saw, boxed", 95,
+        description="RRP was £299, reduced to £95 for quick sale",
+    )
+    assert scoring.is_multi_item_or_price_range(listing) is False
+
+
+def test_multi_item_listing_flagged_and_never_under_target():
+    item = make_item()  # target_deal_price=300
+    listing = make_listing("Makita drills, various models £95 - £299", 95)
+    ev = scoring.evaluate(listing, item)
+    assert "multiple items / price range" in ev.flags
+    assert ev.under_target is False  # £95 <= £300 target, but ambiguous — never a confirmed match
+
+
+def test_ordinary_listing_unaffected_by_multi_item_check():
+    item = make_item()
+    ev = scoring.evaluate(make_listing("Makita track saw, good condition", 290), item)
+    assert "multiple items / price range" not in ev.flags
+    assert ev.under_target is True
 
 
 def test_live_auction_never_beats_fixed_price_on_score():

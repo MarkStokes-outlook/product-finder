@@ -14,7 +14,8 @@ _WARNING_TERMS = {
     "spares or repairs": ["spares or repairs", "spares or repair", "spares/repairs", "for spares", "for parts", "parts only"],
     "faulty": ["faulty", "fault", "defective"],
     "not working": ["not working", "doesn't work", "does not work", "won't turn on", "wont turn on", "no power", "dead"],
-    "broken": ["broken", "cracked", "snapped"],
+    "broken": ["broken", "cracked", "cracks", "snapped"],
+    "cosmetic damage": ["scratch", "scratched", "scratches", "damage", "damaged"],
     "untested": ["untested", "unable to test", "can't test", "cannot test", "sold as seen"],
     "missing battery": ["missing battery", "no battery", "no batteries", "without battery", "bare unit", "body only"],
     "no charger": ["no charger", "without charger", "missing charger", "charger not included"],
@@ -33,14 +34,15 @@ _PRIORITY_ADJUST = {"high": 10.0, "normal": 0.0, "low": -5.0}
 
 
 def warning_flags(text: str) -> list[str]:
-    """Return the list of false-bargain warning flags present in the text."""
+    """Return the list of false-bargain warning flags present in the text.
+    Uses grading.phrase_present() so a negated claim ("no dead pixels", "not
+    scratched") is correctly read as ruling a fault out, not reporting one —
+    same negation rules grading.classify() uses, one shared primitive."""
     text = (text or "").lower()
     flags = []
     for flag, phrases in _WARNING_TERMS.items():
-        for phrase in phrases:
-            if re.search(r"(?<!\w)" + re.escape(phrase) + r"(?!\w)", text):
-                flags.append(flag)
-                break
+        if any(grading.phrase_present(text, phrase) for phrase in phrases):
+            flags.append(flag)
     return flags
 
 
@@ -58,6 +60,40 @@ def is_likely_false_bargain(price: float, normal_price: float | None, flags: lis
     if not flags or not normal_price or normal_price <= 0:
         return False
     return price < normal_price * 0.5
+
+
+# A listing whose *title* spells out a price range ("£95 - £299") or an
+# explicit multi-item bundle can't be scored as "this exact item costs £X" —
+# the listing's confirmed API price is only one point in an unknown range,
+# or covers several distinct products/variants bundled into one listing.
+# Title-only, deliberately never `description`: sellers routinely write
+# single-item markdown framing there ("was £299, now £95", "reduced from
+# £299 to £95") which isn't a real price range and would false-positive
+# against a naive range pattern — a genuine multi-item/range listing almost
+# always signals it in the title itself, where eBay's character limit
+# forces sellers to be explicit about covering several variants/prices. A
+# range spelled out only in the description (not the title) is a known,
+# accepted false-negative this doesn't attempt to catch.
+_PRICE_RANGE_RE = re.compile(
+    r"£\s*\d[\d,]*(?:\.\d{1,2})?\s*(?:-|to|–|—)\s*£?\s*\d[\d,]*(?:\.\d{1,2})?"
+)
+_MULTI_ITEM_TITLE_TERMS = [
+    "job lot", "bundle of", "lot of", "multiple items",
+    "various models", "various sizes", "choose from", "select from",
+    "pick from", "prices from", "priced from",
+]
+
+
+def is_multi_item_or_price_range(listing: Listing) -> bool:
+    """True if the listing's title itself signals a price range or several
+    bundled items/variants, per the module-level note above."""
+    title = (listing.title or "").lower()
+    if _PRICE_RANGE_RE.search(title):
+        return True
+    return any(
+        re.search(r"(?<!\w)" + re.escape(term) + r"(?!\w)", title)
+        for term in _MULTI_ITEM_TITLE_TERMS
+    )
 
 
 def is_live_auction(listing: Listing) -> bool:
@@ -138,8 +174,17 @@ def evaluate(listing: Listing, item: ItemConfig, product: Product | None = None)
     elif typical_used_price and typical_used_price > 0 and listing.price > typical_used_price * 1.1:
         # >10% above the typical used price — not just noise around the median.
         flags = flags + ["above typical used price"]
+    multi_item = is_multi_item_or_price_range(listing)
+    if multi_item:
+        flags = flags + ["multiple items / price range"]
     margin_abs, margin_pct = margins(listing.price, normal_price)
-    under_target = bool(target_deal_price and listing.price <= target_deal_price)
+    # Never a confirmed "target met" off an ambiguous range/bundle price —
+    # same reasoning as never treating a live auction's current bid as a
+    # committed price (see is_live_auction): we don't know which item in
+    # the bundle, or which end of the range, the price actually applies to.
+    under_target = bool(
+        target_deal_price and listing.price <= target_deal_price and not multi_item
+    )
     score = deal_score(
         price=listing.price,
         normal_price=normal_price,
