@@ -14,11 +14,19 @@ from urllib.parse import quote, urlencode
 
 import requests
 
+from .. import rate_limit
 from ..config import ItemConfig
 from ..models import AuctionSnapshot, Listing, ManualLink
 from .base import Source
 
 log = logging.getLogger(__name__)
+
+# Starting pace for the search endpoint — see rate_limit.py. Low floor since
+# a handful of terms back-to-back was fine before this existed; the ceiling
+# just needs to be high enough that a bad run still makes *some* progress
+# rather than stalling a whole watch cycle.
+_MIN_DELAY = 0.5
+_MAX_DELAY = 60.0
 
 _ENDPOINTS = {
     "production": {
@@ -53,6 +61,7 @@ class EbaySource(Source):
         super().__init__(cfg)
         self._token: str | None = None
         self._token_expires: float = 0.0
+        self._limiter = rate_limit.RateLimiter(_MIN_DELAY, _MAX_DELAY)
 
     def is_automated(self) -> bool:
         ebay = self.cfg.sources.ebay
@@ -85,16 +94,21 @@ class EbaySource(Source):
         filters = ["itemLocationCountry:GB", "priceCurrency:GBP"]
         if item.max_price:
             filters.append(f"price:[..{item.max_price:g}]")
-        resp = requests.get(
-            _ENDPOINTS[self.cfg.sources.ebay.env]["search"],
-            headers={
-                "Authorization": f"Bearer {self._get_token()}",
-                "X-EBAY-C-MARKETPLACE-ID": "EBAY_GB",
-            },
-            params={"q": term, "limit": "50", "filter": ",".join(filters)},
-            timeout=30,
-        )
-        resp.raise_for_status()
+
+        def _do_request():
+            resp = requests.get(
+                _ENDPOINTS[self.cfg.sources.ebay.env]["search"],
+                headers={
+                    "Authorization": f"Bearer {self._get_token()}",
+                    "X-EBAY-C-MARKETPLACE-ID": "EBAY_GB",
+                },
+                params={"q": term, "limit": "50", "filter": ",".join(filters)},
+                timeout=30,
+            )
+            resp.raise_for_status()
+            return resp
+
+        resp = rate_limit.request_with_backoff(self._limiter, _do_request, self.name)
         listings = []
         for summary in resp.json().get("itemSummaries", []):
             priced = _price_value(summary)

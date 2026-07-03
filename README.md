@@ -436,6 +436,14 @@ registered in `sources/__init__.py` — one file plus one registry line.
 No source bypasses logins, CAPTCHAs or bot protection. Source failures are
 logged and never crash a run.
 
+Automated sources (eBay, RSS/Atom) pace their own requests adaptively (see
+`rate_limit.py`): each backs off on a 429, retrying with growing delays a
+bounded number of times before giving up on that term for the cycle, and
+gradually eases back down after a run of clean requests. Pacing is per
+source instance and resets each `watch` cycle — an hour's gap is long enough
+for any real rate-limit window to clear, so starting fast again each cycle
+is deliberate, not an oversight.
+
 ## Grading Limitations
 
 Grading is keyword-based on title + condition + short description:

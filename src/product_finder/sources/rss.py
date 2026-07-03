@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import logging
 import re
-import time
 import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
@@ -20,6 +19,7 @@ from urllib.parse import quote_plus
 
 import requests
 
+from .. import rate_limit
 from ..config import ExtraSourceConfig, ItemConfig
 from ..models import Listing
 from .base import Source
@@ -107,18 +107,11 @@ def parse_feed(xml_text: str) -> list[dict]:
     return entries
 
 
-# Feed hosts (Reddit especially) rate-limit unauthenticated clients hard;
-# space out requests across all RSS sources in the process.
-_MIN_REQUEST_GAP_SECONDS = 3.0
-_last_request_at = 0.0
-
-
-def _throttle() -> None:
-    global _last_request_at
-    wait = _MIN_REQUEST_GAP_SECONDS - (time.monotonic() - _last_request_at)
-    if wait > 0:
-        time.sleep(wait)
-    _last_request_at = time.monotonic()
+# Feed hosts (Reddit especially) rate-limit unauthenticated clients hard.
+# Starting floor matches the old fixed gap this replaces; the ceiling gives
+# the adaptive backoff (rate_limit.py) room to grow into on a bad run.
+_MIN_DELAY = 3.0
+_MAX_DELAY = 120.0
 
 
 class RssSource(Source):
@@ -126,15 +119,23 @@ class RssSource(Source):
         super().__init__(cfg)
         self.name = spec.name
         self.spec = spec
+        # Per-instance, not shared across feeds — each configured RSS
+        # source (e.g. a Reddit search vs. a HotUKDeals search) learns its
+        # own pace rather than fighting over one global clock.
+        self._limiter = rate_limit.RateLimiter(_MIN_DELAY, _MAX_DELAY)
 
     def is_automated(self) -> bool:
         return True
 
     def search(self, term: str, item: ItemConfig) -> list[Listing]:
         url = format_url(self.spec.url, term, item, self.cfg)
-        _throttle()
-        resp = requests.get(url, headers={"User-Agent": USER_AGENT}, timeout=30)
-        resp.raise_for_status()
+
+        def _do_request():
+            resp = requests.get(url, headers={"User-Agent": USER_AGENT}, timeout=30)
+            resp.raise_for_status()
+            return resp
+
+        resp = rate_limit.request_with_backoff(self._limiter, _do_request, self.name)
         cutoff = None
         if self.spec.max_age_days:
             cutoff = datetime.now(timezone.utc) - timedelta(days=self.spec.max_age_days)
