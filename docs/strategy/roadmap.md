@@ -19,6 +19,7 @@ protect and grow, is:
   products exist, and how to recognise them in the wild.
 - **Accumulated pricing knowledge** — what things actually cost, new and
   used, and how that changes over time.
+The long-term goal is not simply to estimate price, but to estimate confidence in that price based on the quality and quantity of supporting evidence.
 - **Buying intelligence** — turning the two assets above into a judgement
   about whether a specific listing, right now, is worth acting on.
 
@@ -78,11 +79,10 @@ accumulated price history rather than a single stored number. A deal score
 computed against a trend is a fundamentally better judgement than one
 computed against a static estimate, independent of any UI or feature work.
 
-## Recognising the same thing twice
+## Identity resolution
 
-Right now the system has no concept of "this listing and that listing are
-the same real-world item." A single listing can match more than one item's
-search terms and get scored twice as if it were two opportunities; the same
+Right now the system has no reliable concept of identity beyond a single listing. It cannot confidently determine that two listings, products or observations represent the same real-world thing.
+A single listing can match more than one item's search terms and get scored twice as if it were two opportunities; the same
 physical product listed on two marketplaces would be double-counted the
 moment a second automated source exists. This hasn't caused visible damage
 yet only because there's effectively one automated source today — it's
