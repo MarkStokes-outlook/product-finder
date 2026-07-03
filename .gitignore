@@ -33,6 +33,7 @@ config.yaml
 data/*.db
 data/*.db-wal
 data/*.db-shm
+data/*.bak-*
 reports/latest.md
 reports/latest.html
 __pycache__/
