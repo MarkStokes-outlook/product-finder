@@ -13,11 +13,12 @@ def test_load_example_config():
     assert cfg.radius_miles == 30
     assert cfg.interval_minutes == 60
     assert cfg.alerts.console is True
-    assert cfg.alerts.markdown_report is True
     by_slug = {p.slug: p for p in cfg.projects}
     assert "coachhouse-tools" in by_slug
 
     project = by_slug["coachhouse-tools"]
+    assert set(project.sources) == {"ebay", "gumtree", "facebook", "johnpyeauctions", "preloved"}
+    assert "cexwebuy" not in project.sources  # project-level restriction
     assert len(project.items) == 2
     saw = project.items[0]
     assert saw.name == "Track Saw"
@@ -84,5 +85,34 @@ def test_defaults_applied(tmp_path):
     )
     cfg = load_config(minimal)
     assert cfg.projects[0].slug == "homelab"
+    assert cfg.projects[0].sources is None  # no project-level restriction
     assert cfg.projects[0].items[0].priority == "normal"
     assert cfg.sources.enabled_names() == ["ebay", "gumtree", "facebook"]
+
+
+def test_project_sources_restrict_search(tmp_path):
+    cfg_file = tmp_path / "p.yaml"
+    cfg_file.write_text(
+        "projects:\n"
+        "  - name: Power Tools\n"
+        "    sources: [ebay, gumtree]\n"
+        "    items:\n"
+        "      - name: Drill\n"
+        "        terms: [drill]\n"
+    )
+    cfg = load_config(cfg_file)
+    assert cfg.projects[0].sources == ["ebay", "gumtree"]
+
+
+def test_project_unknown_source_rejected(tmp_path):
+    bad = tmp_path / "bad.yaml"
+    bad.write_text(
+        "projects:\n"
+        "  - name: P\n"
+        "    sources: [not-a-real-source]\n"
+        "    items:\n"
+        "      - name: Widget\n"
+        "        terms: [widget]\n"
+    )
+    with pytest.raises(ConfigError, match="unknown sources"):
+        load_config(bad)

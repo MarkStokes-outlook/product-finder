@@ -33,13 +33,13 @@ class ProjectConfig:
     name: str
     slug: str
     items: list[ItemConfig]
+    sources: list[str] | None = None  # None = no project-level restriction
     id: int | None = None  # set when loaded from the database
 
 
 @dataclass
 class AlertsConfig:
     console: bool = True
-    markdown_report: bool = True
     webhook_url: str = ""
 
 
@@ -103,7 +103,6 @@ class AppConfig:
     radius_miles: int = 30
     interval_minutes: int = 60
     db_path: str = "data/product_finder.db"
-    report_path: str = "reports/latest.md"
     alerts: AlertsConfig = field(default_factory=AlertsConfig)
     sources: SourcesConfig = field(default_factory=SourcesConfig)
     projects: list[ProjectConfig] = field(default_factory=list)
@@ -150,7 +149,8 @@ def _load_project(raw: dict) -> ProjectConfig:
     items = [_load_item(i, slug) for i in (raw.get("items") or [])]
     if not items:
         raise ConfigError(f"Project '{slug}' has no items")
-    return ProjectConfig(name=str(name), slug=str(slug), items=items)
+    sources = raw.get("sources")  # validated against all source names after load
+    return ProjectConfig(name=str(name), slug=str(slug), items=items, sources=sources)
 
 
 def load_config(path: str | Path) -> AppConfig:
@@ -166,7 +166,6 @@ def load_config(path: str | Path) -> AppConfig:
     alerts_raw = raw.get("alerts") or {}
     alerts = AlertsConfig(
         console=bool(alerts_raw.get("console", True)),
-        markdown_report=bool(alerts_raw.get("markdown_report", True)),
         webhook_url=str(alerts_raw.get("webhook_url") or ""),
     )
 
@@ -225,6 +224,10 @@ def load_config(path: str | Path) -> AppConfig:
         raise ConfigError("Duplicate project slugs in config")
     allowed = set(sources.all_names())
     for project in projects:
+        if project.sources is not None:
+            unknown = [s for s in project.sources if s not in allowed]
+            if unknown:
+                raise ConfigError(f"Project '{project.name}' has unknown sources: {unknown}")
         for item in project.items:
             if item.sources is not None:
                 unknown = [s for s in item.sources if s not in allowed]
@@ -236,7 +239,6 @@ def load_config(path: str | Path) -> AppConfig:
         radius_miles=int(raw.get("radius_miles", 30)),
         interval_minutes=int(raw.get("interval_minutes", 60)),
         db_path=str(raw.get("db_path", "data/product_finder.db")),
-        report_path=str(raw.get("report_path", "reports/latest.md")),
         alerts=alerts,
         sources=sources,
         projects=projects,

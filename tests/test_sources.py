@@ -346,7 +346,6 @@ def test_run_once_honours_disabled_source_override(tmp_path):
     conn = db.connect(tmp_path / "t.db")
     cfg = AppConfig(
         db_path=str(tmp_path / "t.db"),
-        report_path=str(tmp_path / "reports" / "latest.md"),
         sources=SourcesConfig(
             extra=[ExtraSourceConfig(name="hukd", type="rss", url="https://h.example/rss?q={term}")]
         ),

@@ -18,7 +18,7 @@
   <tr{% if p['archived'] %} class="archived"{% endif %}>
     <td><strong><a href="{{ url_for('project_detail', project_id=p['id']) }}">{{ p['name'] }}</a></strong></td>
     <td class="meta">{{ p['slug'] }}</td>
-    <td class="num"><a href="{{ url_for('items', project_id=p['id']) }}">{{ p['item_count'] }}</a></td>
+    <td class="num"><a href="{{ url_for('project_detail', project_id=p['id']) }}">{{ p['item_count'] }}</a></td>
     <td>{% if p['archived'] %}<span class="badge grade-unknown">archived</span>
         {% else %}<span class="badge target">active</span>{% endif %}</td>
     <td>

@@ -6,11 +6,9 @@ radius_miles: 30
 interval_minutes: 60
 
 # db_path: data/product_finder.db
-# report_path: reports/latest.md
 
 alerts:
   console: true
-  markdown_report: true
   webhook_url: ""            # optional: POSTs JSON per new match
 
 sources:
@@ -73,8 +71,13 @@ sources:
       url: "https://uk.webuy.com/search/?stext={term}"
 
 projects:
+  # Project-level `sources:` restricts every item in the project, on top of
+  # any per-item `sources:` filter — e.g. no point searching CeX or Vinted
+  # for power tools, so they're left off here even though items don't
+  # repeat the exclusion individually.
   - name: "The Coachhouse Tools"
     slug: "coachhouse-tools"
+    sources: [ebay, gumtree, facebook, johnpyeauctions, preloved]
     items:
       - name: "Track Saw"
         terms:

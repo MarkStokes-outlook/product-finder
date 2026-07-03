@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
 
 from flask import (
     Flask,
@@ -13,7 +12,6 @@ from flask import (
     redirect,
     render_template,
     request,
-    send_file,
     url_for,
 )
 
@@ -33,6 +31,13 @@ def _effective_cfg(cfg: AppConfig) -> AppConfig:
     if "effective_cfg" not in g:
         g.effective_cfg = db.effective_config(_get_conn(cfg), cfg)
     return g.effective_cfg
+
+
+def _selected_sources(form, source_names: list[str]) -> list[str] | None:
+    """Parse `source_<name>` checkboxes. All ticked (or none) means "no
+    restriction" — the caller should search every enabled source."""
+    selected = [s for s in source_names if form.get(f"source_{s}")]
+    return selected if selected and set(selected) != set(source_names) else None
 
 
 def _item_from_form(form, source_names: list[str]) -> tuple[ItemConfig | None, list[str]]:
@@ -64,8 +69,6 @@ def _item_from_form(form, source_names: list[str]) -> tuple[ItemConfig | None, l
     priority = form.get("priority", "normal")
     if priority not in ("high", "normal", "low"):
         priority = "normal"
-    selected = [s for s in source_names if form.get(f"source_{s}")]
-    item_sources = selected if selected and set(selected) != set(source_names) else None
 
     item = ItemConfig(
         name=name,
@@ -76,37 +79,56 @@ def _item_from_form(form, source_names: list[str]) -> tuple[ItemConfig | None, l
         priority=priority,
         notes=(form.get("notes") or "").strip(),
         exclude_terms=exclude_terms,
-        sources=item_sources,
+        sources=_selected_sources(form, source_names),
     )
     return (item if not errors else None), errors
-
-
-def _reports_mtime(cfg: AppConfig) -> float | None:
-    """Report file mtime — rewritten on every `run_once`, whether or not it
-    found new matches, so it's a cheap "did a run just happen" signal for
-    the dashboard's polling."""
-    path = Path(cfg.report_path)
-    return path.stat().st_mtime if path.exists() else None
 
 
 def _dashboard_data(conn, cfg: AppConfig) -> dict:
     return {
         "summaries": db.project_summaries(conn),
+        "top_picks": db.project_top_picks(conn),
         "best": db.query_matches(conn, flagged=False, sort="score", limit=10),
         "warnings": db.query_matches(conn, flagged=True, sort="score", limit=10),
-        "reports": {"md": Path(cfg.report_path).exists()},
     }
 
 
-def _project_detail_data(conn, cfg: AppConfig, eff_cfg: AppConfig, project_id: int) -> dict | None:
+def _match_filters_from_request() -> dict:
+    flagged_raw = request.args.get("flagged", "")
+    return {
+        "item_id": request.args.get("item_id", type=int),
+        "source": request.args.get("source") or None,
+        "grade": request.args.get("grade") or None,
+        "flagged": {"yes": True, "no": False}.get(flagged_raw),
+        "flagged_raw": flagged_raw,
+        "sort": request.args.get("sort", "score"),
+    }
+
+
+def _project_detail_data(
+    conn, cfg: AppConfig, eff_cfg: AppConfig, project_id: int, filters: dict | None = None
+) -> dict | None:
     project = db.get_project(conn, project_id)
     if project is None:
         return None
     items = db.list_items(conn, project_id=project_id, include_archived=False)
-    rows = db.project_detail_matches(conn, project_id)
+    f = filters or {}
+    rows = db.query_matches(
+        conn,
+        project_id=project_id,
+        item_id=f.get("item_id"),
+        source=f.get("source"),
+        grade=f.get("grade"),
+        flagged=f.get("flagged"),
+        sort=f.get("sort", "score"),
+        limit=500,
+    )
     matches_by_item: dict[int, list] = {}
     for row in rows:
         matches_by_item.setdefault(row["item_id"], []).append(row)
+    # Best deal for the hero callout — always the true top score, independent
+    # of whatever filters the listings below are currently narrowed by.
+    hero = db.query_matches(conn, project_id=project_id, sort="score", limit=1)
     project_cfg = next(
         (p for p in db.load_project_configs(conn) if p.id == project_id), None
     )
@@ -116,6 +138,8 @@ def _project_detail_data(conn, cfg: AppConfig, eff_cfg: AppConfig, project_id: i
         "items": items,
         "matches_by_item": matches_by_item,
         "manual_links": manual_links,
+        "best": hero[0] if hero else None,
+        "filters": f,
     }
 
 
@@ -149,7 +173,7 @@ def create_app(cfg: AppConfig) -> Flask:
         conn = _get_conn(cfg)
         return render_template(
             "dashboard.html",
-            reports_mtime=_reports_mtime(cfg),
+            last_activity=db.latest_activity(conn),
             **_dashboard_data(conn, cfg),
         )
 
@@ -162,16 +186,7 @@ def create_app(cfg: AppConfig) -> Flask:
 
     @app.route("/api/status")
     def api_status():
-        return {"reports_mtime": _reports_mtime(cfg)}
-
-    @app.route("/reports/<kind>")
-    def report_file(kind):
-        if kind != "md":
-            abort(404)
-        path = Path(cfg.report_path)
-        if not path.exists():
-            abort(404)
-        return send_file(path.resolve(), mimetype="text/plain")
+        return {"last_activity": db.latest_activity(_get_conn(cfg))}
 
     # --- Sources ---------------------------------------------------------------
 
@@ -238,27 +253,36 @@ def create_app(cfg: AppConfig) -> Flask:
             if not name:
                 flash("Project name is required.")
             else:
-                db.create_project(_get_conn(cfg), name)
+                source_names = _effective_cfg(cfg).sources.enabled_names()
+                proj_sources = _selected_sources(request.form, source_names)
+                db.create_project(_get_conn(cfg), name, proj_sources)
                 flash(f"Project '{name}' created.")
                 return redirect(url_for("projects"))
-        return render_template("project_form.html", project=None)
+        return render_template(
+            "project_form.html", project=None, form=request.form if request.method == "POST" else None
+        )
 
     @app.route("/projects/<int:project_id>")
     def project_detail(project_id):
         conn = _get_conn(cfg)
-        data = _project_detail_data(conn, cfg, _effective_cfg(cfg), project_id)
+        data = _project_detail_data(
+            conn, cfg, _effective_cfg(cfg), project_id, _match_filters_from_request()
+        )
         if data is None:
             abort(404)
         return render_template(
-            "project_detail.html", reports_mtime=_reports_mtime(cfg), **data
+            "project_detail.html", last_activity=db.latest_activity(conn), **data
         )
 
     @app.route("/projects/<int:project_id>/live")
     def project_detail_live(project_id):
         # Fragment-only render for the polling JS to swap in — same pattern
-        # as /dashboard/live.
+        # as /dashboard/live. Filters come from the query string so a
+        # filtered view keeps auto-refreshing within the same filter.
         conn = _get_conn(cfg)
-        data = _project_detail_data(conn, cfg, _effective_cfg(cfg), project_id)
+        data = _project_detail_data(
+            conn, cfg, _effective_cfg(cfg), project_id, _match_filters_from_request()
+        )
         if data is None:
             abort(404)
         return render_template("_project_detail_live.html", **data)
@@ -274,10 +298,18 @@ def create_app(cfg: AppConfig) -> Flask:
             if not name:
                 flash("Project name is required.")
             else:
-                db.update_project(conn, project_id, name)
+                source_names = _effective_cfg(cfg).sources.enabled_names()
+                proj_sources = _selected_sources(request.form, source_names)
+                db.update_project(conn, project_id, name, proj_sources)
                 flash("Project updated.")
-                return redirect(url_for("projects"))
-        return render_template("project_form.html", project=project)
+                return redirect(url_for("project_detail", project_id=project_id))
+        raw_sources = project["sources"]
+        return render_template(
+            "project_form.html",
+            project=project,
+            project_sources=json.loads(raw_sources) if raw_sources else None,
+            form=request.form if request.method == "POST" else None,
+        )
 
     @app.route("/projects/<int:project_id>/archive", methods=["POST"])
     def project_archive(project_id):
@@ -305,43 +337,31 @@ def create_app(cfg: AppConfig) -> Flask:
         flash(f"Imported {count} item(s) from YAML config.")
         return redirect(url_for("projects"))
 
-    # --- Items ----------------------------------------------------------------
-
-    @app.route("/items")
-    def items():
-        conn = _get_conn(cfg)
-        project_id = request.args.get("project_id", type=int)
-        return render_template(
-            "items.html",
-            items=db.list_items(conn, project_id=project_id),
-            projects=db.list_projects(conn),
-            selected_project=project_id,
-            json=json,
-        )
+    # --- Items (managed inline on the project detail page) -----------------------
 
     @app.route("/items/new", methods=["GET", "POST"])
     def item_new():
         conn = _get_conn(cfg)
-        projects_list = db.list_projects(conn)
-        if not projects_list:
-            flash("Create a project first.")
-            return redirect(url_for("project_new"))
         if request.method == "POST":
             project_id = request.form.get("project_id", type=int)
+        else:
+            project_id = request.args.get("project_id", type=int)
+        project = db.get_project(conn, project_id) if project_id else None
+        if project is None:
+            flash("Choose a project first.")
+            return redirect(url_for("projects"))
+        if request.method == "POST":
             item, errors = _item_from_form(request.form, _effective_cfg(cfg).sources.enabled_names())
-            if project_id is None or db.get_project(conn, project_id) is None:
-                errors.append("Choose a valid project.")
             for error in errors:
                 flash(error)
             if not errors:
                 db.create_item(conn, project_id, item)
                 flash(f"Item '{item.name}' created.")
-                return redirect(url_for("items", project_id=project_id))
+                return redirect(url_for("project_detail", project_id=project_id))
         return render_template(
             "item_form.html",
             item=None,
-            projects=projects_list,
-            selected_project=request.args.get("project_id", type=int),
+            project=project,
             form=request.form,
         )
 
@@ -358,13 +378,12 @@ def create_app(cfg: AppConfig) -> Flask:
             if not errors:
                 db.update_item(conn, item_id, item)
                 flash("Item updated.")
-                return redirect(url_for("items", project_id=row["project_id"]))
+                return redirect(url_for("project_detail", project_id=row["project_id"]))
         return render_template(
             "item_form.html",
             item=row,
             item_cfg=db._item_from_row(row),
-            projects=db.list_projects(conn),
-            selected_project=row["project_id"],
+            project=db.get_project(conn, row["project_id"]),
             form=request.form,
         )
 
@@ -376,7 +395,7 @@ def create_app(cfg: AppConfig) -> Flask:
             abort(404)
         db.set_item_archived(conn, item_id, not row["archived"])
         flash(("Unarchived" if row["archived"] else "Archived") + f" '{row['name']}'.")
-        return redirect(url_for("items", project_id=row["project_id"]))
+        return redirect(url_for("project_detail", project_id=row["project_id"]))
 
     @app.route("/items/<int:item_id>/delete", methods=["POST"])
     def item_delete(item_id):
@@ -386,45 +405,7 @@ def create_app(cfg: AppConfig) -> Flask:
             abort(404)
         db.delete_item(conn, item_id)
         flash(f"Deleted item '{row['name']}'.")
-        return redirect(url_for("items", project_id=row["project_id"]))
-
-    # --- Listings ---------------------------------------------------------------
-
-    @app.route("/listings")
-    def listings():
-        conn = _get_conn(cfg)
-        project_id = request.args.get("project_id", type=int)
-        item_id = request.args.get("item_id", type=int)
-        source = request.args.get("source") or None
-        grade = request.args.get("grade") or None
-        flagged_raw = request.args.get("flagged", "")
-        flagged = {"yes": True, "no": False}.get(flagged_raw)
-        sort = request.args.get("sort", "score")
-        rows = db.query_matches(
-            conn,
-            project_id=project_id,
-            item_id=item_id,
-            source=source,
-            grade=grade,
-            flagged=flagged,
-            sort=sort,
-            limit=500,
-        )
-        return render_template(
-            "listings.html",
-            rows=rows,
-            projects=db.list_projects(conn),
-            items=db.list_items(conn, project_id=project_id),
-            filters={
-                "project_id": project_id,
-                "item_id": item_id,
-                "source": source or "",
-                "grade": grade or "",
-                "flagged": flagged_raw,
-                "sort": sort,
-            },
-            json=json,
-        )
+        return redirect(url_for("project_detail", project_id=row["project_id"]))
 
     # --- Manual searches ----------------------------------------------------------
 
@@ -437,7 +418,7 @@ def create_app(cfg: AppConfig) -> Flask:
         for project in db.load_project_configs(conn):
             for item in project.items:
                 links = []
-                for name in runner.item_sources(item, eff_cfg):
+                for name in runner.item_sources(item, eff_cfg, project):
                     source = registry.get(name)
                     if source is not None and not source.is_automated():
                         links.extend(source.manual_links(item))

@@ -13,27 +13,27 @@
   </div>
 </div>
 
-<div id="dashboard-live" data-mtime="{{ reports_mtime or '' }}">
+<div id="dashboard-live" data-activity="{{ last_activity or '' }}">
 {% include "_dashboard_live.html" %}
 </div>
 
 <script>
 (function () {
   var container = document.getElementById("dashboard-live");
-  var lastMtime = container.dataset.mtime;
+  var lastActivity = container.dataset.activity;
 
   function poll() {
     fetch("{{ url_for('api_status') }}")
       .then(function (r) { return r.json(); })
       .then(function (data) {
-        var mtime = data.reports_mtime ? String(data.reports_mtime) : "";
-        if (!mtime || mtime === lastMtime) return;
-        lastMtime = mtime;
+        var activity = data.last_activity || "";
+        if (!activity || activity === lastActivity) return;
+        lastActivity = activity;
         return fetch("{{ url_for('dashboard_live') }}")
           .then(function (r) { return r.text(); })
           .then(function (html) {
             container.innerHTML = html;
-            container.dataset.mtime = lastMtime;
+            container.dataset.activity = lastActivity;
           });
       })
       .catch(function () { /* offline or transient — just try again next tick */ });

@@ -7,7 +7,6 @@ import sqlite3
 
 from . import db, scoring, sources
 from .alerts import console as console_alerts
-from .alerts import markdown as markdown_report
 from .alerts import webhook as webhook_alerts
 from .config import AppConfig, ItemConfig, ProjectConfig
 from .models import ManualLink, MatchAlert
@@ -15,8 +14,15 @@ from .models import ManualLink, MatchAlert
 log = logging.getLogger(__name__)
 
 
-def item_sources(item: ItemConfig, cfg: AppConfig) -> list[str]:
+def item_sources(
+    item: ItemConfig, cfg: AppConfig, project: ProjectConfig | None = None
+) -> list[str]:
+    """Sources actually searched for this item: enabled sources, narrowed by
+    the project's allowed sources (if any), then by the item's own filter
+    (if any). Either filter being None means "no extra restriction"."""
     enabled = cfg.sources.enabled_names()
+    if project is not None and project.sources is not None:
+        enabled = [s for s in enabled if s in project.sources]
     if item.sources is None:
         return enabled
     return [s for s in item.sources if s in enabled]
@@ -37,7 +43,7 @@ def collect_manual_links(
     links: list[ManualLink] = []
     for project in projects:
         for item in project.items:
-            for name in item_sources(item, cfg):
+            for name in item_sources(item, cfg, project):
                 source = registry.get(name)
                 if source is not None and not source.is_automated():
                     links.extend(source.manual_links(item))
@@ -54,7 +60,7 @@ def run_once(cfg: AppConfig, conn: sqlite3.Connection) -> list[MatchAlert]:
     for project in projects:
         for item in project.items:
             item_id = item.id
-            for name in item_sources(item, cfg):
+            for name in item_sources(item, cfg, project):
                 source = registry.get(name)
                 if source is None or not source.is_automated():
                     continue
@@ -89,11 +95,6 @@ def run_once(cfg: AppConfig, conn: sqlite3.Connection) -> list[MatchAlert]:
 
     new_alerts.sort(key=lambda a: a.evaluation.deal_score, reverse=True)
     _send_alerts(cfg, conn, new_alerts)
-
-    if cfg.alerts.markdown_report:
-        links = collect_manual_links(cfg, projects, registry)
-        path = markdown_report.write_report(conn, cfg, links)
-        log.info("Report written to %s", path)
     return new_alerts
 
 

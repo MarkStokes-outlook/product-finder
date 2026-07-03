@@ -1,11 +1,93 @@
 {% from "_match_table.html" import match_table %}
+
+<h2>🔥 Best deal in this project</h2>
+{% if best %}
+{% set score = best['deal_score'] or 0 %}
+<a class="deal-card" style="max-width: 22rem;" href="{{ best['url'] }}" target="_blank" rel="noopener">
+  <div class="deal-card-top">
+    <span class="score {{ 'hi' if score >= 70 else ('mid' if score >= 40 else 'lo') }}">{{ '%.0f' | format(score) }}</span>
+    <span class="badge grade-{{ 'spares' if best['grade'] == 'spares/repair' else best['grade'] }}">{{ best['grade'] }}</span>
+  </div>
+  <h3>{{ best['title'] }}</h3>
+  <div class="deal-price">£{{ '%.2f' | format(best['price']) }}</div>
+  {% if best['margin_pct'] %}
+  <div class="deal-saving">Save {{ '%.0f' | format(best['margin_pct']) }}%{% if best['under_target'] %} · under target{% endif %}</div>
+  {% endif %}
+  <p class="meta">{{ best['item_name'] }} &middot; {{ best['source'] }}</p>
+</a>
+{% else %}
+<div class="hero-empty">No matches yet — still watching.</div>
+{% endif %}
+
+<div class="page-head" style="margin-top: 1.8rem;">
+  <h2 style="margin: 0;">Items &amp; listings</h2>
+  <a class="button primary small" href="{{ url_for('item_new', project_id=project['id']) }}">Add item</a>
+</div>
+
+<form method="get" action="{{ url_for('project_detail', project_id=project['id']) }}" class="filters card">
+  <span>
+    <label for="item_id">Item</label>
+    <select id="item_id" name="item_id">
+      <option value="">All</option>
+      {% for i in items %}
+      <option value="{{ i['id'] }}" {% if filters.item_id == i['id'] %}selected{% endif %}>{{ i['name'] }}</option>
+      {% endfor %}
+    </select>
+  </span>
+  <span>
+    <label for="source">Source</label>
+    <select id="source" name="source">
+      <option value="">All</option>
+      {% for s in known_sources %}
+      <option value="{{ s }}" {% if filters.source == s %}selected{% endif %}>{{ s }}</option>
+      {% endfor %}
+    </select>
+  </span>
+  <span>
+    <label for="grade">Grade</label>
+    <select id="grade" name="grade">
+      <option value="">All</option>
+      {% for g in ['A', 'B', 'C', 'spares/repair', 'unknown'] %}
+      <option value="{{ g }}" {% if filters.grade == g %}selected{% endif %}>{{ g }}</option>
+      {% endfor %}
+    </select>
+  </span>
+  <span>
+    <label for="flagged">Warnings</label>
+    <select id="flagged" name="flagged">
+      <option value="" {% if not filters.flagged_raw %}selected{% endif %}>All</option>
+      <option value="no" {% if filters.flagged_raw == 'no' %}selected{% endif %}>Clean only</option>
+      <option value="yes" {% if filters.flagged_raw == 'yes' %}selected{% endif %}>Flagged only</option>
+    </select>
+  </span>
+  <span>
+    <label for="sort">Sort by</label>
+    <select id="sort" name="sort">
+      <option value="score" {% if filters.sort == 'score' %}selected{% endif %}>Deal score</option>
+      <option value="price" {% if filters.sort == 'price' %}selected{% endif %}>Price (low first)</option>
+      <option value="first_seen" {% if filters.sort == 'first_seen' %}selected{% endif %}>Newest first</option>
+    </select>
+  </span>
+  <button class="primary" type="submit">Apply</button>
+  <a class="button" href="{{ url_for('project_detail', project_id=project['id']) }}">Reset</a>
+</form>
+
 {% for item in items %}
-  <h2>{{ item['name'] }}{% if item['archived'] %} <span class="badge grade-unknown">archived</span>{% endif %}</h2>
+  <h3>{{ item['name'] }}{% if item['archived'] %} <span class="badge grade-unknown">archived</span>{% endif %}</h3>
   <p class="meta">
     Normal price: {% if item['normal_price'] %}£{{ '%.0f' | format(item['normal_price']) }}{% else %}&mdash;{% endif %}
     &middot; Target deal price: {% if item['target_deal_price'] %}£{{ '%.0f' | format(item['target_deal_price']) }}{% else %}&mdash;{% endif %}
     &middot; Priority: {{ item['priority'] }}
-    &middot; <a href="{{ url_for('item_edit', item_id=item['id']) }}">Edit item</a>
+    &middot; Sources: {% if item['sources'] %}{{ (item['sources'] | parse_flags) | join(', ') }}{% else %}all{% endif %}
+    &middot; <a href="{{ url_for('item_edit', item_id=item['id']) }}">Edit</a>
+    &middot;
+    <form class="inline" method="post" action="{{ url_for('item_archive', item_id=item['id']) }}">
+      <button class="small" type="submit">{{ 'Unarchive' if item['archived'] else 'Archive' }}</button>
+    </form>
+    <form class="inline" method="post" action="{{ url_for('item_delete', item_id=item['id']) }}"
+          onsubmit="return confirm('Delete item {{ item['name'] }} and its matches?');">
+      <button class="small danger" type="submit">Delete</button>
+    </form>
   </p>
   <div class="card table-card">{{ match_table(matches_by_item.get(item['id'], []), show_item=False) }}</div>
 {% else %}

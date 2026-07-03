@@ -1,4 +1,4 @@
-from pathlib import Path
+import json
 
 import pytest
 
@@ -10,10 +10,7 @@ from product_finder.web.app import create_app
 
 @pytest.fixture
 def cfg(tmp_path):
-    return AppConfig(
-        db_path=str(tmp_path / "test.db"),
-        report_path=str(tmp_path / "reports" / "latest.md"),
-    )
+    return AppConfig(db_path=str(tmp_path / "test.db"))
 
 
 @pytest.fixture
@@ -73,6 +70,29 @@ def test_dashboard_warning_section(cfg, client):
     assert b"faulty" in resp.data
 
 
+def test_dashboard_hero_shows_best_deal(cfg, client):
+    seed_match(cfg, score=90.0)
+    resp = client.get("/")
+    assert b"Best deals right now" in resp.data
+    assert b"deal-card" in resp.data
+    assert b"Makita SP6000 saw" in resp.data
+
+
+def test_dashboard_project_card_shows_top_pick_preview(cfg, client):
+    seed_match(cfg, score=90.0)
+    resp = client.get("/")
+    assert b"project-pick" in resp.data
+    assert b"Still watching" not in resp.data  # has a match, not idle
+
+
+def test_dashboard_project_card_idle_state_when_no_matches(cfg, client):
+    conn = db.connect(cfg.db_path)
+    db.create_project(conn, "Quiet Project")
+    conn.commit()
+    resp = client.get("/")
+    assert b"Still watching" in resp.data
+
+
 # --- Dashboard live refresh (no manual trigger, no full page reload) -----------
 
 
@@ -82,20 +102,17 @@ def test_no_manual_run_trigger_in_ui(client):
     assert client.get("/run").status_code == 404
 
 
-def test_api_status_no_reports_yet(client):
+def test_api_status_no_activity_yet(client):
     resp = client.get("/api/status")
     assert resp.status_code == 200
-    assert resp.get_json() == {"reports_mtime": None}
+    assert resp.get_json() == {"last_activity": None}
 
 
-def test_api_status_reflects_report_mtime(cfg, client):
-    report_path = Path(cfg.report_path)
-    report_path.parent.mkdir(parents=True, exist_ok=True)
-    report_path.write_text("# report")
+def test_api_status_reflects_latest_listing_activity(cfg, client):
+    seed_match(cfg)
     resp = client.get("/api/status")
     data = resp.get_json()
-    assert data["reports_mtime"] is not None
-    assert data["reports_mtime"] == pytest.approx(report_path.stat().st_mtime)
+    assert data["last_activity"] is not None
 
 
 def test_dashboard_live_fragment_has_no_layout(cfg, client):
@@ -134,7 +151,6 @@ def test_sources_page_shows_new_extra_source_no_import_needed(tmp_path, client):
 
     cfg = AppConfig(
         db_path=str(tmp_path / "test.db"),
-        report_path=str(tmp_path / "reports" / "latest.md"),
         sources=SourcesConfig(extra=[
             ExtraSourceConfig(name="newsite", type="links", url="https://n.example/?q={term}",
                                label="New Site"),
@@ -250,18 +266,34 @@ def test_projects_page_name_links_to_project_detail(cfg, client):
     assert f'/projects/{project_id}"'.encode() in resp.data
 
 
-# --- HTML report removed (superseded by the live project dashboard) ------------
+# --- Report exports removed (superseded by the live project dashboard) --------
 
 
-def test_html_report_route_gone(cfg, client):
+def test_report_routes_gone(cfg, client):
     assert client.get("/reports/html").status_code == 404
+    assert client.get("/reports/md").status_code == 404
 
 
-def test_no_html_report_mentions_anywhere(cfg, client):
+def test_no_report_mentions_anywhere(cfg, client):
     project_id, _ = seed_match(cfg)
     for url in ("/", f"/projects/{project_id}"):
         resp = client.get(url)
         assert b"HTML report" not in resp.data
+        assert b"Markdown report" not in resp.data
+
+
+# --- Items/Listings folded into the project page — no standalone pages --------
+
+
+def test_items_and_listings_nav_removed(client):
+    resp = client.get("/")
+    assert b'>Items<' not in resp.data
+    assert b'>Listings<' not in resp.data
+
+
+def test_items_and_listings_routes_gone(client):
+    assert client.get("/items").status_code == 404
+    assert client.get("/listings").status_code == 404
 
 
 # --- Project CRUD --------------------------------------------------------------
@@ -289,6 +321,47 @@ def test_project_edit(cfg, client):
     assert conn.execute(
         "SELECT name FROM projects WHERE id = ?", (project_id,)
     ).fetchone()["name"] == "Renamed"
+
+
+def test_project_create_with_restricted_sources(cfg, client):
+    resp = client.post(
+        "/projects/new",
+        data={"name": "Power Tools", "source_ebay": "1", "source_gumtree": "1"},
+        follow_redirects=True,
+    )
+    assert resp.status_code == 200
+    conn = db.connect(cfg.db_path)
+    row = conn.execute("SELECT * FROM projects WHERE name = 'Power Tools'").fetchone()
+    assert json.loads(row["sources"]) == ["ebay", "gumtree"]
+
+
+def test_project_edit_restricts_sources_and_narrows_item_search(cfg, client):
+    project_id, item_id = seed_match(cfg)
+    client.post(
+        f"/projects/{project_id}/edit",
+        data={"name": "Coachhouse Tools", "source_ebay": "1"},
+    )
+    conn = db.connect(cfg.db_path)
+    row = conn.execute("SELECT sources FROM projects WHERE id = ?", (project_id,)).fetchone()
+    assert json.loads(row["sources"]) == ["ebay"]
+
+    from product_finder import runner
+
+    project_cfg = next(p for p in db.load_project_configs(conn) if p.id == project_id)
+    item_cfg = project_cfg.items[0]
+    eff_cfg = db.effective_config(conn, cfg)
+    assert runner.item_sources(item_cfg, eff_cfg, project_cfg) == ["ebay"]
+
+
+def test_project_form_shows_existing_source_restriction(cfg, client):
+    project_id, _ = seed_match(cfg)
+    client.post(f"/projects/{project_id}/edit", data={"name": "Coachhouse Tools", "source_ebay": "1"})
+    resp = client.get(f"/projects/{project_id}/edit")
+    text = resp.data.decode()
+    ebay_block = text.split('name="source_ebay"')[1].split(">")[0]
+    gumtree_block = text.split('name="source_gumtree"')[1].split(">")[0]
+    assert "checked" in ebay_block
+    assert "checked" not in gumtree_block
 
 
 def test_project_archive_and_delete(cfg, client):
@@ -385,20 +458,29 @@ def test_item_archive_and_delete(cfg, client):
     assert conn.execute("SELECT COUNT(*) c FROM listings").fetchone()["c"] == 1
 
 
-# --- Listings & manual pages ------------------------------------------------------
+# --- Listings filters, now on the project detail page ------------------------
 
 
-def test_listings_page_and_filters(cfg, client):
+def test_project_detail_listing_filters(cfg, client):
     project_id, item_id = seed_match(cfg)
-    resp = client.get("/listings")
+    resp = client.get(f"/projects/{project_id}")
     assert resp.status_code == 200
     assert b"Makita SP6000 saw" in resp.data
 
-    resp = client.get(f"/listings?project_id={project_id}&grade=A&flagged=no&sort=price")
+    resp = client.get(f"/projects/{project_id}?grade=A&flagged=no&sort=price")
     assert b"Makita SP6000 saw" in resp.data
 
-    resp = client.get("/listings?grade=spares/repair")
-    assert b"Makita SP6000 saw" not in resp.data
+    # The hero callout always shows the true best deal regardless of the
+    # listing filters below it, so check the filtered *table* is empty
+    # rather than asserting the title vanishes from the whole page.
+    resp = client.get(f"/projects/{project_id}?grade=spares/repair")
+    assert b"Nothing here yet" in resp.data
+
+    resp = client.get(f"/projects/{project_id}?item_id={item_id}")
+    assert b"Makita SP6000 saw" in resp.data
+
+
+# --- Manual pages -------------------------------------------------------------
 
 
 def test_manual_page(cfg, client):

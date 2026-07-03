@@ -36,6 +36,9 @@ Examples:
 - Camera Gear
 - Car Parts
 
+Projects can also restrict which sources apply to everything inside them —
+no point searching CeX for power tools.
+
 ### Wanted Items
 
 Each item defines:
@@ -44,7 +47,7 @@ Each item defines:
 - Maximum purchase price
 - Expected market value
 - Target deal price
-- Preferred sources
+- Preferred sources (narrowed further by the project's own source list, if set)
 - Search radius
 - Priority
 
@@ -84,7 +87,7 @@ The first version should:
 - Support Gumtree where practical.
 - Generate manual-assisted searches for Facebook Marketplace if automation is not appropriate.
 - Store seen listings locally.
-- Produce Markdown reports.
+- Show live results in a local web dashboard.
 - Provide console alerts.
 - Calculate a simple deal score.
 
@@ -164,6 +167,9 @@ interval_minutes: 60
 projects:
   - name: "The Coachhouse Tools"
     slug: "coachhouse-tools"
+    # sources: [ebay, gumtree]  # optional project-level source filter —
+    #                           # restricts every item below, e.g. no point
+    #                           # searching CeX for power tools
     items:
       - name: "Track Saw"
         terms: ["track saw", "Makita SP6000"]
@@ -183,7 +189,6 @@ projects:
 python -m product_finder run-once        # one search cycle, alert on new matches
 python -m product_finder watch           # run continuously at interval_minutes
 python -m product_finder web             # local web UI at http://127.0.0.1:8765
-python -m product_finder report          # regenerate reports/latest.md from stored data
 python -m product_finder import-config   # merge YAML projects/items into the database
 python -m product_finder list-projects   # show projects
 python -m product_finder list-items      # show items
@@ -222,18 +227,26 @@ python -m product_finder web
 A local, server-rendered UI at `http://127.0.0.1:8765` — localhost only, no
 accounts, no cloud. Pages:
 
-- **Dashboard** — project summaries, best current deals, a warnings/false
-  bargains section, and a link to the latest report. Polls every 15s for
-  new results (from the background `watch` process) and swaps in fresh data
-  without a full page reload. Click a project to open its detail page.
-- **Project detail** (click any project) — that project's items, each with
-  its own matched-listings table and price/priority context, plus its manual
-  search links. Same live auto-refresh as the dashboard.
-- **Projects** — create, rename, archive/unarchive, delete.
-- **Items** — full editing of every field (terms, exclude terms, prices,
-  priority, notes, per-item source filters), grouped by project.
-- **Listings** — browse discovered listings; filter by project, item, source,
-  grade, and warning flags; sort by deal score, price, or first seen.
+- **Dashboard** — built to answer "what should I grab right now?" at a
+  glance, not just list everything found. A hero strip surfaces the best live
+  deals as cards (title, price, saving %, "under target") — not buried in a
+  table row. Below that, each project card shows a live preview of its
+  current best pick, or "still watching — no matches yet" if it hasn't found
+  one, so scanning the page tells you what's happening per-project without
+  clicking in. Everything else and warnings/false bargains are demoted to
+  plain tables further down. Polls every 15s for new results (from the
+  background `watch` process) and swaps in fresh data without a full page
+  reload.
+- **Project detail** (click any project) — the hub for that project: its own
+  best-deal callout, its items (add/edit/archive/delete inline, with terms,
+  prices, priority and source filters), their matched listings with the same
+  filter/sort controls (source, grade, warnings, sort) filters used to have
+  on a separate Listings page, and its manual search links. Items and
+  listings live here rather than on separate pages, since both only make
+  sense in the context of a project. Same live auto-refresh as the
+  dashboard.
+- **Projects** — create, rename, archive/unarchive, delete, and set which
+  sources apply to the whole project.
 - **Manual searches** — the Gumtree/Facebook (and keyless eBay) links grouped
   by project and item.
 - **Sources** — enable/disable any source (built-in or config-defined) and
@@ -251,8 +264,8 @@ settings: postcode, radius, interval, and alerts.
   `python -m product_finder import-config` or use the **Import from YAML**
   button on the Projects page. Import merges by project slug and item name,
   overwriting those items' fields.
-- Archived projects/items are kept but excluded from searches, reports, and
-  manual links.
+- Archived projects/items are kept but excluded from searches, the dashboard,
+  and manual links.
 
 ### Where sources live
 
@@ -264,13 +277,18 @@ page: whether a source is **enabled**, and **eBay API credentials**
 (`app_id`/`cert_id`/`env`) — both take effect on the very next search, in any
 process (`web`, `watch`, `run-once`), no restart needed.
 
+Which sources actually get searched for a given item is enabled sources ∩
+the item's project's allowed sources (if restricted) ∩ the item's own
+allowed sources (if restricted) — each level can only narrow, never widen,
+what the level above allows.
+
 ---
 
 ## Adding Sources
 
 Every source implements one small contract (`src/product_finder/sources/base.py`):
 `name`, `is_automated()`, `search(term, item)` and `manual_links(item)`. All
-downstream logic (grading, scoring, dedup, alerts, reports, web UI) only sees
+downstream logic (grading, scoring, dedup, alerts, web UI) only sees
 normalised `Listing` objects, so it never knows or cares where they came from.
 
 Most new sites need **no code at all** — add them under `sources.extra` in
@@ -323,31 +341,14 @@ Treat the grade as a triage hint, not a verdict — always read the listing.
 
 ---
 
-## Example Report
+## Viewing Results
 
-`reports/latest.md` groups matches by project, then item, best deals first:
-
-```markdown
-## The Coachhouse Tools
-
-### Track Saw
-
-Normal price: £500 · Target deal price: £300 · Priority: high
-
-| Score | Title | Price | Margin | % below | Grade | Flags | Source | First seen |
-|---|---|---|---|---|---|---|---|---|
-| 100 | [Makita SP6000 track saw, boxed](https://…) | £245 ✅ | £255 | 51% | A | — | ebay | 2026-07-02 |
-| 25 | [Festool TS55 — faulty, spares](https://…) | £90 ✅ | £410 | 82% | spares/repair | spares or repairs, faulty | ebay | 2026-07-02 |
-```
-
-✅ = at or under target deal price. A **Manual searches** section at the end
-lists pre-filtered links for the non-automated sources.
-
-There's no separate HTML report file — the **project detail page** in the web
-UI (click a project anywhere in the UI) shows the same thing live: each
+There's no report file to generate or open — the **web UI** is the report.
+The dashboard's hero strip and per-project preview surface the best deals as
+they're found; the **project detail page** (click any project) shows every
 item grouped with its matched listings, colour-highlighted the same way
 (green for excellent deals, red for spares/repair or flagged listings), plus
-that project's manual search links. It updates itself automatically as
+that project's manual search links. Both update themselves automatically as
 `watch` finds new results — no regenerating, no opening a file.
 
 ---

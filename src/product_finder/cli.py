@@ -8,7 +8,6 @@ import sys
 import time
 
 from . import db, runner, sources
-from .alerts import markdown as markdown_report
 from .config import AppConfig, ConfigError, load_config
 
 log = logging.getLogger("product_finder")
@@ -26,9 +25,7 @@ def _print_run_summary(cfg: AppConfig, projects: list, new_alerts: list) -> None
         skipped = sorted({l.source for l in manual})
         print(f"Automated sources: {', '.join(automated) or 'none'}")
         print(f"Manual-assisted sources ({', '.join(skipped)}): "
-              f"{len(manual)} search links in the report.")
-    if cfg.alerts.markdown_report:
-        print(f"Report: {cfg.report_path}")
+              f"{len(manual)} search link(s) — see the web UI's Manual searches page.")
 
 
 def cmd_run_once(cfg: AppConfig) -> int:
@@ -62,20 +59,6 @@ def cmd_watch(cfg: AppConfig) -> int:
         except KeyboardInterrupt:
             print("\nStopped.")
             return 0
-
-
-def cmd_report(cfg: AppConfig) -> int:
-    conn = db.connect(cfg.db_path)
-    try:
-        cfg = db.effective_config(conn, cfg)
-        projects = runner.load_projects(cfg, conn)
-        path = markdown_report.write_report(
-            conn, cfg, runner.collect_manual_links(cfg, projects)
-        )
-    finally:
-        conn.close()
-    print(f"Report written to {path}")
-    return 0
 
 
 def cmd_import_config(cfg: AppConfig) -> int:
@@ -142,7 +125,6 @@ def main(argv: list[str] | None = None) -> int:
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("run-once", help="Run one search cycle, alert on new matches")
     sub.add_parser("watch", help="Run continuously at the configured interval")
-    sub.add_parser("report", help="Regenerate the Markdown report from stored data")
     sub.add_parser("import-config", help="Import/merge YAML projects and items into the database")
     sub.add_parser("list-projects", help="List projects")
     sub.add_parser("list-items", help="List items per project")
@@ -167,7 +149,6 @@ def main(argv: list[str] | None = None) -> int:
     commands = {
         "run-once": cmd_run_once,
         "watch": cmd_watch,
-        "report": cmd_report,
         "import-config": cmd_import_config,
         "list-projects": cmd_list_projects,
         "list-items": cmd_list_items,

@@ -1,9 +1,29 @@
 {% from "_match_table.html" import match_table %}
-<div class="actions" style="margin-bottom: 1rem;">
-  {% if reports.md %}<a class="button" href="{{ url_for('report_file', kind='md') }}">Markdown report</a>{% endif %}
+<h2>🔥 Best deals right now</h2>
+{% set hero = best[:3] %}
+{% if hero %}
+<div class="hero-grid">
+  {% for row in hero %}
+  {% set score = row['deal_score'] or 0 %}
+  <a class="deal-card" href="{{ row['url'] }}" target="_blank" rel="noopener">
+    <div class="deal-card-top">
+      <span class="score {{ 'hi' if score >= 70 else ('mid' if score >= 40 else 'lo') }}">{{ '%.0f' | format(score) }}</span>
+      <span class="badge grade-{{ 'spares' if row['grade'] == 'spares/repair' else row['grade'] }}">{{ row['grade'] }}</span>
+    </div>
+    <h3>{{ row['title'] }}</h3>
+    <div class="deal-price">£{{ '%.2f' | format(row['price']) }}</div>
+    {% if row['margin_pct'] %}
+    <div class="deal-saving">Save {{ '%.0f' | format(row['margin_pct']) }}%{% if row['under_target'] %} · under target{% endif %}</div>
+    {% endif %}
+    <p class="meta">{{ row['project_name'] }} / {{ row['item_name'] }} &middot; {{ row['source'] }}</p>
+  </a>
+  {% endfor %}
 </div>
+{% else %}
+<div class="hero-empty">Nothing standing out yet — still watching for deals across your projects.</div>
+{% endif %}
 
-<h2>Projects</h2>
+<h2>Your projects</h2>
 {% if summaries %}
 <div class="grid">
   {% for p in summaries %}
@@ -12,12 +32,18 @@
     <div class="stat-nums">
       <div><span class="num">{{ p['item_count'] }}</span><span class="lbl">items</span></div>
       <div><span class="num">{{ p['match_count'] }}</span><span class="lbl">matches</span></div>
-      <div>
-        <span class="num">{% if p['best_score'] %}{{ '%.0f' | format(p['best_score']) }}{% else %}&mdash;{% endif %}</span>
-        <span class="lbl">best score</span>
-      </div>
     </div>
-    <a class="button small" href="{{ url_for('listings', project_id=p['id']) }}">View listings</a>
+    {% set pick = top_picks.get(p['id']) %}
+    {% if pick %}
+    <div class="project-pick">
+      <span class="pick-title">{{ pick['title'] }}</span>
+      <span class="pick-price">£{{ '%.2f' | format(pick['price']) }}</span>
+      {% if pick['margin_pct'] %}<span class="pick-saving"> &middot; save {{ '%.0f' | format(pick['margin_pct']) }}%</span>{% endif %}
+    </div>
+    {% else %}
+    <div class="project-pick idle">Still watching — no matches yet.</div>
+    {% endif %}
+    <a class="button small" href="{{ url_for('project_detail', project_id=p['id']) }}">Open project</a>
   </div>
   {% endfor %}
 </div>
@@ -25,8 +51,11 @@
 <div class="card empty">No projects yet — <a href="{{ url_for('project_new') }}">create one</a>.</div>
 {% endif %}
 
-<h2>Best current deals</h2>
-<div class="card table-card">{{ match_table(best) }}</div>
+{% set rest = best[3:] %}
+{% if rest %}
+<h2>More matches</h2>
+<div class="card table-card">{{ match_table(rest) }}</div>
+{% endif %}
 
 <h2>Warnings &amp; likely false bargains</h2>
 <div class="card table-card">{{ match_table(warnings) }}</div>

@@ -2,20 +2,11 @@
 {% block title %}{{ 'Edit' if item else 'New' }} item — Product Finder{% endblock %}
 {% block content %}
 <h1>{{ 'Edit item' if item else 'New item' }}</h1>
+<p class="meta">Project: <strong>{{ project['name'] }}</strong></p>
 {# On validation errors the submitted form values win; otherwise the stored item. #}
 {% set v = form if form else {} %}
 <form method="post" class="card" style="max-width: 34rem;">
-  {% if not item %}
-  <label for="project_id">Project</label>
-  <select id="project_id" name="project_id" required>
-    {% for p in projects if not p['archived'] %}
-    <option value="{{ p['id'] }}" {% if selected_project == p['id'] %}selected{% endif %}>{{ p['name'] }}</option>
-    {% endfor %}
-  </select>
-  {% else %}
-  <p class="meta">Project: {{ item['project_name'] }}</p>
-  {% endif %}
-
+  {% if not item %}<input type="hidden" name="project_id" value="{{ project['id'] }}">{% endif %}
   <label for="name">Name</label>
   <input type="text" id="name" name="name" required
          value="{{ v.get('name', item['name'] if item else '') }}">
@@ -67,14 +58,15 @@
   </label>
   {% endfor %}
   </div>
-  <p class="hint">All ticked (or none) = search every enabled source.</p>
+  <p class="hint">All ticked (or none) = search every enabled source. Sources the
+    project itself has restricted stay off regardless of this item's picks.</p>
 
   <label for="notes">Notes</label>
   <textarea id="notes" name="notes" rows="2">{{ v.get('notes', item['notes'] if item else '') }}</textarea>
 
   <p style="margin-top: 1.2rem;">
     <button class="primary" type="submit">Save</button>
-    <a class="button" href="{{ url_for('items') }}">Cancel</a>
+    <a class="button" href="{{ url_for('project_detail', project_id=project['id']) }}">Cancel</a>
   </p>
 </form>
 {% endblock %}

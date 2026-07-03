@@ -29,7 +29,8 @@ CREATE TABLE IF NOT EXISTS projects (
     id INTEGER PRIMARY KEY,
     slug TEXT UNIQUE NOT NULL,
     name TEXT NOT NULL,
-    archived INTEGER NOT NULL DEFAULT 0
+    archived INTEGER NOT NULL DEFAULT 0,
+    sources TEXT
 );
 CREATE TABLE IF NOT EXISTS items (
     id INTEGER PRIMARY KEY,
@@ -93,6 +94,7 @@ CREATE TABLE IF NOT EXISTS source_settings (
 # Columns added since the first release; applied to pre-existing databases.
 _MIGRATIONS = [
     ("projects", "archived", "INTEGER NOT NULL DEFAULT 0"),
+    ("projects", "sources", "TEXT"),
     ("items", "terms", "TEXT NOT NULL DEFAULT '[]'"),
     ("items", "exclude_terms", "TEXT NOT NULL DEFAULT '[]'"),
     ("items", "sources", "TEXT"),
@@ -136,9 +138,13 @@ def import_config(conn: sqlite3.Connection, cfg: AppConfig) -> int:
     count = 0
     for project in cfg.projects:
         conn.execute(
-            "INSERT INTO projects (slug, name) VALUES (?, ?) "
-            "ON CONFLICT(slug) DO UPDATE SET name = excluded.name",
-            (project.slug, project.name),
+            "INSERT INTO projects (slug, name, sources) VALUES (?, ?, ?) "
+            "ON CONFLICT(slug) DO UPDATE SET name = excluded.name, sources = excluded.sources",
+            (
+                project.slug,
+                project.name,
+                json.dumps(project.sources) if project.sources is not None else None,
+            ),
         )
         project_id = conn.execute(
             "SELECT id FROM projects WHERE slug = ?", (project.slug,)
@@ -284,7 +290,13 @@ def load_project_configs(conn: sqlite3.Connection) -> list[ProjectConfig]:
             )
         ]
         projects.append(
-            ProjectConfig(name=prow["name"], slug=prow["slug"], items=items, id=prow["id"])
+            ProjectConfig(
+                name=prow["name"],
+                slug=prow["slug"],
+                items=items,
+                sources=json.loads(prow["sources"]) if prow["sources"] else None,
+                id=prow["id"],
+            )
         )
     return projects
 
@@ -308,20 +320,28 @@ def get_project(conn: sqlite3.Connection, project_id: int) -> sqlite3.Row | None
     return conn.execute("SELECT * FROM projects WHERE id = ?", (project_id,)).fetchone()
 
 
-def create_project(conn: sqlite3.Connection, name: str) -> int:
+def create_project(conn: sqlite3.Connection, name: str, sources: list[str] | None = None) -> int:
     base = slugify(name)
     slug = base
     n = 2
     while conn.execute("SELECT 1 FROM projects WHERE slug = ?", (slug,)).fetchone():
         slug = f"{base}-{n}"
         n += 1
-    cur = conn.execute("INSERT INTO projects (slug, name) VALUES (?, ?)", (slug, name))
+    cur = conn.execute(
+        "INSERT INTO projects (slug, name, sources) VALUES (?, ?, ?)",
+        (slug, name, json.dumps(sources) if sources is not None else None),
+    )
     conn.commit()
     return cur.lastrowid
 
 
-def update_project(conn: sqlite3.Connection, project_id: int, name: str) -> None:
-    conn.execute("UPDATE projects SET name = ? WHERE id = ?", (name, project_id))
+def update_project(
+    conn: sqlite3.Connection, project_id: int, name: str, sources: list[str] | None = None
+) -> None:
+    conn.execute(
+        "UPDATE projects SET name = ?, sources = ? WHERE id = ?",
+        (name, json.dumps(sources) if sources is not None else None, project_id),
+    )
     conn.commit()
 
 
@@ -575,21 +595,6 @@ def query_matches(
     ).fetchall()
 
 
-def report_rows(conn: sqlite3.Connection) -> list[sqlite3.Row]:
-    """All matches joined with listings/items/projects, best deals first."""
-    return conn.execute(
-        f"{_MATCH_SELECT} ORDER BY p.name, i.name, m.deal_score DESC"
-    ).fetchall()
-
-
-def project_detail_matches(conn: sqlite3.Connection, project_id: int) -> list[sqlite3.Row]:
-    """One project's matches, grouped by item (item name, then best deal first)."""
-    return conn.execute(
-        f"{_MATCH_SELECT} WHERE p.id = ? ORDER BY i.name, m.deal_score DESC",
-        (project_id,),
-    ).fetchall()
-
-
 def project_summaries(conn: sqlite3.Connection) -> list[sqlite3.Row]:
     """Per-project counts and best deal score, for the dashboard."""
     return conn.execute(
@@ -605,3 +610,34 @@ def project_summaries(conn: sqlite3.Connection) -> list[sqlite3.Row]:
         GROUP BY p.id ORDER BY p.name
         """
     ).fetchall()
+
+
+def project_top_picks(conn: sqlite3.Connection) -> dict[int, sqlite3.Row]:
+    """Each active project's single best match, keyed by project id — the
+    "here's what stands out" preview shown on the dashboard's project cards."""
+    rows = conn.execute(
+        """
+        SELECT * FROM (
+            SELECT p.id AS project_id, i.name AS item_name,
+                   l.title, l.price, l.currency, l.url, l.source,
+                   m.grade, m.deal_score, m.margin_pct, m.under_target,
+                   ROW_NUMBER() OVER (PARTITION BY p.id ORDER BY m.deal_score DESC) AS rn
+            FROM listing_matches m
+            JOIN listings l ON l.id = m.listing_id
+            JOIN items i ON i.id = m.item_id
+            JOIN projects p ON p.id = i.project_id
+            WHERE p.archived = 0
+        )
+        WHERE rn = 1
+        """
+    ).fetchall()
+    return {row["project_id"]: row for row in rows}
+
+
+def latest_activity(conn: sqlite3.Connection) -> str | None:
+    """Latest listing timestamp seen by `watch`/`run-once` — a cheap "did a
+    search just run" signal for the dashboard's live-polling JS. Every
+    listing touched in a cycle gets its last_seen bumped, whether new or
+    not, so this changes on any cycle that fetched at least one listing."""
+    row = conn.execute("SELECT MAX(last_seen) AS ts FROM listings").fetchone()
+    return row["ts"] if row else None

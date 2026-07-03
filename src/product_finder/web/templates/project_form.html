@@ -7,10 +7,26 @@
   <input type="text" id="name" name="name" required autofocus
          value="{{ project['name'] if project else '' }}">
   {% if project %}<p class="hint">Slug: {{ project['slug'] }} (fixed)</p>{% endif %}
+
+  <label>Sources</label>
+  <div class="checks">
+  {% for s in known_sources %}
+  <label>
+    <input type="checkbox" name="source_{{ s }}" value="1"
+      {% if form and form.get('source_' ~ s) %}checked
+      {% elif not form and (project_sources is not defined or project_sources is none or s in project_sources) %}checked{% endif %}>
+    {{ s }}
+  </label>
+  {% endfor %}
+  </div>
+  <p class="hint">All ticked (or none) = no restriction. Untick sources that don't
+    apply to this project — e.g. no point searching CeX for power tools. Items in
+    this project can only search sources ticked here.</p>
+
   <p style="margin-top: 1.2rem;">
     <button class="primary" type="submit">Save</button>
     <a class="button" href="{{ url_for('projects') }}">Cancel</a>
-    {% if project %}<a class="button" href="{{ url_for('items', project_id=project['id']) }}">Edit items in this project</a>{% endif %}
+    {% if project %}<a class="button" href="{{ url_for('project_detail', project_id=project['id']) }}">View project</a>{% endif %}
   </p>
 </form>
 {% endblock %}
