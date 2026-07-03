@@ -99,8 +99,33 @@ bid are flagged **"live auction"** and are structurally excluded from the
 dashboard's and each project's hero "best deal" cards — those only ever
 feature a price you could actually commit to right now (fixed-price or Buy
 It Now). Live auctions still appear in the regular listings table, flagged,
-for visibility if you want to go bid yourself. They also never contribute to
-the automatic used-price tracking above, for the same reason.
+for visibility if you want to go bid yourself. They never contribute an
+*asking*-price observation to the used-price tracking above, for the same
+reason — but `watch` does capture their genuine closing price (next
+section), which is a much better signal than an asking price anyway.
+
+#### Auction close tracking
+
+`watch` doesn't just run a full search every `interval_minutes` — it also
+checks, every 20 seconds, whether any tracked auction (one matched to a
+catalogue product) is due a price check, on a cadence that tightens as the
+auction nears its end:
+
+| Time remaining | Poll at most every |
+|---|---|
+| > 10 minutes | 5 minutes |
+| 2–10 minutes | 1 minute |
+| < 2 minutes | 20 seconds |
+
+eBay's Browse API keeps reporting the last bid price for a little while
+after an auction's listed end time, so a plain timestamp check risks
+capturing a split-second-too-early read. Instead, each poll checks the
+item's live availability status directly — once it flips to out-of-stock
+(confirmed empirically: the bid price itself stops changing at that point),
+the last-seen price is logged as a genuine "sold for" observation (tagged
+`ebay-close` in the price history, distinct from ordinary asking-price
+observations) and that listing stops being tracked. No separate process to
+run — it's all inside the same `watch` command.
 
 ### Deal Intelligence
 
@@ -416,12 +441,15 @@ that project's manual search links. Both update themselves automatically as
 - Product catalogue matching is a plain keyword lookup (same style as
   grading) — no fuzzy matching, so typos or unusual phrasing in a listing
   won't resolve to a catalogue product even if match terms are sensible.
-- "Typical used price" is tracked from *asking* prices on active listings,
-  not confirmed sold prices — eBay's Marketplace Insights API (which would
-  give real sold prices) requires special access this app's developer
-  account doesn't have. A worker that polls an auction's price right before
-  it ends (a much closer proxy for "sold for") is a planned follow-up, not
-  built yet.
+- "Typical used price" is mostly built from *asking* prices on active
+  listings, not confirmed sold prices — eBay's Marketplace Insights API
+  (which would give real sold prices) requires special access this app's
+  developer account doesn't have. The one exception: auctions get a genuine
+  "sold for" proxy — see below.
+- The auction-close poller assumes the last price seen right after
+  `estimatedAvailabilities` flips to `OUT_OF_STOCK` is the winning bid. It
+  doesn't (and can't, via this API) confirm the sale actually completed —
+  e.g. a reserve-not-met auction would still get captured as if it sold.
 - "Typical new price" is manually maintained — there's no automated
   retailer price-watching (Amazon/Currys/etc. don't offer a public
   listing-search API the way eBay does, and scraping them raises the same

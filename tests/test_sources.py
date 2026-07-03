@@ -448,3 +448,54 @@ def test_ebay_listing_with_no_price_at_all_still_skipped():
             listings = source.search("makita drill", make_item())
 
     assert listings == []
+
+
+def test_ebay_get_item_returns_snapshot():
+    from product_finder.sources.ebay import EbaySource
+
+    item_resp = mock.Mock()
+    item_resp.status_code = 200
+    item_resp.json.return_value = {
+        "price": None,
+        "currentBidPrice": {"value": "47.04", "currency": "GBP"},
+        "bidCount": 8,
+        "estimatedAvailabilities": [{"estimatedAvailabilityStatus": "IN_STOCK"}],
+    }
+    source = EbaySource(_ebay_cfg())
+    with mock.patch("product_finder.sources.ebay.requests.post", return_value=_mock_token_response()):
+        with mock.patch("product_finder.sources.ebay.requests.get", return_value=item_resp):
+            snapshot = source.get_item("v1|1|0")
+
+    assert snapshot.price == 47.04
+    assert snapshot.bid_count == 8
+    assert snapshot.ended is False
+
+
+def test_ebay_get_item_detects_ended_via_out_of_stock():
+    from product_finder.sources.ebay import EbaySource
+
+    item_resp = mock.Mock()
+    item_resp.status_code = 200
+    item_resp.json.return_value = {
+        "price": {"value": "20.00", "currency": "GBP"},
+        "bidCount": 3,
+        "estimatedAvailabilities": [{"estimatedAvailabilityStatus": "OUT_OF_STOCK"}],
+    }
+    source = EbaySource(_ebay_cfg())
+    with mock.patch("product_finder.sources.ebay.requests.post", return_value=_mock_token_response()):
+        with mock.patch("product_finder.sources.ebay.requests.get", return_value=item_resp):
+            snapshot = source.get_item("v1|1|0")
+
+    assert snapshot.ended is True
+    assert snapshot.price == 20.00
+
+
+def test_ebay_get_item_returns_none_on_non_200():
+    from product_finder.sources.ebay import EbaySource
+
+    item_resp = mock.Mock()
+    item_resp.status_code = 404
+    source = EbaySource(_ebay_cfg())
+    with mock.patch("product_finder.sources.ebay.requests.post", return_value=_mock_token_response()):
+        with mock.patch("product_finder.sources.ebay.requests.get", return_value=item_resp):
+            assert source.get_item("v1|1|0") is None

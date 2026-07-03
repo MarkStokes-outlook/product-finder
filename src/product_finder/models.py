@@ -33,6 +33,21 @@ class Listing:
 
 
 @dataclass
+class AuctionSnapshot:
+    """A single-item price check, for tracking an auction toward its close
+    (see auction_watch.py). `ended` is derived from the source's stock/
+    availability status, not just the clock — eBay's Browse API keeps
+    reporting the last bid price for a little while after itemEndDate
+    passes, so waiting for the availability flip (rather than just the
+    timestamp) avoids capturing a split-second-too-early read."""
+
+    price: float
+    currency: str = "GBP"
+    bid_count: int | None = None
+    ended: bool = False
+
+
+@dataclass
 class Evaluation:
     """The result of scoring a listing against a wanted item."""
 

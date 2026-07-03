@@ -10,12 +10,12 @@ from __future__ import annotations
 import base64
 import logging
 import time
-from urllib.parse import urlencode
+from urllib.parse import quote, urlencode
 
 import requests
 
 from ..config import ItemConfig
-from ..models import Listing, ManualLink
+from ..models import AuctionSnapshot, Listing, ManualLink
 from .base import Source
 
 log = logging.getLogger(__name__)
@@ -24,12 +24,26 @@ _ENDPOINTS = {
     "production": {
         "token": "https://api.ebay.com/identity/v1/oauth2/token",
         "search": "https://api.ebay.com/buy/browse/v1/item_summary/search",
+        "item": "https://api.ebay.com/buy/browse/v1/item",
     },
     "sandbox": {
         "token": "https://api.sandbox.ebay.com/identity/v1/oauth2/token",
         "search": "https://api.sandbox.ebay.com/buy/browse/v1/item_summary/search",
+        "item": "https://api.sandbox.ebay.com/buy/browse/v1/item",
     },
 }
+
+
+def _price_value(data: dict) -> tuple[float, str] | None:
+    """A pure auction (no Buy It Now) has price=null and the current bid
+    under currentBidPrice instead — without this fallback those listings
+    silently vanish (float(None) raises). Same field shape on both the
+    search (item_summary) and single-item (getItem) endpoints."""
+    price_info = data.get("price") or data.get("currentBidPrice") or {}
+    try:
+        return float(price_info["value"]), str(price_info.get("currency", "GBP"))
+    except (TypeError, ValueError, KeyError):
+        return None
 
 
 class EbaySource(Source):
@@ -83,16 +97,10 @@ class EbaySource(Source):
         resp.raise_for_status()
         listings = []
         for summary in resp.json().get("itemSummaries", []):
-            # A pure auction (no Buy It Now) has price=null and the current
-            # bid under currentBidPrice instead — without this fallback
-            # those listings silently vanish (float(None) raises, and the
-            # per-listing search() caller swallows nothing here, so they'd
-            # just never become a Listing at all).
-            price_info = summary.get("price") or summary.get("currentBidPrice") or {}
-            try:
-                price = float(price_info.get("value"))
-            except (TypeError, ValueError):
+            priced = _price_value(summary)
+            if priced is None:
                 continue
+            price, currency = priced
             location = summary.get("itemLocation") or {}
             listings.append(
                 Listing(
@@ -100,7 +108,7 @@ class EbaySource(Source):
                     external_id=str(summary.get("itemId", "")),
                     title=str(summary.get("title", "")),
                     price=price,
-                    currency=str(price_info.get("currency", "GBP")),
+                    currency=currency,
                     url=str(summary.get("itemWebUrl", "")),
                     location=", ".join(
                         p for p in (location.get("city"), location.get("postalCode")) if p
@@ -113,6 +121,32 @@ class EbaySource(Source):
                 )
             )
         return listings
+
+    def get_item(self, external_id: str) -> AuctionSnapshot | None:
+        """Single-item lookup for tracking an auction toward its close (see
+        auction_watch.py) — `external_id` is the same eBay itemId stored on
+        Listing.external_id from search(). Returns None if the item can no
+        longer be fetched (e.g. eBay has since removed it)."""
+        resp = requests.get(
+            f"{_ENDPOINTS[self.cfg.sources.ebay.env]['item']}/{quote(external_id, safe='')}",
+            headers={
+                "Authorization": f"Bearer {self._get_token()}",
+                "X-EBAY-C-MARKETPLACE-ID": "EBAY_GB",
+            },
+            timeout=20,
+        )
+        if resp.status_code != 200:
+            return None
+        data = resp.json()
+        priced = _price_value(data)
+        if priced is None:
+            return None
+        price, currency = priced
+        ended = any(
+            a.get("estimatedAvailabilityStatus") == "OUT_OF_STOCK"
+            for a in data.get("estimatedAvailabilities", [])
+        )
+        return AuctionSnapshot(price=price, currency=currency, bid_count=data.get("bidCount"), ended=ended)
 
     def manual_links(self, item: ItemConfig) -> list[ManualLink]:
         links = []

@@ -7,10 +7,15 @@ import logging
 import sys
 import time
 
-from . import db, runner, sources
+from . import auction_watch, db, runner, sources
 from .config import AppConfig, ConfigError, load_config
 
 log = logging.getLogger("product_finder")
+
+# How often `watch` checks for auctions nearing their close, independent of
+# the (much coarser) full search interval — see auction_watch.py for the
+# tiered per-auction cadence this drives.
+_AUCTION_POLL_SECONDS = 20
 
 
 def _print_run_summary(cfg: AppConfig, projects: list, new_alerts: list) -> None:
@@ -41,21 +46,31 @@ def cmd_run_once(cfg: AppConfig) -> int:
 
 
 def cmd_watch(cfg: AppConfig) -> int:
-    interval = max(1, cfg.interval_minutes)
-    print(f"Watching every {interval} minute(s). Ctrl-C to stop.")
+    interval_seconds = max(1, cfg.interval_minutes) * 60
+    print(
+        f"Watching every {cfg.interval_minutes} minute(s) "
+        f"(auction closes checked every {_AUCTION_POLL_SECONDS}s). Ctrl-C to stop."
+    )
+    next_full_run = 0.0  # due immediately on first tick
     while True:
         conn = db.connect(cfg.db_path)
         try:
-            new_alerts = runner.run_once(cfg, conn)
-            run_cfg = db.effective_config(conn, cfg)  # picks up live Sources-page edits
-            projects = db.load_project_configs(conn)
-            _print_run_summary(run_cfg, projects, new_alerts)
+            now = time.monotonic()
+            if now >= next_full_run:
+                new_alerts = runner.run_once(cfg, conn)
+                run_cfg = db.effective_config(conn, cfg)  # picks up live Sources-page edits
+                projects = db.load_project_configs(conn)
+                _print_run_summary(run_cfg, projects, new_alerts)
+                next_full_run = now + interval_seconds
+            captured = auction_watch.poll_and_capture(cfg, conn)
+            if captured:
+                print(f"Captured closing price for {captured} ended auction(s).")
         except Exception as exc:
-            log.error("Run failed: %s", exc)
+            log.error("Watch cycle failed: %s", exc)
         finally:
             conn.close()
         try:
-            time.sleep(interval * 60)
+            time.sleep(_AUCTION_POLL_SECONDS)
         except KeyboardInterrupt:
             print("\nStopped.")
             return 0

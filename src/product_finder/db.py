@@ -122,6 +122,11 @@ _MIGRATIONS = [
     ("products", "msrp", "REAL"),
     ("products", "typical_new_price", "REAL"),
     ("products", "typical_used_price", "REAL"),
+    ("listings", "buying_options", "TEXT DEFAULT '[]'"),
+    ("listings", "bid_count", "INTEGER"),
+    ("listings", "end_time", "TEXT"),
+    ("listings", "last_poll_at", "TEXT"),
+    ("listings", "sold_captured", "INTEGER NOT NULL DEFAULT 0"),
 ]
 
 
@@ -605,26 +610,72 @@ def list_price_observations(conn: sqlite3.Connection, product_id: int) -> list[s
     ).fetchall()
 
 
+# --- Auction close tracking (see auction_watch.py) -----------------------------
+
+
+def list_tracked_auctions(conn: sqlite3.Connection, max_staleness_days: int = 1) -> list[sqlite3.Row]:
+    """Listings that are candidates for end-of-auction price capture: not yet
+    captured, matched to a catalogue product, with a known end time that
+    hasn't gone stale (in case the app was offline past its close). Filtered
+    further in Python (auction_watch.py) for "is this actually an auction"
+    and "is it actually due for a poll right now" — both awkward to express
+    over a JSON column and a variable cadence in SQL."""
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=max_staleness_days)).isoformat(
+        timespec="seconds"
+    )
+    return conn.execute(
+        """
+        SELECT DISTINCT l.*, m.product_id
+        FROM listings l
+        JOIN listing_matches m ON m.listing_id = l.id
+        WHERE l.sold_captured = 0
+          AND l.end_time IS NOT NULL
+          AND l.end_time >= ?
+          AND m.product_id IS NOT NULL
+        """,
+        (cutoff,),
+    ).fetchall()
+
+
+def mark_listing_polled(conn: sqlite3.Connection, listing_id: int) -> None:
+    conn.execute("UPDATE listings SET last_poll_at = ? WHERE id = ?", (_now(), listing_id))
+    conn.commit()
+
+
+def mark_sold_captured(conn: sqlite3.Connection, listing_id: int) -> None:
+    conn.execute("UPDATE listings SET sold_captured = 1 WHERE id = ?", (listing_id,))
+    conn.commit()
+
+
 # --- Listings, matches, alerts -------------------------------------------------
 
 
 def upsert_listing(conn: sqlite3.Connection, listing: Listing) -> tuple[int, bool]:
-    """Insert a listing or touch last_seen. Returns (listing_id, is_new)."""
+    """Insert a listing or touch last_seen. Returns (listing_id, is_new).
+
+    buying_options/bid_count/end_time are refreshed on every rescan too (a
+    Buy It Now can disappear once bidding starts, bid count/price move) —
+    this is what the auction-close poller (auction_watch.py) later reads to
+    know which listings are auctions and when they end."""
     now = _now()
+    buying_options = json.dumps(listing.buying_options)
     row = conn.execute(
         "SELECT id FROM listings WHERE source = ? AND external_id = ?",
         (listing.source, listing.external_id),
     ).fetchone()
     if row:
         conn.execute(
-            "UPDATE listings SET last_seen = ?, price = ?, title = ? WHERE id = ?",
-            (now, listing.price, listing.title, row["id"]),
+            "UPDATE listings SET last_seen = ?, price = ?, title = ?, "
+            "buying_options = ?, bid_count = ?, end_time = ? WHERE id = ?",
+            (now, listing.price, listing.title, buying_options, listing.bid_count,
+             listing.end_time, row["id"]),
         )
         return row["id"], False
     cur = conn.execute(
         "INSERT INTO listings (source, external_id, title, price, currency, url, "
-        "location, description, condition, first_seen, last_seen) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "location, description, condition, first_seen, last_seen, "
+        "buying_options, bid_count, end_time) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (
             listing.source,
             listing.external_id,
@@ -637,6 +688,9 @@ def upsert_listing(conn: sqlite3.Connection, listing: Listing) -> tuple[int, boo
             listing.condition,
             now,
             now,
+            buying_options,
+            listing.bid_count,
+            listing.end_time,
         ),
     )
     return cur.lastrowid, True
