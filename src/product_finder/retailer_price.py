@@ -208,4 +208,4 @@ def run_discovery_and_refresh(conn, cfg) -> None:
 
     for row in db.list_products_due_for_price_refresh(conn, searxng_cfg.refresh_interval_hours):
         result = fetch_price(row["canonical_price_url"], searxng_cfg.timeout)
-        db.record_price_refresh(conn, row["id"], result)
+        db.record_price_refresh(conn, row["id"], result, domain=_domain(row["canonical_price_url"]))

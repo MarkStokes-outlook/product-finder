@@ -81,18 +81,25 @@ def run_once(cfg: AppConfig, conn: sqlite3.Connection) -> list[MatchAlert]:
                         product = catalogue.match(listing.text, products) if products else None
                         evaluation = scoring.evaluate(listing, item, product)
                         listing_id, _ = db.upsert_listing(conn, listing)
+                        # Cross-source identity resolution (v1: canonical-URL
+                        # matching only — see identity.py/resolve_identity()).
+                        # is_primary is False only for a confirmed duplicate
+                        # of a listing already counted elsewhere; it still
+                        # gets its own listing_matches row below (full
+                        # provenance), just no alert/observation/list surface.
+                        _, is_primary = db.resolve_identity(conn, listing_id, listing)
                         match_id, is_new = db.record_match(
                             conn, listing_id, item_id, evaluation,
                             product_id=product.id if product else None,
                         )
-                        if is_new and product and not scoring.is_live_auction(listing):
+                        if is_new and is_primary and product and not scoring.is_live_auction(listing):
                             # One observation per distinct listing, at first
                             # sighting only — a long-unsold listing rescanned
                             # every cycle shouldn't dominate the average.
                             db.record_price_observation(conn, product.id, listing.price, listing.source)
                         if product is None and item_id and isinstance(source, EbaySource):
                             _maybe_suggest_product(conn, source, listing_id, item_id, cfg.ollama)
-                        if is_new:
+                        if is_new and is_primary:
                             normal_price, target_deal_price, _ = scoring.effective_prices(item, product)
                             new_alerts.append(
                                 MatchAlert(

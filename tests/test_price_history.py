@@ -61,6 +61,59 @@ def test_deleting_product_deletes_its_observations(tmp_path):
     assert conn.execute("SELECT COUNT(*) c FROM product_price_observations").fetchone()["c"] == 0
 
 
+# --- db.record_price_observation / cached used-price trend (see price_trend.py) --
+
+
+def _insert_observation(conn, product_id, days_ago, price, source="ebay"):
+    ts = (datetime.now(timezone.utc) - timedelta(days=days_ago)).isoformat(timespec="seconds")
+    conn.execute(
+        "INSERT INTO product_price_observations (product_id, price, source, observed_at) "
+        "VALUES (?, ?, ?, ?)",
+        (product_id, price, source, ts),
+    )
+    conn.commit()
+
+
+def test_insufficient_history_leaves_trend_uncached(tmp_path):
+    conn, _, product_id = _setup(tmp_path)
+    db.record_price_observation(conn, product_id, 100, "ebay")
+    product = db._product_from_row(db.get_product(conn, product_id))
+    assert product.price_trend_pct is None
+    assert product.price_trend_confidence == 0.0
+
+
+def test_trend_cached_only_changes_when_new_observation_recorded(tmp_path):
+    conn, _, product_id = _setup(tmp_path)
+
+    # Prior window (30-60 days ago): median 100.
+    for days_ago, price in [(35, 100), (45, 102), (55, 98)]:
+        _insert_observation(conn, product_id, days_ago, price)
+    # Recent window (last 30 days): median 90 once the final observation
+    # below is recorded through record_price_observation (the only call
+    # that (re)computes and caches the trend).
+    _insert_observation(conn, product_id, 15, 92)
+    db.record_price_observation(conn, product_id, 88, "ebay")
+
+    product = db._product_from_row(db.get_product(conn, product_id))
+    assert product.price_trend_pct is not None
+    assert product.price_trend_confidence > 0
+    cached_pct = product.price_trend_pct
+    cached_confidence = product.price_trend_confidence
+
+    # Re-reading the product (no new observation in between) must not move
+    # the cached figures — there is no per-read recomputation.
+    for _ in range(3):
+        reread = db._product_from_row(db.get_product(conn, product_id))
+        assert reread.price_trend_pct == cached_pct
+        assert reread.price_trend_confidence == cached_confidence
+
+    # A genuinely new observation is the only thing allowed to move it —
+    # a confirmed close at a much lower price shifts the recent window hard.
+    db.record_price_observation(conn, product_id, 60, "ebay-close")
+    updated = db._product_from_row(db.get_product(conn, product_id))
+    assert updated.price_trend_pct != cached_pct
+
+
 # --- runner.py wiring -----------------------------------------------------------
 
 

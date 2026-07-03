@@ -81,16 +81,39 @@ computed against a static estimate, independent of any UI or feature work.
 
 ## Identity resolution
 
-Right now the system has no reliable concept of identity beyond a single listing. It cannot confidently determine that two listings, products or observations represent the same real-world thing.
-A single listing can match more than one item's search terms and get scored twice as if it were two opportunities; the same
-physical product listed on two marketplaces would be double-counted the
-moment a second automated source exists. This hasn't caused visible damage
-yet only because there's effectively one automated source today — it's
-latent debt, not absent debt.
+**v1 shipped (canonical-URL matching).** This was live debt, not latent —
+`rss.py` (generic, config-driven RSS/Atom source) has been automated
+(`is_automated() -> True`) alongside eBay for a while, so a listing matching
+one item's search terms on both could already be scored and alerted on
+twice, quietly, for any project running both sources.
 
-This deserves treating as core infrastructure — identity resolution that
-everything else can rely on — rather than a one-off dedup rule bolted onto
-whichever source exposes the problem first.
+`identity.py`/`db.resolve_identity()` now recognises the one case with a
+provably shared identifier: a listing's URL containing a platform's own
+native ID (v1: eBay's item ID, e.g. an RSS entry that happens to link
+straight to an eBay item page). Cross-source sightings sharing that ID are
+linked via `listing_identities`/`listing_identity_members`; only one
+("primary" — the platform's own native listing if one exists, else whichever
+was seen first) counts toward alerting, price observations, and
+`query_matches`/dashboard results. Every sighting still gets its own
+`listings` row and `listing_matches` entry — nothing is deleted or
+collapsed, so provenance and the ability to unpick a bad merge are both
+preserved.
+
+**Deliberately not solved by v1**: the same physical item independently
+listed on two marketplaces with *no* shared ID (e.g. the same saw on eBay
+and Gumtree) still counts twice — there's no provable identifier to key off,
+only title/price similarity, and merging across marketplaces on that alone
+risks silently conflating two different real items. Future work, if this
+turns out to matter in practice: a fuzzy title/price candidate-grouping
+mechanism, surfaced for human confirm/dismiss rather than auto-merged — that
+needs its own review UI and a "don't ask again" dismiss/remember workflow
+(mirroring `product_suggestions`' pending/approved/dismissed pattern), which
+is meaningfully more state than v1's scope covered.
+
+Also still unresolved (separate, smaller issue): a single listing matching
+more than one item's search terms still gets scored/alerted once per item —
+that's intentional (each item is a genuinely different thing to want), not
+an identity bug.
 
 ## Product knowledge beyond price
 

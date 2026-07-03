@@ -35,6 +35,11 @@ class Product:
     - `typical_used_price` — a rolling median of observed second-hand
       asking prices for this product, maintained automatically by
       `db.record_price_observation()`. Never set by hand.
+
+    `price_trend_pct`/`price_trend_confidence` are the used-price trend
+    (see price_trend.py) cached alongside `typical_used_price` by the same
+    call — a signed percent change and a 0-1 confidence, both None/0 until
+    there's enough observation history to say anything.
     """
 
     id: int
@@ -47,6 +52,8 @@ class Product:
     typical_used_price: float | None = None
     target_deal_price: float | None = None
     archived: bool = False
+    price_trend_pct: float | None = None
+    price_trend_confidence: float = 0.0
 
     @property
     def label(self) -> str:

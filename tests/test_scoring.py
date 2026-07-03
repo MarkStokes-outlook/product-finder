@@ -1,4 +1,4 @@
-from product_finder import grading, scoring
+from product_finder import grading, price_trend, scoring
 from product_finder.catalogue import Product
 from product_finder.config import ItemConfig
 from product_finder.models import Listing
@@ -275,6 +275,58 @@ def test_ordinary_listing_unaffected_by_multi_item_check():
     ev = scoring.evaluate(make_listing("Makita track saw, good condition", 290), item)
     assert "multiple items / price range" not in ev.flags
     assert ev.under_target is True
+
+
+# --- Used-price trend adjustment (see price_trend.py) ---------------------------
+
+
+def test_deal_score_applies_trend_adjustment():
+    base = scoring.deal_score(150, 200, None, grading.GRADE_B, [])
+    falling = scoring.deal_score(
+        150, 200, None, grading.GRADE_B, [], price_trend_pct=-10.0, price_trend_confidence=0.5
+    )
+    rising = scoring.deal_score(
+        150, 200, None, grading.GRADE_B, [], price_trend_pct=10.0, price_trend_confidence=0.5
+    )
+    assert falling < base < rising
+
+
+def test_deal_score_trend_adjustment_is_capped():
+    base = scoring.deal_score(150, 200, None, grading.GRADE_B, [])
+    extreme = scoring.deal_score(
+        150, 200, None, grading.GRADE_B, [], price_trend_pct=-500.0, price_trend_confidence=1.0
+    )
+    assert base - extreme == price_trend.MAX_SCORE_ADJUSTMENT
+
+
+def test_deal_score_no_trend_data_leaves_score_unchanged():
+    base = scoring.deal_score(150, 200, None, grading.GRADE_B, [])
+    no_trend = scoring.deal_score(
+        150, 200, None, grading.GRADE_B, [], price_trend_pct=None, price_trend_confidence=0.0
+    )
+    assert base == no_trend
+
+
+def test_evaluate_reads_trend_from_matched_product():
+    item = make_item()
+    listing = make_listing("Makita SP6000 track saw, good condition", 150)
+    steady_product = make_product(typical_new_price=200)
+    falling_product = make_product(
+        id=2, typical_new_price=200, price_trend_pct=-15.0, price_trend_confidence=1.0
+    )
+    steady = scoring.evaluate(listing, item, steady_product)
+    falling = scoring.evaluate(listing, item, falling_product)
+    assert falling.deal_score < steady.deal_score
+
+
+def test_evaluate_with_no_product_applies_no_trend_adjustment():
+    item = make_item()
+    ev = scoring.evaluate(make_listing("Track saw good condition", 290), item)
+    expected = scoring.deal_score(
+        290, item.normal_price, item.target_deal_price, ev.grade, ev.flags, item.priority,
+        "Track saw good condition",
+    )
+    assert ev.deal_score == expected
 
 
 def test_live_auction_never_beats_fixed_price_on_score():

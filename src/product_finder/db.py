@@ -22,7 +22,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from statistics import median
 
-from . import catalogue
+from . import catalogue, identity, price_trend
 from .config import AppConfig, ItemConfig, ProjectConfig
 from .models import Evaluation, Listing
 
@@ -64,6 +64,13 @@ CREATE TABLE IF NOT EXISTS product_price_observations (
     product_id INTEGER NOT NULL REFERENCES products(id),
     price REAL NOT NULL,
     source TEXT NOT NULL,
+    observed_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS product_new_price_history (
+    id INTEGER PRIMARY KEY,
+    product_id INTEGER NOT NULL REFERENCES products(id),
+    price REAL NOT NULL,
+    domain TEXT NOT NULL,
     observed_at TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS product_price_candidates (
@@ -136,6 +143,21 @@ CREATE TABLE IF NOT EXISTS source_settings (
     ebay_cert_id TEXT DEFAULT '',
     ebay_env TEXT DEFAULT ''
 );
+CREATE TABLE IF NOT EXISTS listing_identities (
+    id INTEGER PRIMARY KEY,
+    canonical_key TEXT UNIQUE NOT NULL,
+    primary_listing_id INTEGER NOT NULL REFERENCES listings(id),
+    created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS listing_identity_members (
+    id INTEGER PRIMARY KEY,
+    identity_id INTEGER NOT NULL REFERENCES listing_identities(id),
+    listing_id INTEGER NOT NULL REFERENCES listings(id),
+    status TEXT NOT NULL DEFAULT 'confirmed',   -- v1 only ever writes 'confirmed'
+    matched_by TEXT NOT NULL DEFAULT 'canonical_url',
+    created_at TEXT NOT NULL,
+    UNIQUE(identity_id, listing_id)
+);
 """
 
 # Columns added since the first release; applied to pre-existing databases.
@@ -161,6 +183,9 @@ _MIGRATIONS = [
     ("products", "price_search_checked", "INTEGER NOT NULL DEFAULT 0"),
     ("products", "last_price_check_at", "TEXT"),
     ("products", "last_price_check_ok", "INTEGER"),
+    ("products", "price_trend_pct", "REAL"),
+    ("products", "price_trend_confidence", "REAL NOT NULL DEFAULT 0"),
+    ("listings", "is_primary_sighting", "INTEGER NOT NULL DEFAULT 1"),
 ]
 
 
@@ -523,6 +548,11 @@ def delete_item(conn: sqlite3.Connection, item_id: int, _commit: bool = True) ->
         "(SELECT id FROM products WHERE item_id = ?)",
         (item_id,),
     )
+    conn.execute(
+        "DELETE FROM product_new_price_history WHERE product_id IN "
+        "(SELECT id FROM products WHERE item_id = ?)",
+        (item_id,),
+    )
     conn.execute("DELETE FROM product_suggestions WHERE item_id = ?", (item_id,))
     conn.execute("DELETE FROM products WHERE item_id = ?", (item_id,))
     conn.execute("DELETE FROM items WHERE id = ?", (item_id,))
@@ -545,6 +575,8 @@ def _product_from_row(row: sqlite3.Row) -> catalogue.Product:
         typical_used_price=row["typical_used_price"],
         target_deal_price=row["target_deal_price"],
         archived=bool(row["archived"]),
+        price_trend_pct=row["price_trend_pct"],
+        price_trend_confidence=row["price_trend_confidence"],
     )
 
 
@@ -614,6 +646,7 @@ def delete_product(conn: sqlite3.Connection, product_id: int) -> None:
         "UPDATE listing_matches SET product_id = NULL WHERE product_id = ?", (product_id,)
     )
     conn.execute("DELETE FROM product_price_observations WHERE product_id = ?", (product_id,))
+    conn.execute("DELETE FROM product_new_price_history WHERE product_id = ?", (product_id,))
     conn.execute("DELETE FROM products WHERE id = ?", (product_id,))
     conn.commit()
 
@@ -626,9 +659,11 @@ _PRICE_HISTORY_WINDOW_DAYS = 90
 def record_price_observation(conn: sqlite3.Connection, product_id: int, price: float, source: str) -> None:
     """Log one used-market price sighting for a product and recompute its
     rolling `typical_used_price` (median of observations from the last
-    `_PRICE_HISTORY_WINDOW_DAYS` days). Call once per distinct listing a
-    product resolves against — not on every rescan of an already-seen
-    listing, or a single stale unsold listing would dominate the average."""
+    `_PRICE_HISTORY_WINDOW_DAYS` days) plus its used-price trend (see
+    price_trend.py) — both cached on `products`, never recomputed at
+    scoring time. Call once per distinct listing a product resolves
+    against — not on every rescan of an already-seen listing, or a single
+    stale unsold listing would dominate the average."""
     conn.execute(
         "INSERT INTO product_price_observations (product_id, price, source, observed_at) "
         "VALUES (?, ?, ?, ?)",
@@ -637,21 +672,56 @@ def record_price_observation(conn: sqlite3.Connection, product_id: int, price: f
     cutoff = (datetime.now(timezone.utc) - timedelta(days=_PRICE_HISTORY_WINDOW_DAYS)).isoformat(
         timespec="seconds"
     )
-    prices = sorted(
-        r["price"]
-        for r in conn.execute(
-            "SELECT price FROM product_price_observations WHERE product_id = ? AND observed_at >= ?",
-            (product_id, cutoff),
-        )
-    )
+    rows = conn.execute(
+        "SELECT price, source, observed_at FROM product_price_observations "
+        "WHERE product_id = ? AND observed_at >= ?",
+        (product_id, cutoff),
+    ).fetchall()
+    prices = sorted(r["price"] for r in rows)
     typical = median(prices) if prices else None
-    conn.execute("UPDATE products SET typical_used_price = ? WHERE id = ?", (typical, product_id))
+    # _PRICE_HISTORY_WINDOW_DAYS (90) comfortably covers the trend module's
+    # own two-window lookback (2 * price_trend.WINDOW_DAYS = 60), so this
+    # reuses the same rows already fetched above rather than a second query.
+    trend = price_trend.compute_trend(
+        [(r["observed_at"], r["price"], r["source"]) for r in rows]
+    )
+    conn.execute(
+        "UPDATE products SET typical_used_price = ?, price_trend_pct = ?, "
+        "price_trend_confidence = ? WHERE id = ?",
+        (typical, trend.pct, trend.confidence, product_id),
+    )
     conn.commit()
 
 
 def list_price_observations(conn: sqlite3.Connection, product_id: int) -> list[sqlite3.Row]:
     return conn.execute(
         "SELECT * FROM product_price_observations WHERE product_id = ? ORDER BY observed_at",
+        (product_id,),
+    ).fetchall()
+
+
+# --- New-price history (collection only — not yet read by scoring) -----------
+#
+# Mirrors product_price_observations for the new-price side: every canonical
+# retailer price (initial approval, and every Stage 2 refresh) is logged here
+# so there's real history to validate a new-price trend against later (see
+# docs/strategy/roadmap.md, "Deal accuracy"). Deliberately not consumed by
+# price_trend.py or scoring.py yet — collected from day one precisely so it
+# isn't empty by the time that work starts.
+
+
+def record_new_price_history(conn: sqlite3.Connection, product_id: int, price: float, domain: str) -> None:
+    conn.execute(
+        "INSERT INTO product_new_price_history (product_id, price, domain, observed_at) "
+        "VALUES (?, ?, ?, ?)",
+        (product_id, price, domain, _now()),
+    )
+    conn.commit()
+
+
+def list_new_price_history(conn: sqlite3.Connection, product_id: int) -> list[sqlite3.Row]:
+    return conn.execute(
+        "SELECT * FROM product_new_price_history WHERE product_id = ? ORDER BY observed_at",
         (product_id,),
     ).fetchall()
 
@@ -733,6 +803,7 @@ def approve_price_candidate(
         "DELETE FROM product_price_candidates WHERE product_id = ?", (candidate["product_id"],)
     )
     conn.commit()
+    record_new_price_history(conn, candidate["product_id"], price, candidate["domain"])
 
 
 def list_products_due_for_price_refresh(
@@ -748,23 +819,29 @@ def list_products_due_for_price_refresh(
     ).fetchall()
 
 
-def record_price_refresh(conn: sqlite3.Connection, product_id: int, result: dict | None) -> None:
+def record_price_refresh(
+    conn: sqlite3.Connection, product_id: int, result: dict | None, domain: str = ""
+) -> None:
     """Stage 2: apply a refetch of a product's already-approved canonical
     URL. On failure, keep the last known typical_new_price — a dead or
     unparseable page is a reason to stop trusting *future* updates, not to
-    discard the last real number observed."""
+    discard the last real number observed. `domain` is the canonical URL's
+    domain (see retailer_price._domain) — only needed on success, to log
+    the new-price history row."""
     if result is not None:
         conn.execute(
             "UPDATE products SET typical_new_price = ?, last_price_check_at = ?, "
             "last_price_check_ok = 1 WHERE id = ?",
             (result["price"], _now(), product_id),
         )
+        conn.commit()
+        record_new_price_history(conn, product_id, result["price"], domain)
     else:
         conn.execute(
             "UPDATE products SET last_price_check_at = ?, last_price_check_ok = 0 WHERE id = ?",
             (_now(), product_id),
         )
-    conn.commit()
+        conn.commit()
 
 
 # --- App-wide settings (key/value; small enough not to need dedicated columns) -
@@ -1041,6 +1118,86 @@ def mark_brand_checked(conn: sqlite3.Connection, listing_id: int) -> None:
     conn.commit()
 
 
+def _add_identity_member(conn: sqlite3.Connection, identity_id: int, listing_id: int, now: str) -> None:
+    conn.execute(
+        "INSERT OR IGNORE INTO listing_identity_members "
+        "(identity_id, listing_id, status, matched_by, created_at) "
+        "VALUES (?, ?, 'confirmed', 'canonical_url', ?)",
+        (identity_id, listing_id, now),
+    )
+
+
+def resolve_identity(conn: sqlite3.Connection, listing_id: int, listing: Listing) -> tuple[int | None, bool]:
+    """Cross-source identity resolution — v1: canonical-URL matching only
+    (see identity.py). Returns (identity_id, is_primary).
+
+    Most listings have no recognisable canonical key at all (nothing but
+    eBay is patterned yet), in which case this is a cheap no-op and the
+    listing is trivially its own identity (is_primary=True, identity_id=None).
+
+    When a canonical key *is* recoverable and this is the first sighting of
+    it, this listing becomes the identity's primary. A later sighting (any
+    source) sharing the same key is linked as a confirmed member; it becomes
+    non-primary — `listings.is_primary_sighting` is set to 0, so alerting,
+    price observations and match listings skip it — *unless* it's the
+    canonical platform's own native listing arriving after an earlier proxy
+    (e.g. an RSS entry that merely linked to the same eBay item, seen before
+    eBay's own API surfaced it): the native row is promoted to primary
+    instead, since it carries materially richer structured data (condition,
+    buying_options, brand/mpn) that the proxy never has.
+
+    Full provenance is preserved either way — every listing row and its own
+    listing_matches entry stay untouched; only which one counts as the
+    "current" sighting for scoring surfaces changes."""
+    canonical_key = identity.derive_canonical_key(listing.url)
+    if canonical_key is None:
+        return None, True
+
+    platform = canonical_key.split(":", 1)[0]
+    now = _now()
+    row = conn.execute(
+        "SELECT li.id AS identity_id, li.primary_listing_id, l2.source AS primary_source "
+        "FROM listing_identities li JOIN listings l2 ON l2.id = li.primary_listing_id "
+        "WHERE li.canonical_key = ?",
+        (canonical_key,),
+    ).fetchone()
+
+    if row is None:
+        cur = conn.execute(
+            "INSERT INTO listing_identities (canonical_key, primary_listing_id, created_at) "
+            "VALUES (?, ?, ?)",
+            (canonical_key, listing_id, now),
+        )
+        identity_id = cur.lastrowid
+        _add_identity_member(conn, identity_id, listing_id, now)
+        conn.commit()
+        return identity_id, True
+
+    identity_id = row["identity_id"]
+    _add_identity_member(conn, identity_id, listing_id, now)
+
+    if listing_id == row["primary_listing_id"]:
+        conn.commit()
+        return identity_id, True
+
+    if listing.source == platform and row["primary_source"] != platform:
+        conn.execute(
+            "UPDATE listing_identities SET primary_listing_id = ? WHERE id = ?",
+            (listing_id, identity_id),
+        )
+        conn.execute("UPDATE listings SET is_primary_sighting = 1 WHERE id = ?", (listing_id,))
+        conn.execute(
+            "UPDATE listings SET is_primary_sighting = 0 WHERE id = ?",
+            (row["primary_listing_id"],),
+        )
+        conn.commit()
+        return identity_id, True
+
+    conn.execute("UPDATE listings SET is_primary_sighting = 0 WHERE id = ?", (listing_id,))
+    conn.commit()
+    return identity_id, False
+
+
 def record_match(
     conn: sqlite3.Connection,
     listing_id: int,
@@ -1139,8 +1296,12 @@ def query_matches(
     limit: int | None = None,
 ) -> list[sqlite3.Row]:
     """Browse matches with optional filters. flagged=True → has warning flags
-    or graded spares/repair; flagged=False → clean listings only."""
-    clauses, params = [], []
+    or graded spares/repair; flagged=False → clean listings only.
+
+    Always excludes non-primary sightings (see resolve_identity()) — a
+    listing that's a confirmed duplicate of another, already-surfaced one
+    stays in the database for provenance but never appears in results."""
+    clauses, params = ["l.is_primary_sighting = 1"], []
     if project_id is not None:
         clauses.append("p.id = ?")
         params.append(project_id)
@@ -1166,16 +1327,23 @@ def query_matches(
 
 
 def project_summaries(conn: sqlite3.Connection) -> list[sqlite3.Row]:
-    """Per-project counts and best deal score, for the dashboard."""
+    """Per-project counts and best deal score, for the dashboard.
+
+    match_count/best_score exclude non-primary sightings (see
+    resolve_identity()) via the CASE guards below, so a confirmed
+    cross-source duplicate doesn't inflate the count or surface a stale
+    score — the LEFT JOINs are kept as LEFT so item_count (which doesn't
+    depend on matches existing at all) is unaffected."""
     return conn.execute(
         """
         SELECT p.id, p.name, p.slug, p.archived,
                COUNT(DISTINCT i.id) AS item_count,
-               COUNT(m.id) AS match_count,
-               MAX(m.deal_score) AS best_score
+               COUNT(CASE WHEN l.is_primary_sighting = 1 THEN m.id END) AS match_count,
+               MAX(CASE WHEN l.is_primary_sighting = 1 THEN m.deal_score END) AS best_score
         FROM projects p
         LEFT JOIN items i ON i.project_id = p.id AND i.archived = 0
         LEFT JOIN listing_matches m ON m.item_id = i.id
+        LEFT JOIN listings l ON l.id = m.listing_id
         WHERE p.archived = 0
         GROUP BY p.id ORDER BY p.name
         """
@@ -1184,7 +1352,8 @@ def project_summaries(conn: sqlite3.Connection) -> list[sqlite3.Row]:
 
 def project_top_picks(conn: sqlite3.Connection) -> dict[int, sqlite3.Row]:
     """Each active project's single best match, keyed by project id — the
-    "here's what stands out" preview shown on the dashboard's project cards."""
+    "here's what stands out" preview shown on the dashboard's project cards.
+    Excludes non-primary sightings (see resolve_identity())."""
     rows = conn.execute(
         """
         SELECT * FROM (
@@ -1196,7 +1365,7 @@ def project_top_picks(conn: sqlite3.Connection) -> dict[int, sqlite3.Row]:
             JOIN listings l ON l.id = m.listing_id
             JOIN items i ON i.id = m.item_id
             JOIN projects p ON p.id = i.project_id
-            WHERE p.archived = 0
+            WHERE p.archived = 0 AND l.is_primary_sighting = 1
         )
         WHERE rn = 1
         """

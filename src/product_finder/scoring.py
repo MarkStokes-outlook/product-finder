@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 
-from . import grading
+from . import grading, price_trend
 from .catalogue import Product
 from .config import ItemConfig
 from .models import Evaluation, Listing
@@ -114,6 +114,8 @@ def deal_score(
     priority: str = "normal",
     title: str = "",
     typical_used_price: float | None = None,
+    price_trend_pct: float | None = None,
+    price_trend_confidence: float = 0.0,
 ) -> float:
     """Score 0-100. Higher = better deal."""
     _, pct_below = margins(price, normal_price)
@@ -135,6 +137,11 @@ def deal_score(
         used_pct_below = (typical_used_price - price) / typical_used_price * 100.0
         if used_pct_below < 0:
             score += max(used_pct_below, -30.0) * 0.4
+    # Used-price trend (see price_trend.py) — a small, confidence-scaled,
+    # capped nudge on top of everything above; zero whenever there isn't
+    # enough observation history to say anything (v1 is used-price only,
+    # see docs/strategy/roadmap.md, "Deal accuracy").
+    score += price_trend.score_adjustment(price_trend_pct, price_trend_confidence)
     return round(max(0.0, min(score, 100.0)), 1)
 
 
@@ -194,6 +201,8 @@ def evaluate(listing: Listing, item: ItemConfig, product: Product | None = None)
         priority=item.priority,
         title=listing.title,
         typical_used_price=typical_used_price,
+        price_trend_pct=product.price_trend_pct if product else None,
+        price_trend_confidence=product.price_trend_confidence if product else 0.0,
     )
     return Evaluation(
         grade=grade,

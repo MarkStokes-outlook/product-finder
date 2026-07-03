@@ -203,7 +203,11 @@ Potential future enhancements include:
 - AI-assisted listing analysis.
 - Historical pricing trends.
 - Image analysis for condition.
-- Automatic duplicate detection across marketplaces.
+- Fuzzy cross-marketplace duplicate detection (matching by normalized
+  title/price similarity when no platform-native ID is shared) — grouped for
+  human review only, never auto-merged, plus the dismiss/remember workflow
+  that implies. Canonical-URL matching (same platform's own ID recoverable
+  straight from the URL, e.g. eBay) already ships — see Known Limitations.
 - Browser UI.
 - Mobile notifications.
 - Seller reputation scoring.
@@ -484,8 +488,15 @@ that project's manual search links. Both update themselves automatically as
   so this only works for whatever retailer pages plain web search can find
   and a human confirms.
 - Deal scores are heuristic; a vague title or missing description skews them.
-- No de-duplication across sources (the same saw on eBay and Gumtree counts
-  twice).
+- Cross-source de-duplication (`identity.py`/`db.resolve_identity()`) only
+  resolves the case where a platform's own native ID is recoverable straight
+  from the URL — v1 ships eBay only, e.g. an RSS feed entry that happens to
+  link directly to an eBay item page. It does **not** attempt fuzzy
+  title/price matching, so the same physical item independently listed
+  across two marketplaces with no shared ID (e.g. the same saw on eBay and
+  Gumtree) still counts twice — deliberately: merging solely on title/price
+  similarity across marketplaces risks silently conflating two different
+  real items. See "Future Ideas" below.
 - Multi-item/price-range detection (`scoring.is_multi_item_or_price_range`)
   only reads the listing *title*, never the description — deliberate, to
   avoid misreading single-item markdown framing like "was £299, now £95" in

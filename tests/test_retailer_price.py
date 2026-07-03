@@ -271,6 +271,64 @@ def test_refresh_due_list_and_record_refresh_keeps_last_price_on_failure(tmp_pat
     assert product["last_price_check_ok"] == 1
 
 
+# --- New-price history collection (not yet read by scoring — see price_trend.py) -
+
+
+def test_approve_price_candidate_logs_new_price_history(tmp_path):
+    cfg, conn, product_id = _setup_product(tmp_path)
+    db.record_price_candidates(conn, product_id, [
+        {"url": "https://screwfix.com/p/1", "domain": "screwfix.com", "price": 319.99,
+         "currency": "GBP", "confidence": 90.0},
+    ])
+    candidate_id = db.list_price_candidates(conn, product_id)[0]["id"]
+
+    db.approve_price_candidate(conn, candidate_id, {"price": 309.99, "currency": "GBP"})
+
+    history = db.list_new_price_history(conn, product_id)
+    assert len(history) == 1
+    assert history[0]["price"] == 309.99
+    assert history[0]["domain"] == "screwfix.com"
+
+
+def test_record_price_refresh_logs_new_price_history_only_on_success(tmp_path):
+    cfg, conn, product_id = _setup_product(tmp_path)
+    db.update_product(conn, product_id, "Makita", "LS0815FL", ["Makita LS0815FL"], None, 319.99, None)
+    conn.execute(
+        "UPDATE products SET canonical_price_url = ? WHERE id = ?",
+        ("https://screwfix.com/p/1", product_id),
+    )
+    conn.commit()
+
+    db.record_price_refresh(conn, product_id, None, domain="screwfix.com")
+    assert db.list_new_price_history(conn, product_id) == []
+
+    db.record_price_refresh(conn, product_id, {"price": 299.99, "currency": "GBP"}, domain="screwfix.com")
+    history = db.list_new_price_history(conn, product_id)
+    assert len(history) == 1
+    assert history[0]["price"] == 299.99
+    assert history[0]["domain"] == "screwfix.com"
+
+
+def test_run_once_refresh_records_new_price_history(tmp_path):
+    cfg, conn, product_id = _setup_product(tmp_path)
+    cfg.searxng.enabled = True
+    db.record_price_candidates(conn, product_id, [])  # mark as already searched
+    conn.execute(
+        "UPDATE products SET canonical_price_url = ? WHERE id = ?",
+        ("https://screwfix.com/p/1", product_id),
+    )
+    conn.commit()
+
+    with mock.patch(
+        "product_finder.retailer_price.fetch_price", return_value={"price": 299.99, "currency": "GBP"}
+    ), mock.patch("product_finder.sources.build_registry", return_value={}):
+        runner.run_once(cfg, conn)
+
+    history = db.list_new_price_history(conn, product_id)
+    assert len(history) == 1
+    assert history[0]["domain"] == "screwfix.com"
+
+
 # --- runner.py wiring --------------------------------------------------------------
 
 
