@@ -357,3 +357,94 @@ def test_run_once_honours_disabled_source_override(tmp_path):
     with mock.patch("product_finder.sources.rss.requests.get") as get:
         runner.run_once(cfg, conn)
     get.assert_not_called()  # disabled via DB override, must never be fetched
+
+
+# --- eBay auction handling -------------------------------------------------------
+
+
+def _ebay_cfg():
+    from product_finder.config import EbayConfig
+
+    return AppConfig(sources=SourcesConfig(ebay=EbayConfig(app_id="id", cert_id="secret")))
+
+
+def _mock_token_response():
+    resp = mock.Mock()
+    resp.raise_for_status = mock.Mock()
+    resp.json.return_value = {"access_token": "tok", "expires_in": 7200}
+    return resp
+
+
+def test_ebay_pure_auction_uses_current_bid_as_price():
+    from product_finder.sources.ebay import EbaySource
+
+    search_resp = mock.Mock()
+    search_resp.raise_for_status = mock.Mock()
+    search_resp.json.return_value = {
+        "itemSummaries": [
+            {
+                "itemId": "1", "title": "Makita drill, auction only",
+                "price": None,
+                "currentBidPrice": {"value": "31.90", "currency": "GBP"},
+                "buyingOptions": ["AUCTION"],
+                "bidCount": 2,
+                "itemEndDate": "2026-07-03T20:42:23.000Z",
+                "itemWebUrl": "https://ebay.co.uk/itm/1",
+            }
+        ]
+    }
+    source = EbaySource(_ebay_cfg())
+    with mock.patch("product_finder.sources.ebay.requests.post", return_value=_mock_token_response()):
+        with mock.patch("product_finder.sources.ebay.requests.get", return_value=search_resp):
+            listings = source.search("makita drill", make_item())
+
+    assert len(listings) == 1  # previously silently dropped (price was null)
+    listing = listings[0]
+    assert listing.price == 31.90
+    assert listing.buying_options == ["AUCTION"]
+    assert listing.bid_count == 2
+    assert listing.end_time == "2026-07-03T20:42:23.000Z"
+
+
+def test_ebay_fixed_price_listing_unaffected():
+    from product_finder.sources.ebay import EbaySource
+
+    search_resp = mock.Mock()
+    search_resp.raise_for_status = mock.Mock()
+    search_resp.json.return_value = {
+        "itemSummaries": [
+            {
+                "itemId": "2", "title": "Makita drill, buy now",
+                "price": {"value": "89.99", "currency": "GBP"},
+                "buyingOptions": ["FIXED_PRICE"],
+                "itemWebUrl": "https://ebay.co.uk/itm/2",
+            }
+        ]
+    }
+    source = EbaySource(_ebay_cfg())
+    with mock.patch("product_finder.sources.ebay.requests.post", return_value=_mock_token_response()):
+        with mock.patch("product_finder.sources.ebay.requests.get", return_value=search_resp):
+            listings = source.search("makita drill", make_item())
+
+    assert len(listings) == 1
+    listing = listings[0]
+    assert listing.price == 89.99
+    assert listing.buying_options == ["FIXED_PRICE"]
+    assert listing.bid_count is None
+    assert listing.end_time is None
+
+
+def test_ebay_listing_with_no_price_at_all_still_skipped():
+    from product_finder.sources.ebay import EbaySource
+
+    search_resp = mock.Mock()
+    search_resp.raise_for_status = mock.Mock()
+    search_resp.json.return_value = {
+        "itemSummaries": [{"itemId": "3", "title": "Broken listing", "itemWebUrl": "https://x/3"}]
+    }
+    source = EbaySource(_ebay_cfg())
+    with mock.patch("product_finder.sources.ebay.requests.post", return_value=_mock_token_response()):
+        with mock.patch("product_finder.sources.ebay.requests.get", return_value=search_resp):
+            listings = source.search("makita drill", make_item())
+
+    assert listings == []

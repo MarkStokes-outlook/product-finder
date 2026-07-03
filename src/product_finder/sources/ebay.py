@@ -83,7 +83,12 @@ class EbaySource(Source):
         resp.raise_for_status()
         listings = []
         for summary in resp.json().get("itemSummaries", []):
-            price_info = summary.get("price") or {}
+            # A pure auction (no Buy It Now) has price=null and the current
+            # bid under currentBidPrice instead — without this fallback
+            # those listings silently vanish (float(None) raises, and the
+            # per-listing search() caller swallows nothing here, so they'd
+            # just never become a Listing at all).
+            price_info = summary.get("price") or summary.get("currentBidPrice") or {}
             try:
                 price = float(price_info.get("value"))
             except (TypeError, ValueError):
@@ -102,6 +107,9 @@ class EbaySource(Source):
                     ),
                     description=str(summary.get("shortDescription", "") or ""),
                     condition=str(summary.get("condition", "") or ""),
+                    buying_options=list(summary.get("buyingOptions") or []),
+                    bid_count=summary.get("bidCount"),
+                    end_time=summary.get("itemEndDate"),
                 )
             )
         return listings

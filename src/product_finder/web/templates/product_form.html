@@ -1,0 +1,63 @@
+{% extends "base.html" %}
+{% block title %}{{ 'Edit' if product else 'New' }} product — Product Finder{% endblock %}
+{% block content %}
+<h1>{{ 'Edit product' if product else 'New product' }}</h1>
+<p class="meta">Item: <strong>{{ item['name'] }}</strong></p>
+{# On validation errors the submitted form values win; otherwise the stored product. #}
+{% set v = form if form else {} %}
+<form method="post" class="card" style="max-width: 34rem;">
+  <label for="manufacturer">Manufacturer</label>
+  <input type="text" id="manufacturer" name="manufacturer" required
+         value="{{ v.get('manufacturer', product['manufacturer'] if product else '') }}">
+
+  <label for="model">Model / SKU</label>
+  <input type="text" id="model" name="model"
+         value="{{ v.get('model', product['model'] if product else '') }}">
+
+  <label for="match_terms">Match terms (one per line)</label>
+  <textarea id="match_terms" name="match_terms" rows="4" required
+    >{{ v.get('match_terms', (product['match_terms'] | parse_flags | join('\n')) if product else '') }}</textarea>
+  <p class="hint">Checked against each listing's title and description. A more
+    specific term (e.g. the full model or SKU) beats a shorter one (e.g. just
+    the manufacturer) when a listing contains both.</p>
+
+  <div class="field-row">
+    <div>
+      <label for="msrp">MSRP (£)</label>
+      <input type="number" step="0.01" min="0" id="msrp" name="msrp"
+             value="{{ v.get('msrp', ('%g' | format(product['msrp'])) if product and product['msrp'] else '') }}">
+      <p class="hint">List price — reference only, not used for scoring</p>
+    </div>
+    <div>
+      <label for="typical_new_price">Typical new price (£)</label>
+      <input type="number" step="0.01" min="0" id="typical_new_price" name="typical_new_price"
+             value="{{ v.get('typical_new_price', ('%g' | format(product['typical_new_price'])) if product and product['typical_new_price'] else '') }}">
+      <p class="hint">What it actually costs to buy new right now — this is
+        what scoring treats as "the new price"</p>
+    </div>
+    <div>
+      <label for="target_deal_price">Target deal (£)</label>
+      <input type="number" step="0.01" min="0" id="target_deal_price" name="target_deal_price"
+             value="{{ v.get('target_deal_price', ('%g' | format(product['target_deal_price'])) if product and product['target_deal_price'] else '') }}">
+      <p class="hint">Overrides the item's target deal price for this product</p>
+    </div>
+  </div>
+
+  {% if product %}
+  <label>Typical used price</label>
+  <p class="meta" style="margin-top: 0;">
+    {% if product['typical_used_price'] %}
+      £{{ '%.2f' | format(product['typical_used_price']) }} — auto-computed from
+      recent matched listings, not editable here.
+    {% else %}
+      Not enough observed listings yet — builds up automatically as matches come in.
+    {% endif %}
+  </p>
+  {% endif %}
+
+  <p style="margin-top: 1.2rem;">
+    <button class="primary" type="submit">Save</button>
+    <a class="button" href="{{ url_for('item_edit', item_id=item['id']) }}">Cancel</a>
+  </p>
+</form>
+{% endblock %}

@@ -18,9 +18,11 @@ import json
 import re
 import sqlite3
 from dataclasses import replace
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from statistics import median
 
+from . import catalogue
 from .config import AppConfig, ItemConfig, ProjectConfig
 from .models import Evaluation, Listing
 
@@ -46,6 +48,23 @@ CREATE TABLE IF NOT EXISTS items (
     sources TEXT,
     archived INTEGER NOT NULL DEFAULT 0,
     UNIQUE(project_id, name)
+);
+CREATE TABLE IF NOT EXISTS products (
+    id INTEGER PRIMARY KEY,
+    item_id INTEGER NOT NULL REFERENCES items(id),
+    manufacturer TEXT NOT NULL,
+    model TEXT NOT NULL DEFAULT '',
+    match_terms TEXT NOT NULL DEFAULT '[]',
+    normal_price REAL,
+    target_deal_price REAL,
+    archived INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS product_price_observations (
+    id INTEGER PRIMARY KEY,
+    product_id INTEGER NOT NULL REFERENCES products(id),
+    price REAL NOT NULL,
+    source TEXT NOT NULL,
+    observed_at TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS listings (
     id INTEGER PRIMARY KEY,
@@ -99,6 +118,10 @@ _MIGRATIONS = [
     ("items", "exclude_terms", "TEXT NOT NULL DEFAULT '[]'"),
     ("items", "sources", "TEXT"),
     ("items", "archived", "INTEGER NOT NULL DEFAULT 0"),
+    ("listing_matches", "product_id", "INTEGER REFERENCES products(id)"),
+    ("products", "msrp", "REAL"),
+    ("products", "typical_new_price", "REAL"),
+    ("products", "typical_used_price", "REAL"),
 ]
 
 
@@ -126,6 +149,13 @@ def connect(db_path: str | Path) -> sqlite3.Connection:
         cols = [r[1] for r in conn.execute(f"PRAGMA table_info({table})")]
         if column not in cols:
             conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
+    # products.normal_price predates the msrp/typical_new_price split — carry
+    # any existing value forward once, since it was functionally "the new
+    # price" before the split. The old column is left in place, unused.
+    conn.execute(
+        "UPDATE products SET typical_new_price = normal_price "
+        "WHERE typical_new_price IS NULL AND normal_price IS NOT NULL"
+    )
     conn.commit()
     return conn
 
@@ -443,9 +473,136 @@ def delete_item(conn: sqlite3.Connection, item_id: int, _commit: bool = True) ->
         (item_id,),
     )
     conn.execute("DELETE FROM listing_matches WHERE item_id = ?", (item_id,))
+    conn.execute("DELETE FROM products WHERE item_id = ?", (item_id,))
     conn.execute("DELETE FROM items WHERE id = ?", (item_id,))
     if _commit:
         conn.commit()
+
+
+# --- Product catalogue CRUD (manufacturer/model tracked under one item) ------
+
+
+def _product_from_row(row: sqlite3.Row) -> catalogue.Product:
+    return catalogue.Product(
+        id=row["id"],
+        item_id=row["item_id"],
+        manufacturer=row["manufacturer"],
+        model=row["model"] or "",
+        match_terms=json.loads(row["match_terms"] or "[]"),
+        msrp=row["msrp"],
+        typical_new_price=row["typical_new_price"],
+        typical_used_price=row["typical_used_price"],
+        target_deal_price=row["target_deal_price"],
+        archived=bool(row["archived"]),
+    )
+
+
+def list_products(
+    conn: sqlite3.Connection, item_id: int, include_archived: bool = True
+) -> list[sqlite3.Row]:
+    where = "item_id = ?" if include_archived else "item_id = ? AND archived = 0"
+    return conn.execute(
+        f"SELECT * FROM products WHERE {where} ORDER BY archived, manufacturer, model",
+        (item_id,),
+    ).fetchall()
+
+
+def list_products_for_matching(conn: sqlite3.Connection, item_id: int) -> list[catalogue.Product]:
+    """Active catalogue products for an item, ready for catalogue.match()."""
+    return [_product_from_row(r) for r in list_products(conn, item_id, include_archived=False)]
+
+
+def get_product(conn: sqlite3.Connection, product_id: int) -> sqlite3.Row | None:
+    return conn.execute("SELECT * FROM products WHERE id = ?", (product_id,)).fetchone()
+
+
+def create_product(
+    conn: sqlite3.Connection,
+    item_id: int,
+    manufacturer: str,
+    model: str,
+    match_terms: list[str],
+    msrp: float | None,
+    typical_new_price: float | None,
+    target_deal_price: float | None,
+) -> int:
+    cur = conn.execute(
+        "INSERT INTO products (item_id, manufacturer, model, match_terms, "
+        "msrp, typical_new_price, target_deal_price) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (item_id, manufacturer, model, json.dumps(match_terms), msrp, typical_new_price, target_deal_price),
+    )
+    conn.commit()
+    return cur.lastrowid
+
+
+def update_product(
+    conn: sqlite3.Connection,
+    product_id: int,
+    manufacturer: str,
+    model: str,
+    match_terms: list[str],
+    msrp: float | None,
+    typical_new_price: float | None,
+    target_deal_price: float | None,
+) -> None:
+    conn.execute(
+        "UPDATE products SET manufacturer = ?, model = ?, match_terms = ?, "
+        "msrp = ?, typical_new_price = ?, target_deal_price = ? WHERE id = ?",
+        (manufacturer, model, json.dumps(match_terms), msrp, typical_new_price, target_deal_price, product_id),
+    )
+    conn.commit()
+
+
+def set_product_archived(conn: sqlite3.Connection, product_id: int, archived: bool) -> None:
+    conn.execute("UPDATE products SET archived = ? WHERE id = ?", (int(archived), product_id))
+    conn.commit()
+
+
+def delete_product(conn: sqlite3.Connection, product_id: int) -> None:
+    conn.execute(
+        "UPDATE listing_matches SET product_id = NULL WHERE product_id = ?", (product_id,)
+    )
+    conn.execute("DELETE FROM product_price_observations WHERE product_id = ?", (product_id,))
+    conn.execute("DELETE FROM products WHERE id = ?", (product_id,))
+    conn.commit()
+
+
+# Only observations from the last N days feed the rolling "typical used
+# price" — old asking prices shouldn't anchor today's market.
+_PRICE_HISTORY_WINDOW_DAYS = 90
+
+
+def record_price_observation(conn: sqlite3.Connection, product_id: int, price: float, source: str) -> None:
+    """Log one used-market price sighting for a product and recompute its
+    rolling `typical_used_price` (median of observations from the last
+    `_PRICE_HISTORY_WINDOW_DAYS` days). Call once per distinct listing a
+    product resolves against — not on every rescan of an already-seen
+    listing, or a single stale unsold listing would dominate the average."""
+    conn.execute(
+        "INSERT INTO product_price_observations (product_id, price, source, observed_at) "
+        "VALUES (?, ?, ?, ?)",
+        (product_id, price, source, _now()),
+    )
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=_PRICE_HISTORY_WINDOW_DAYS)).isoformat(
+        timespec="seconds"
+    )
+    prices = sorted(
+        r["price"]
+        for r in conn.execute(
+            "SELECT price FROM product_price_observations WHERE product_id = ? AND observed_at >= ?",
+            (product_id, cutoff),
+        )
+    )
+    typical = median(prices) if prices else None
+    conn.execute("UPDATE products SET typical_used_price = ? WHERE id = ?", (typical, product_id))
+    conn.commit()
+
+
+def list_price_observations(conn: sqlite3.Connection, product_id: int) -> list[sqlite3.Row]:
+    return conn.execute(
+        "SELECT * FROM product_price_observations WHERE product_id = ? ORDER BY observed_at",
+        (product_id,),
+    ).fetchall()
 
 
 # --- Listings, matches, alerts -------------------------------------------------
@@ -486,9 +643,17 @@ def upsert_listing(conn: sqlite3.Connection, listing: Listing) -> tuple[int, boo
 
 
 def record_match(
-    conn: sqlite3.Connection, listing_id: int, item_id: int, evaluation: Evaluation
+    conn: sqlite3.Connection,
+    listing_id: int,
+    item_id: int,
+    evaluation: Evaluation,
+    product_id: int | None = None,
 ) -> tuple[int, bool]:
-    """Record a listing/item match. Returns (match_id, is_new_match)."""
+    """Record a listing/item match. Returns (match_id, is_new_match).
+
+    `product_id` is the catalogue product (if any) the listing resolved to —
+    see `catalogue.match()`. None means it was scored against the item's own
+    blended price."""
     row = conn.execute(
         "SELECT id FROM listing_matches WHERE listing_id = ? AND item_id = ?",
         (listing_id, item_id),
@@ -496,7 +661,7 @@ def record_match(
     if row:
         conn.execute(
             "UPDATE listing_matches SET grade = ?, deal_score = ?, margin_abs = ?, "
-            "margin_pct = ?, under_target = ?, flags = ? WHERE id = ?",
+            "margin_pct = ?, under_target = ?, flags = ?, product_id = ? WHERE id = ?",
             (
                 evaluation.grade,
                 evaluation.deal_score,
@@ -504,14 +669,15 @@ def record_match(
                 evaluation.margin_pct,
                 int(evaluation.under_target),
                 json.dumps(evaluation.flags),
+                product_id,
                 row["id"],
             ),
         )
         return row["id"], False
     cur = conn.execute(
         "INSERT INTO listing_matches (listing_id, item_id, grade, deal_score, "
-        "margin_abs, margin_pct, under_target, flags, matched_at) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "margin_abs, margin_pct, under_target, flags, matched_at, product_id) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (
             listing_id,
             item_id,
@@ -522,6 +688,7 @@ def record_match(
             int(evaluation.under_target),
             json.dumps(evaluation.flags),
             _now(),
+            product_id,
         ),
     )
     return cur.lastrowid, True
@@ -542,13 +709,17 @@ def mark_alerted(conn: sqlite3.Connection, match_id: int, channel: str) -> bool:
 _MATCH_SELECT = """
 SELECT p.name AS project_name, p.slug AS project_slug, p.id AS project_id,
        i.name AS item_name, i.id AS item_id,
-       i.normal_price, i.target_deal_price, i.priority,
+       COALESCE(pr.typical_new_price, pr.msrp, i.normal_price) AS normal_price,
+       COALESCE(pr.target_deal_price, i.target_deal_price) AS target_deal_price,
+       pr.typical_used_price, i.priority,
+       pr.manufacturer AS product_manufacturer, pr.model AS product_model,
        l.title, l.price, l.currency, l.url, l.source, l.location, l.first_seen,
        m.grade, m.deal_score, m.margin_abs, m.margin_pct, m.under_target, m.flags
 FROM listing_matches m
 JOIN listings l ON l.id = m.listing_id
 JOIN items i ON i.id = m.item_id
 JOIN projects p ON p.id = i.project_id
+LEFT JOIN products pr ON pr.id = m.product_id
 """
 
 _SORTS = {

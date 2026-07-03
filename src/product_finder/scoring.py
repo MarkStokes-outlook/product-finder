@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 
 from . import grading
+from .catalogue import Product
 from .config import ItemConfig
 from .models import Evaluation, Listing
 
@@ -59,6 +60,15 @@ def is_likely_false_bargain(price: float, normal_price: float | None, flags: lis
     return price < normal_price * 0.5
 
 
+def is_live_auction(listing: Listing) -> bool:
+    """True if `listing.price` may just be a current bid, not a committed
+    price — i.e. it's an active eBay-style auction. The final price could be
+    much higher (bidding concentrates in the closing seconds/minutes, so
+    even an auction ending soon with several bids isn't a reliable signal —
+    see scoring roadmap notes). Never treat this price as "available now"."""
+    return "AUCTION" in listing.buying_options
+
+
 def deal_score(
     price: float,
     normal_price: float | None,
@@ -67,6 +77,7 @@ def deal_score(
     flags: list[str],
     priority: str = "normal",
     title: str = "",
+    typical_used_price: float | None = None,
 ) -> float:
     """Score 0-100. Higher = better deal."""
     _, pct_below = margins(price, normal_price)
@@ -81,23 +92,63 @@ def deal_score(
         score -= 5.0  # vague title
     if is_likely_false_bargain(price, normal_price, flags):
         score -= 20.0
+    if typical_used_price and typical_used_price > 0:
+        # A saving vs. the *new* price means nothing if it's still priced
+        # above what this product typically goes for used (e.g. new £200,
+        # typical used £100 — £150 is a poor deal despite "saving" vs new).
+        used_pct_below = (typical_used_price - price) / typical_used_price * 100.0
+        if used_pct_below < 0:
+            score += max(used_pct_below, -30.0) * 0.4
     return round(max(0.0, min(score, 100.0)), 1)
 
 
-def evaluate(listing: Listing, item: ItemConfig) -> Evaluation:
-    """Full evaluation of a listing against a wanted item."""
+def effective_prices(
+    item: ItemConfig, product: Product | None
+) -> tuple[float | None, float | None, float | None]:
+    """The (typical_new_price, target_deal_price, typical_used_price)
+    actually used for scoring. typical_new_price cascades: the matched
+    product's own typical new price, else its MSRP, else the item's blended
+    estimate. target_deal_price prefers the product's, else the item's.
+    typical_used_price only ever comes from the product (it's a per-product
+    market observation, not something an item-level estimate can stand in
+    for) and is None when there's no product or no observations yet."""
+    normal_price = (
+        (product.typical_new_price or product.msrp) if product else None
+    ) or item.normal_price
+    target_deal_price = (
+        product.target_deal_price if product and product.target_deal_price else item.target_deal_price
+    )
+    typical_used_price = product.typical_used_price if product else None
+    return normal_price, target_deal_price, typical_used_price
+
+
+def evaluate(listing: Listing, item: ItemConfig, product: Product | None = None) -> Evaluation:
+    """Full evaluation of a listing against a wanted item.
+
+    `product` is the catalogue entry (see `catalogue.match()`) the listing
+    resolved to, if any — its price overrides the item's blended figures so
+    a £600 Makita and a £50 own-brand tool aren't judged against the same
+    "normal" price just because they share a search term.
+    """
+    normal_price, target_deal_price, typical_used_price = effective_prices(item, product)
     grade = grading.classify(listing.text)
     flags = warning_flags(listing.text)
-    margin_abs, margin_pct = margins(listing.price, item.normal_price)
-    under_target = bool(item.target_deal_price and listing.price <= item.target_deal_price)
+    if is_live_auction(listing):
+        flags = flags + ["live auction"]
+    elif typical_used_price and typical_used_price > 0 and listing.price > typical_used_price * 1.1:
+        # >10% above the typical used price — not just noise around the median.
+        flags = flags + ["above typical used price"]
+    margin_abs, margin_pct = margins(listing.price, normal_price)
+    under_target = bool(target_deal_price and listing.price <= target_deal_price)
     score = deal_score(
         price=listing.price,
-        normal_price=item.normal_price,
-        target_deal_price=item.target_deal_price,
+        normal_price=normal_price,
+        target_deal_price=target_deal_price,
         grade=grade,
         flags=flags,
         priority=item.priority,
         title=listing.title,
+        typical_used_price=typical_used_price,
     )
     return Evaluation(
         grade=grade,

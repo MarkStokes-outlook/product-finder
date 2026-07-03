@@ -458,6 +458,157 @@ def test_item_archive_and_delete(cfg, client):
     assert conn.execute("SELECT COUNT(*) c FROM listings").fetchone()["c"] == 1
 
 
+# --- Product catalogue ---------------------------------------------------------
+
+
+def test_item_edit_page_shows_products_section(cfg, client):
+    _, item_id = seed_match(cfg)
+    resp = client.get(f"/items/{item_id}/edit")
+    assert b"Known products" in resp.data
+    assert b"No known products yet" in resp.data
+
+
+def test_item_new_page_has_no_products_section(cfg, client):
+    project_id, _ = seed_match(cfg)
+    resp = client.get(f"/items/new?project_id={project_id}")
+    assert b"Known products" not in resp.data
+
+
+def test_product_create(cfg, client):
+    _, item_id = seed_match(cfg)
+    resp = client.post(
+        f"/items/{item_id}/products/new",
+        data={
+            "manufacturer": "Makita",
+            "model": "SP6000",
+            "match_terms": "makita sp6000\nsp6000",
+            "msrp": "550",
+            "typical_new_price": "500",
+            "target_deal_price": "350",
+        },
+        follow_redirects=True,
+    )
+    assert resp.status_code == 200
+    conn = db.connect(cfg.db_path)
+    row = conn.execute("SELECT * FROM products WHERE manufacturer = 'Makita'").fetchone()
+    assert row is not None
+    product = db._product_from_row(row)
+    assert product.match_terms == ["makita sp6000", "sp6000"]
+    assert product.msrp == 550
+    assert product.typical_new_price == 500
+
+
+def test_product_create_requires_manufacturer_and_match_terms(cfg, client):
+    _, item_id = seed_match(cfg)
+    resp = client.post(
+        f"/items/{item_id}/products/new",
+        data={"manufacturer": "", "match_terms": ""},
+        follow_redirects=True,
+    )
+    assert b"Manufacturer is required" in resp.data
+    assert b"match term is required" in resp.data
+    conn = db.connect(cfg.db_path)
+    assert conn.execute("SELECT COUNT(*) c FROM products").fetchone()["c"] == 0
+
+
+def test_product_edit(cfg, client):
+    _, item_id = seed_match(cfg)
+    conn = db.connect(cfg.db_path)
+    product_id = db.create_product(conn, item_id, "Makita", "SP6000", ["makita sp6000"], 550, 500, 350)
+    conn.close()
+
+    client.post(
+        f"/products/{product_id}/edit",
+        data={
+            "manufacturer": "Makita",
+            "model": "SP6000",
+            "match_terms": "makita sp6000",
+            "msrp": "550",
+            "typical_new_price": "480",
+            "target_deal_price": "320",
+        },
+    )
+    conn = db.connect(cfg.db_path)
+    product = db._product_from_row(db.get_product(conn, product_id))
+    assert product.typical_new_price == 480
+    assert product.target_deal_price == 320
+
+
+def test_product_archive_and_delete(cfg, client):
+    _, item_id = seed_match(cfg)
+    conn = db.connect(cfg.db_path)
+    product_id = db.create_product(conn, item_id, "Makita", "SP6000", ["makita sp6000"], 550, 500, 350)
+    conn.close()
+
+    client.post(f"/products/{product_id}/archive")
+    conn = db.connect(cfg.db_path)
+    assert conn.execute(
+        "SELECT archived FROM products WHERE id = ?", (product_id,)
+    ).fetchone()["archived"] == 1
+    conn.close()
+
+    client.post(f"/products/{product_id}/delete")
+    conn = db.connect(cfg.db_path)
+    assert conn.execute("SELECT COUNT(*) c FROM products").fetchone()["c"] == 0
+
+
+def test_deleting_item_also_deletes_its_products(cfg, client):
+    _, item_id = seed_match(cfg)
+    conn = db.connect(cfg.db_path)
+    db.create_product(conn, item_id, "Makita", "SP6000", ["makita sp6000"], 550, 500, 350)
+    conn.close()
+
+    client.post(f"/items/{item_id}/delete")
+    conn = db.connect(cfg.db_path)
+    assert conn.execute("SELECT COUNT(*) c FROM products").fetchone()["c"] == 0
+
+
+def test_matched_product_shown_on_project_detail(cfg, client):
+    # seed_match's listing title is "Makita SP6000 saw" against the "Track
+    # Saw" item — add a catalogue product that matches it and re-run the
+    # match via the scoring pipeline (record_match) to attach product_id.
+    project_id, item_id = seed_match(cfg)
+    conn = db.connect(cfg.db_path)
+    product_id = db.create_product(
+        conn, item_id, "Makita", "SP6000", ["makita sp6000"], 550, 500, 350
+    )
+    match_row = conn.execute("SELECT id FROM listing_matches WHERE item_id = ?", (item_id,)).fetchone()
+    conn.execute("UPDATE listing_matches SET product_id = ? WHERE id = ?", (product_id, match_row["id"]))
+    conn.commit()
+    conn.close()
+
+    resp = client.get(f"/projects/{project_id}")
+    assert b"Makita SP6000</span>" in resp.data
+
+
+def test_project_hero_excludes_flagged_listings_even_if_top_scored(cfg, client):
+    # A flagged listing (e.g. a live auction — see scoring.is_live_auction)
+    # can still score highest numerically, but must never headline the hero
+    # "grab this now" callout — only a genuinely clean listing should.
+    project_id, item_id = seed_match(cfg, flags=None, grade="A", score=85.0)
+    conn = db.connect(cfg.db_path)
+    listing_id, _ = db.upsert_listing(
+        conn,
+        Listing(source="ebay", external_id="E2", title="Suspiciously cheap live auction saw",
+                price=5.0, url="https://example.com/2"),
+    )
+    db.record_match(
+        conn, listing_id, item_id,
+        Evaluation(grade="A", flags=["live auction"], margin_abs=495.0,
+                   margin_pct=99.0, under_target=True, deal_score=99.0),
+    )
+    conn.commit()
+    conn.close()
+
+    resp = client.get(f"/projects/{project_id}")
+    assert b"Makita SP6000 saw" in resp.data  # the clean, lower-scoring listing
+    assert b"Suspiciously cheap live auction saw" in resp.data  # still visible in the table
+    # The hero card only ever links to the clean listing's URL.
+    hero_section = resp.data.split(b"Items &amp; listings")[0]
+    assert b"example.com/1" in hero_section
+    assert b"example.com/2" not in hero_section
+
+
 # --- Listings filters, now on the project detail page ------------------------
 
 

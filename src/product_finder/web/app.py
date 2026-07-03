@@ -88,6 +88,41 @@ def _item_from_form(form, source_names: list[str]) -> tuple[ItemConfig | None, l
     return (item if not errors else None), errors
 
 
+def _product_from_form(form) -> tuple[dict | None, list[str]]:
+    """Parse the catalogue product form. Returns (fields, errors)."""
+    errors = []
+    manufacturer = (form.get("manufacturer") or "").strip()
+    if not manufacturer:
+        errors.append("Manufacturer is required.")
+    model = (form.get("model") or "").strip()
+    match_terms = [t.strip() for t in (form.get("match_terms") or "").splitlines() if t.strip()]
+    if not match_terms:
+        errors.append("At least one match term is required.")
+
+    def parse_price(field: str) -> float | None:
+        raw = (form.get(field) or "").strip().lstrip("£")
+        if not raw:
+            return None
+        try:
+            value = float(raw)
+        except ValueError:
+            errors.append(f"{field.replace('_', ' ').capitalize()} must be a number.")
+            return None
+        if value < 0:
+            errors.append(f"{field.replace('_', ' ').capitalize()} cannot be negative.")
+        return value
+
+    fields = {
+        "manufacturer": manufacturer,
+        "model": model,
+        "match_terms": match_terms,
+        "msrp": parse_price("msrp"),
+        "typical_new_price": parse_price("typical_new_price"),
+        "target_deal_price": parse_price("target_deal_price"),
+    }
+    return (fields if not errors else None), errors
+
+
 def _dashboard_data(conn, cfg: AppConfig) -> dict:
     return {
         "summaries": db.project_summaries(conn),
@@ -141,7 +176,11 @@ def _project_detail_data(
     # of whatever filters the listings below are currently narrowed by. Only
     # show more than one card when multiple listings clear the "hot deal"
     # bar; otherwise fall back to just the single best match as before.
-    top_matches = db.query_matches(conn, project_id=project_id, sort="score", limit=4)
+    # flagged=False excludes anything with a warning flag — including live
+    # auctions, whose "price" is just a current bid, not one you can commit
+    # to, so a hero card should never headline one (same rule the dashboard
+    # already applies to its own hero picks).
+    top_matches = db.query_matches(conn, project_id=project_id, sort="score", flagged=False, limit=4)
     hot = [m for m in top_matches if (m["deal_score"] or 0) >= HOT_DEAL_SCORE]
     hero_deals = hot if len(hot) > 1 else top_matches[:1]
     project_cfg = next(
@@ -399,6 +438,7 @@ def create_app(cfg: AppConfig) -> Flask:
             item=row,
             item_cfg=db._item_from_row(row),
             project=db.get_project(conn, row["project_id"]),
+            products=db.list_products(conn, item_id),
             form=request.form,
         )
 
@@ -421,6 +461,61 @@ def create_app(cfg: AppConfig) -> Flask:
         db.delete_item(conn, item_id)
         flash(f"Deleted item '{row['name']}'.")
         return redirect(url_for("project_detail", project_id=row["project_id"]))
+
+    # --- Product catalogue (managed inline on the item edit page) -----------------
+
+    @app.route("/items/<int:item_id>/products/new", methods=["GET", "POST"])
+    def product_new(item_id):
+        conn = _get_conn(cfg)
+        item = db.get_item(conn, item_id)
+        if item is None:
+            abort(404)
+        if request.method == "POST":
+            fields, errors = _product_from_form(request.form)
+            for error in errors:
+                flash(error)
+            if not errors:
+                db.create_product(conn, item_id, **fields)
+                flash(f"Product '{fields['manufacturer']}' added.")
+                return redirect(url_for("item_edit", item_id=item_id))
+        return render_template("product_form.html", product=None, item=item, form=request.form)
+
+    @app.route("/products/<int:product_id>/edit", methods=["GET", "POST"])
+    def product_edit(product_id):
+        conn = _get_conn(cfg)
+        row = db.get_product(conn, product_id)
+        if row is None:
+            abort(404)
+        item = db.get_item(conn, row["item_id"])
+        if request.method == "POST":
+            fields, errors = _product_from_form(request.form)
+            for error in errors:
+                flash(error)
+            if not errors:
+                db.update_product(conn, product_id, **fields)
+                flash("Product updated.")
+                return redirect(url_for("item_edit", item_id=row["item_id"]))
+        return render_template("product_form.html", product=row, item=item, form=request.form)
+
+    @app.route("/products/<int:product_id>/archive", methods=["POST"])
+    def product_archive(product_id):
+        conn = _get_conn(cfg)
+        row = db.get_product(conn, product_id)
+        if row is None:
+            abort(404)
+        db.set_product_archived(conn, product_id, not row["archived"])
+        flash(("Unarchived" if row["archived"] else "Archived") + f" '{row['manufacturer']}'.")
+        return redirect(url_for("item_edit", item_id=row["item_id"]))
+
+    @app.route("/products/<int:product_id>/delete", methods=["POST"])
+    def product_delete(product_id):
+        conn = _get_conn(cfg)
+        row = db.get_product(conn, product_id)
+        if row is None:
+            abort(404)
+        db.delete_product(conn, product_id)
+        flash(f"Deleted product '{row['manufacturer']}'.")
+        return redirect(url_for("item_edit", item_id=row["item_id"]))
 
     # --- Manual searches ----------------------------------------------------------
 

@@ -69,4 +69,54 @@
     <a class="button" href="{{ url_for('project_detail', project_id=project['id']) }}">Cancel</a>
   </p>
 </form>
+
+{% if item %}
+<div class="page-head" style="margin-top: 1.8rem;">
+  <h2 style="margin: 0;">Known products</h2>
+  <a class="button primary small" href="{{ url_for('product_new', item_id=item['id']) }}">Add product</a>
+</div>
+<p class="meta">
+  A listing whose title or description matches one of these is scored
+  against its own price instead of this item's normal/target price above —
+  handy when the same search terms match everything from a budget own-brand
+  to a premium model.
+</p>
+{% if products %}
+<div class="card table-card">
+<table>
+<thead><tr>
+  <th>Manufacturer</th><th>Model</th><th>Match terms</th>
+  <th>MSRP</th><th>Typical new</th><th>Typical used</th><th>Target</th><th></th>
+</tr></thead>
+<tbody>
+{% for pr in products %}
+  <tr{% if pr['archived'] %} class="archived"{% endif %}>
+    <td>{{ pr['manufacturer'] }}</td>
+    <td>{{ pr['model'] or '—' }}</td>
+    <td class="meta">{{ (pr['match_terms'] | parse_flags) | join(', ') }}</td>
+    <td class="num">{% if pr['msrp'] %}£{{ '%.0f' | format(pr['msrp']) }}{% else %}&mdash;{% endif %}</td>
+    <td class="num">{% if pr['typical_new_price'] %}£{{ '%.0f' | format(pr['typical_new_price']) }}{% else %}&mdash;{% endif %}</td>
+    <td class="num">{% if pr['typical_used_price'] %}£{{ '%.0f' | format(pr['typical_used_price']) }}{% else %}<span class="meta">learning&hellip;</span>{% endif %}</td>
+    <td class="num">{% if pr['target_deal_price'] %}£{{ '%.0f' | format(pr['target_deal_price']) }}{% else %}&mdash;{% endif %}</td>
+    <td class="meta">
+      <a href="{{ url_for('product_edit', product_id=pr['id']) }}">Edit</a>
+      &middot;
+      <form class="inline" method="post" action="{{ url_for('product_archive', product_id=pr['id']) }}">
+        <button class="small" type="submit">{{ 'Unarchive' if pr['archived'] else 'Archive' }}</button>
+      </form>
+      &middot;
+      <form class="inline" method="post" action="{{ url_for('product_delete', product_id=pr['id']) }}"
+            onsubmit="return confirm('Delete this product?');">
+        <button class="small danger" type="submit">Delete</button>
+      </form>
+    </td>
+  </tr>
+{% endfor %}
+</tbody>
+</table>
+</div>
+{% else %}
+<div class="card empty">No known products yet — matched listings use this item's own price above.</div>
+{% endif %}
+{% endif %}
 {% endblock %}

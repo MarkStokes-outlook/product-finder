@@ -18,6 +18,13 @@ class Listing:
     location: str = ""
     description: str = ""
     condition: str = ""
+    # Auction awareness: buying_options e.g. ["FIXED_PRICE"], ["AUCTION"],
+    # ["AUCTION", "FIXED_PRICE"] (has a Buy It Now). When "AUCTION" is
+    # present, `price` may just be the current bid, not a committed price —
+    # see scoring.is_live_auction().
+    buying_options: list[str] = field(default_factory=list)
+    bid_count: int | None = None
+    end_time: str | None = None  # ISO 8601, auction/listing end — if known
 
     @property
     def text(self) -> str:

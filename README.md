@@ -51,6 +51,57 @@ Each item defines:
 - Search radius
 - Priority
 
+### Product Catalogue
+
+An item's search terms often match wildly different products at wildly
+different price points — "mitre saw" matches a £50 own-brand tool and a £600
+Makita alike. Scoring both against the item's one blended `normal_price`
+would make the cheap one look artificially poor and the premium one look
+like a bargain just for clearing a low bar.
+
+Each item can optionally have a **catalogue of known manufacturer/model
+products**, managed from the item's edit page in the web UI (no YAML
+support — this is DB-only). Each product has its own match terms (checked
+against a listing's title *and* description). When a listing's text matches
+more than one product, the most specific match wins — a full model/SKU term
+beats a bare manufacturer term. Listings that don't match any catalogue
+product keep using the item's own price, exactly as before — the catalogue
+is opt-in per item, not required.
+
+A product tracks three separate prices, because "normal price" hides real
+differences (MSRP vs. shortage-inflated street price vs. what things
+actually resell for used):
+
+- **MSRP** — the manufacturer's list price. Informational only; not used for
+  scoring (it's often stale either way).
+- **Typical new price** — what it actually costs to buy new right now.
+  This is what scoring treats as "the new price". Manually maintained today.
+- **Typical used price** — a rolling median (last 90 days) of prices seen on
+  matched second-hand listings, computed automatically — never set by hand.
+  It builds up on its own as `watch` finds and matches listings, and only
+  counts each distinct listing once (not on every rescan of one that hasn't
+  sold), so a single stale unsold listing can't skew it.
+
+Both the new-vs-used comparison matter for scoring: a listing priced below
+the typical *new* price can still be a poor deal if it's priced above the
+typical *used* price for that product (flagged "above typical used price")
+— a saving vs. buying new doesn't mean much if it's still above what the
+used market normally charges.
+
+### Live Auctions
+
+An active eBay-style auction's price is just the current bid, not a
+committed price — it can rise sharply before it closes, especially in the
+final seconds ("sniping"), so an auction that's ending soon and already has
+bids is *not* a reliable signal that the current price will hold. Rather
+than try to predict where it'll land, matched listings whose price is a live
+bid are flagged **"live auction"** and are structurally excluded from the
+dashboard's and each project's hero "best deal" cards — those only ever
+feature a price you could actually commit to right now (fixed-price or Buy
+It Now). Live auctions still appear in the regular listings table, flagged,
+for visibility if you want to go bid yourself. They also never contribute to
+the automatic used-price tracking above, for the same reason.
+
 ### Deal Intelligence
 
 For every matching listing the application should estimate:
@@ -360,8 +411,22 @@ that project's manual search links. Both update themselves automatically as
 ## Known Limitations
 
 - One listing can match multiple items if their search terms overlap.
-- `normal_price` is your estimate, not market data — margins are only as good
-  as the estimate.
+- `normal_price` (item-level or per-product via the catalogue) is your
+  estimate, not market data — margins are only as good as the estimate.
+- Product catalogue matching is a plain keyword lookup (same style as
+  grading) — no fuzzy matching, so typos or unusual phrasing in a listing
+  won't resolve to a catalogue product even if match terms are sensible.
+- "Typical used price" is tracked from *asking* prices on active listings,
+  not confirmed sold prices — eBay's Marketplace Insights API (which would
+  give real sold prices) requires special access this app's developer
+  account doesn't have. A worker that polls an auction's price right before
+  it ends (a much closer proxy for "sold for") is a planned follow-up, not
+  built yet.
+- "Typical new price" is manually maintained — there's no automated
+  retailer price-watching (Amazon/Currys/etc. don't offer a public
+  listing-search API the way eBay does, and scraping them raises the same
+  ToS problem that already makes Gumtree/Facebook manual-assisted-only
+  here).
 - Deal scores are heuristic; a vague title or missing description skews them.
 - No de-duplication across sources (the same saw on eBay and Gumtree counts
   twice).

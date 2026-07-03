@@ -14,7 +14,8 @@
      else ('excellent' if score >= 70 else '') %}
   <tr{% if paginate %} data-row{% endif %}{% if cls %} class="{{ cls }}"{% endif %}>
     <td class="num"><span class="score {{ 'hi' if score >= 70 else ('mid' if score >= 40 else 'lo') }}">{{ '%.0f' | format(score) }}</span></td>
-    <td><a href="{{ row['url'] }}" target="_blank" rel="noopener">{{ row['title'] }}</a></td>
+    <td><a href="{{ row['url'] }}" target="_blank" rel="noopener">{{ row['title'] }}</a>
+      {% if row['product_manufacturer'] %}<br><span class="meta">{{ row['product_manufacturer'] }}{% if row['product_model'] %} {{ row['product_model'] }}{% endif %}</span>{% endif %}</td>
     {% if show_item %}<td class="meta">{{ row['project_name'] }} / {{ row['item_name'] }}</td>{% endif %}
     <td class="num"><strong>£{{ '%.2f' | format(row['price']) }}</strong><br>
       {% if row['under_target'] %}<span class="badge target">under target</span>{% endif %}</td>

@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 import sqlite3
 
-from . import db, scoring, sources
+from . import catalogue, db, scoring, sources
 from .alerts import console as console_alerts
 from .alerts import webhook as webhook_alerts
 from .config import AppConfig, ItemConfig, ProjectConfig
@@ -60,6 +60,7 @@ def run_once(cfg: AppConfig, conn: sqlite3.Connection) -> list[MatchAlert]:
     for project in projects:
         for item in project.items:
             item_id = item.id
+            products = db.list_products_for_matching(conn, item_id) if item_id else []
             for name in item_sources(item, cfg, project):
                 source = registry.get(name)
                 if source is None or not source.is_automated():
@@ -76,18 +77,28 @@ def run_once(cfg: AppConfig, conn: sqlite3.Connection) -> list[MatchAlert]:
                             continue
                         if item.max_price and listing.price > item.max_price:
                             continue
-                        evaluation = scoring.evaluate(listing, item)
+                        product = catalogue.match(listing.text, products) if products else None
+                        evaluation = scoring.evaluate(listing, item, product)
                         listing_id, _ = db.upsert_listing(conn, listing)
-                        match_id, is_new = db.record_match(conn, listing_id, item_id, evaluation)
+                        match_id, is_new = db.record_match(
+                            conn, listing_id, item_id, evaluation,
+                            product_id=product.id if product else None,
+                        )
+                        if is_new and product and not scoring.is_live_auction(listing):
+                            # One observation per distinct listing, at first
+                            # sighting only — a long-unsold listing rescanned
+                            # every cycle shouldn't dominate the average.
+                            db.record_price_observation(conn, product.id, listing.price, listing.source)
                         if is_new:
+                            normal_price, target_deal_price, _ = scoring.effective_prices(item, product)
                             new_alerts.append(
                                 MatchAlert(
                                     project_name=project.name,
                                     item_name=item.name,
                                     listing=listing,
                                     evaluation=evaluation,
-                                    normal_price=item.normal_price,
-                                    target_deal_price=item.target_deal_price,
+                                    normal_price=normal_price,
+                                    target_deal_price=target_deal_price,
                                     extras={"match_id": match_id},
                                 )
                             )
