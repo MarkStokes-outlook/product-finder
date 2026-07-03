@@ -146,6 +146,7 @@ _MIGRATIONS = [
     ("listings", "last_poll_at", "TEXT"),
     ("listings", "sold_captured", "INTEGER NOT NULL DEFAULT 0"),
     ("listings", "brand_checked", "INTEGER NOT NULL DEFAULT 0"),
+    ("product_suggestions", "raw_samples", "TEXT NOT NULL DEFAULT '[]'"),
 ]
 
 
@@ -173,13 +174,19 @@ def connect(db_path: str | Path) -> sqlite3.Connection:
         cols = [r[1] for r in conn.execute(f"PRAGMA table_info({table})")]
         if column not in cols:
             conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
-    # products.normal_price predates the msrp/typical_new_price split — carry
-    # any existing value forward once, since it was functionally "the new
-    # price" before the split. The old column is left in place, unused.
-    conn.execute(
-        "UPDATE products SET typical_new_price = normal_price "
-        "WHERE typical_new_price IS NULL AND normal_price IS NOT NULL"
-    )
+            if table == "products" and column == "typical_new_price":
+                # normal_price predates the msrp/typical_new_price split —
+                # carry forward any existing value, since it was
+                # functionally "the new price" before the split. Only runs
+                # the moment this column is added (i.e. once per database,
+                # ever) — this used to run unconditionally on every single
+                # connect(), which meant every web request and every watch
+                # tick took a write lock for a no-op UPDATE, and enough of
+                # them colliding produced "database is locked".
+                conn.execute(
+                    "UPDATE products SET typical_new_price = normal_price "
+                    "WHERE typical_new_price IS NULL AND normal_price IS NOT NULL"
+                )
     conn.commit()
     return conn
 
@@ -679,11 +686,17 @@ def get_product_suggestion(conn: sqlite3.Connection, suggestion_id: int) -> sqli
 def list_product_suggestions(
     conn: sqlite3.Connection, item_id: int, status: str = "pending"
 ) -> list[sqlite3.Row]:
+    # Ordered by manufacturer first so the web UI can group suggestions —
+    # confidence DESC within each manufacturer keeps the most-corroborated
+    # model at the top of its group.
     return conn.execute(
         "SELECT * FROM product_suggestions WHERE item_id = ? AND status = ? "
-        "ORDER BY confidence DESC",
+        "ORDER BY manufacturer, confidence DESC",
         (item_id, status),
     ).fetchall()
+
+
+_MAX_RAW_SAMPLES = 10
 
 
 def record_suggestion_sighting(
@@ -693,14 +706,22 @@ def record_suggestion_sighting(
     model: str,
     example_url: str,
     source: str = "ebay-structured",
-) -> sqlite3.Row:
+) -> sqlite3.Row | None:
     """Create or corroborate a pending suggestion for (item, manufacturer,
-    model). If it clears the auto-approve threshold, it's promoted straight
-    to a real catalogue product. Once a suggestion has been approved or
+    model), after deterministic normalisation (catalogue.normalize_suggestion)
+    — casing variants like "WAGNER"/"Wagner"/"wagner" merge into one
+    suggestion, and junk/placeholder/seller-name-like manufacturers are
+    rejected outright and never become a suggestion at all (returns None).
+
+    If it clears the auto-approve threshold, it's promoted straight to a
+    real catalogue product. Once a suggestion has been approved or
     dismissed, further sightings are ignored — dismissal is a deliberate
     "no", not something a few more listings should silently override."""
-    manufacturer = manufacturer.strip()
-    model = (model or "").strip()
+    raw_sample = {"manufacturer": (manufacturer or "").strip(), "model": (model or "").strip()}
+    normalized = catalogue.normalize_suggestion(manufacturer, model)
+    if normalized is None:
+        return None
+    manufacturer, model = normalized
     now = _now()
     existing = conn.execute(
         "SELECT * FROM product_suggestions WHERE item_id = ? AND manufacturer = ? AND model = ?",
@@ -709,21 +730,26 @@ def record_suggestion_sighting(
     if existing and existing["status"] != "pending":
         return existing
 
+    raw_samples = json.loads(existing["raw_samples"]) if existing else []
+    if raw_sample not in raw_samples and len(raw_samples) < _MAX_RAW_SAMPLES:
+        raw_samples.append(raw_sample)
+
     sighting_count = (existing["sighting_count"] + 1) if existing else 1
     confidence = catalogue.suggestion_confidence(sighting_count)
     if existing:
         conn.execute(
             "UPDATE product_suggestions SET sighting_count = ?, confidence = ?, "
-            "last_seen = ?, example_url = ? WHERE id = ?",
-            (sighting_count, confidence, now, example_url, existing["id"]),
+            "last_seen = ?, example_url = ?, raw_samples = ? WHERE id = ?",
+            (sighting_count, confidence, now, example_url, json.dumps(raw_samples), existing["id"]),
         )
         suggestion_id = existing["id"]
     else:
         cur = conn.execute(
             "INSERT INTO product_suggestions (item_id, manufacturer, model, confidence, "
-            "sighting_count, source, example_url, status, first_seen, last_seen) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)",
-            (item_id, manufacturer, model, confidence, sighting_count, source, example_url, now, now),
+            "sighting_count, source, example_url, raw_samples, status, first_seen, last_seen) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)",
+            (item_id, manufacturer, model, confidence, sighting_count, source, example_url,
+             json.dumps(raw_samples), now, now),
         )
         suggestion_id = cur.lastrowid
     conn.commit()
@@ -732,6 +758,42 @@ def record_suggestion_sighting(
     if threshold is not None and confidence >= threshold:
         approve_suggestion(conn, suggestion_id)
     return get_product_suggestion(conn, suggestion_id)
+
+
+def renormalize_pending_suggestions(conn: sqlite3.Connection) -> dict:
+    """One-time cleanup for suggestions created before normalisation
+    existed: rebuilds every *pending* suggestion by replaying its raw
+    sightings through the current rules, so casing-duplicates merge and
+    now-rejected junk disappears. Approved/dismissed suggestions (already
+    decided) are left untouched. Call explicitly (e.g. a maintenance
+    script) — this must never run automatically inside connect(), for the
+    exact reason a past migration bug caused "database is locked": a write
+    on every single connection is not something to run unconditionally."""
+    pending = conn.execute("SELECT * FROM product_suggestions WHERE status = 'pending'").fetchall()
+    conn.execute("DELETE FROM product_suggestions WHERE status = 'pending'")
+    conn.commit()
+
+    rejected = 0
+    for row in pending:
+        raw_samples = json.loads(row["raw_samples"] or "[]") or [
+            {"manufacturer": row["manufacturer"], "model": row["model"]}
+        ]
+        # Replay whichever raw forms we captured, repeated to preserve the
+        # original corroboration count (confidence depends on sighting
+        # count, not just the number of distinct raw variants seen).
+        replay = (raw_samples * row["sighting_count"])[: row["sighting_count"]]
+        result = None
+        for sample in replay:
+            result = record_suggestion_sighting(
+                conn, row["item_id"], sample["manufacturer"], sample["model"],
+                row["example_url"], row["source"],
+            )
+        if result is None:
+            rejected += 1
+    after = conn.execute(
+        "SELECT COUNT(*) c FROM product_suggestions WHERE status = 'pending'"
+    ).fetchone()["c"]
+    return {"before": len(pending), "after": after, "rejected_outright": rejected}
 
 
 def approve_suggestion(conn: sqlite3.Connection, suggestion_id: int) -> int:

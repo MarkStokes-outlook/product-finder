@@ -602,6 +602,89 @@ def test_item_edit_hides_suggestions_section_when_none_pending(cfg, client):
     assert b"Suggested products" not in resp.data
 
 
+def test_item_edit_groups_suggestions_by_manufacturer(cfg, client):
+    _, item_id = seed_match(cfg)
+    conn = db.connect(cfg.db_path)
+    db.record_suggestion_sighting(conn, item_id, "Makita", "LS0816F/2", "https://example.com/1")
+    db.record_suggestion_sighting(conn, item_id, "Bosch", "GKT55", "https://example.com/2")
+    conn.close()
+
+    resp = client.get(f"/items/{item_id}/edit")
+    html = resp.data.decode()
+    assert 'class="group-header"' in html
+    # Both manufacturer group headings present.
+    assert html.count('<strong>Makita</strong>') == 1
+    assert html.count('<strong>Bosch</strong>') == 1
+
+
+def test_item_edit_shows_merged_badge_and_raw_values(cfg, client):
+    _, item_id = seed_match(cfg)
+    conn = db.connect(cfg.db_path)
+    db.record_suggestion_sighting(conn, item_id, "WAGNER", "", "https://example.com/1")
+    db.record_suggestion_sighting(conn, item_id, "Wagner", "", "https://example.com/2")
+    conn.close()
+
+    resp = client.get(f"/items/{item_id}/edit")
+    html = resp.data.decode()
+    assert "merged &times;2" in html
+    assert "raw values" in html
+    assert "WAGNER" in html  # raw sample visible inside the <details>
+
+
+def test_suggestion_bulk_approve(cfg, client):
+    _, item_id = seed_match(cfg)
+    conn = db.connect(cfg.db_path)
+    s1 = db.record_suggestion_sighting(conn, item_id, "Makita", "LS0816F/2", "https://x/1")
+    s2 = db.record_suggestion_sighting(conn, item_id, "Bosch", "GKT55", "https://x/2")
+    conn.close()
+
+    resp = client.post(
+        "/suggestions/bulk-approve",
+        data={"suggestion_ids": [str(s1["id"]), str(s2["id"])], "item_id": str(item_id)},
+        follow_redirects=True,
+    )
+    assert resp.status_code == 200
+    conn = db.connect(cfg.db_path)
+    products = db.list_products(conn, item_id)
+    assert {p["manufacturer"] for p in products} == {"Makita", "Bosch"}
+    assert db.get_product_suggestion(conn, s1["id"])["status"] == "approved"
+    assert db.get_product_suggestion(conn, s2["id"])["status"] == "approved"
+
+
+def test_suggestion_bulk_dismiss(cfg, client):
+    _, item_id = seed_match(cfg)
+    conn = db.connect(cfg.db_path)
+    s1 = db.record_suggestion_sighting(conn, item_id, "Makita", "LS0816F/2", "https://x/1")
+    s2 = db.record_suggestion_sighting(conn, item_id, "Bosch", "GKT55", "https://x/2")
+    conn.close()
+
+    client.post(
+        "/suggestions/bulk-dismiss",
+        data={"suggestion_ids": [str(s1["id"]), str(s2["id"])], "item_id": str(item_id)},
+    )
+    conn = db.connect(cfg.db_path)
+    assert db.get_product_suggestion(conn, s1["id"])["status"] == "dismissed"
+    assert db.get_product_suggestion(conn, s2["id"])["status"] == "dismissed"
+    assert db.list_products(conn, item_id) == []
+
+
+def test_suggestion_bulk_approve_ignores_already_decided(cfg, client):
+    _, item_id = seed_match(cfg)
+    conn = db.connect(cfg.db_path)
+    s1 = db.record_suggestion_sighting(conn, item_id, "Makita", "LS0816F/2", "https://x/1")
+    db.dismiss_suggestion(conn, s1["id"])
+    conn.close()
+
+    resp = client.post(
+        "/suggestions/bulk-approve",
+        data={"suggestion_ids": [str(s1["id"])], "item_id": str(item_id)},
+        follow_redirects=True,
+    )
+    assert b"No suggestions selected" in resp.data
+    conn = db.connect(cfg.db_path)
+    assert db.list_products(conn, item_id) == []
+
+
 def test_suggestion_approve_creates_product(cfg, client):
     _, item_id = seed_match(cfg)
     conn = db.connect(cfg.db_path)

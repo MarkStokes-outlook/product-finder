@@ -542,6 +542,32 @@ def create_app(cfg: AppConfig) -> Flask:
         flash("Suggestion dismissed.")
         return redirect(url_for("item_edit", item_id=suggestion["item_id"]))
 
+    @app.route("/suggestions/bulk-approve", methods=["POST"])
+    def suggestion_bulk_approve():
+        conn = _get_conn(cfg)
+        item_id = request.form.get("item_id", type=int)
+        count = 0
+        for suggestion_id in request.form.getlist("suggestion_ids", type=int):
+            suggestion = db.get_product_suggestion(conn, suggestion_id)
+            if suggestion is not None and suggestion["status"] == "pending":
+                db.approve_suggestion(conn, suggestion_id)
+                count += 1
+        flash(f"Approved {count} suggestion(s)." if count else "No suggestions selected.")
+        return redirect(url_for("item_edit", item_id=item_id) if item_id else url_for("projects"))
+
+    @app.route("/suggestions/bulk-dismiss", methods=["POST"])
+    def suggestion_bulk_dismiss():
+        conn = _get_conn(cfg)
+        item_id = request.form.get("item_id", type=int)
+        count = 0
+        for suggestion_id in request.form.getlist("suggestion_ids", type=int):
+            suggestion = db.get_product_suggestion(conn, suggestion_id)
+            if suggestion is not None and suggestion["status"] == "pending":
+                db.dismiss_suggestion(conn, suggestion_id)
+                count += 1
+        flash(f"Dismissed {count} suggestion(s)." if count else "No suggestions selected.")
+        return redirect(url_for("item_edit", item_id=item_id) if item_id else url_for("projects"))
+
     @app.route("/catalogue-settings", methods=["POST"])
     def catalogue_settings():
         conn = _get_conn(cfg)

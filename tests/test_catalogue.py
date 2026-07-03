@@ -104,3 +104,123 @@ def test_suggestion_confidence_caps_below_100():
     from product_finder.catalogue import suggestion_confidence
 
     assert suggestion_confidence(20) == 99.0
+
+
+# --- Suggestion normalisation -----------------------------------------------------
+
+
+def test_normalize_manufacturer_known_alias_casing():
+    from product_finder.catalogue import normalize_manufacturer
+
+    assert normalize_manufacturer("graco") == "Graco"
+    assert normalize_manufacturer("GRACO") == "Graco"
+    assert normalize_manufacturer("Graco") == "Graco"
+    assert normalize_manufacturer("wagner") == "Wagner"
+    assert normalize_manufacturer("WAGNER") == "Wagner"
+    assert normalize_manufacturer("titan") == "Titan"
+    assert normalize_manufacturer("TITAN") == "Titan"
+    assert normalize_manufacturer("tritech") == "TriTech"
+    assert normalize_manufacturer("TriTech") == "TriTech"
+
+
+def test_normalize_manufacturer_trims_whitespace():
+    from product_finder.catalogue import normalize_manufacturer
+
+    assert normalize_manufacturer("  Makita  ") == "Makita"
+    assert normalize_manufacturer("  wagner ") == "Wagner"
+
+
+def test_normalize_manufacturer_unknown_brand_keeps_original_casing():
+    from product_finder.catalogue import normalize_manufacturer
+
+    assert normalize_manufacturer("Makita") == "Makita"
+    assert normalize_manufacturer("DeWalt") == "DeWalt"
+    assert normalize_manufacturer("") == ""
+    assert normalize_manufacturer(None) == ""
+
+
+def test_is_junk_manufacturer_covers_all_listed_values():
+    from product_finder.catalogue import is_junk_manufacturer
+
+    junk_values = [
+        "Unbranded", "Unbranded/Generic", "Branded", "Generic", "After Market",
+        "Does Not Apply", "Dose Not Apply", "N/A", "NA", "Unknown", "Not specified",
+    ]
+    for value in junk_values:
+        assert is_junk_manufacturer(value) is True, value
+        assert is_junk_manufacturer(value.upper()) is True, value
+        assert is_junk_manufacturer(f"  {value}  ") is True, value
+
+
+def test_is_junk_manufacturer_false_for_real_brands():
+    from product_finder.catalogue import is_junk_manufacturer
+
+    assert is_junk_manufacturer("Makita") is False
+    assert is_junk_manufacturer("Graco") is False
+
+
+def test_looks_like_seller_name_flags_store_keywords():
+    from product_finder.catalogue import looks_like_seller_name
+
+    assert looks_like_seller_name("Tools Direct Store") is True
+    assert looks_like_seller_name("PowerToolOutlet") is True
+    assert looks_like_seller_name("Acme Trading Ltd") is True
+    assert looks_like_seller_name("some_seller_99") is True
+
+
+def test_looks_like_seller_name_flags_digit_heavy_values():
+    from product_finder.catalogue import looks_like_seller_name
+
+    assert looks_like_seller_name("toolshop99123") is True
+
+
+def test_looks_like_seller_name_false_for_real_brands():
+    from product_finder.catalogue import looks_like_seller_name
+
+    assert looks_like_seller_name("Makita") is False
+    assert looks_like_seller_name("DeWalt") is False
+    assert looks_like_seller_name("Graco") is False
+    assert looks_like_seller_name("3M") is False
+
+
+def test_looks_like_seller_name_respects_allowlist(monkeypatch):
+    from product_finder import catalogue
+
+    monkeypatch.setattr(catalogue, "MANUFACTURER_ALLOWLIST", {"tool2000"})
+    assert catalogue.looks_like_seller_name("Tool2000") is False
+    assert catalogue.looks_like_seller_name("tool2000") is False
+
+
+def test_normalize_model_null_values():
+    from product_finder.catalogue import normalize_model
+
+    for value in ["", "-", "Does Not Apply", "Dose Not Apply", "N/A", "Unknown", "  "]:
+        assert normalize_model(value) == "", value
+    assert normalize_model(None) == ""
+
+
+def test_normalize_model_preserves_meaningful_values():
+    from product_finder.catalogue import normalize_model
+
+    assert normalize_model("LS0816F/2") == "LS0816F/2"
+    assert normalize_model("  DWS520  ") == "DWS520"
+
+
+def test_normalize_suggestion_rejects_junk_manufacturer():
+    from product_finder.catalogue import normalize_suggestion
+
+    assert normalize_suggestion("Does Not Apply", "LS0816F/2") is None
+    assert normalize_suggestion("Unbranded", "") is None
+
+
+def test_normalize_suggestion_rejects_seller_name():
+    from product_finder.catalogue import normalize_suggestion
+
+    assert normalize_suggestion("Tools Direct Store", "") is None
+
+
+def test_normalize_suggestion_accepts_and_normalises_real_brand():
+    from product_finder.catalogue import normalize_suggestion
+
+    assert normalize_suggestion("WAGNER", "N/A") == ("Wagner", "")
+    assert normalize_suggestion(" Makita ", " LS0816F/2 ") == ("Makita", "LS0816F/2")

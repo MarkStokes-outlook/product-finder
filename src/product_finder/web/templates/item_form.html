@@ -78,21 +78,43 @@
 <p class="meta">
   Spotted from listings' own manufacturer/model data (eBay's structured item
   specifics, not guessed) — approve to add to the catalogue below, or dismiss
-  if it's not a fit.
+  if it's not a fit. Grouped by manufacturer; casing variants (e.g. "WAGNER" /
+  "Wagner" / "wagner") are already merged into one suggestion.
 </p>
+<form id="suggestions-bulk-form" method="post"></form>
 <div class="card table-card">
 <table>
 <thead><tr>
-  <th>Manufacturer</th><th>Model</th><th>Confidence</th><th>Sightings</th><th>Example</th><th></th>
+  <th></th><th>Manufacturer</th><th>Model</th><th>Confidence</th><th>Sightings</th><th>Example</th><th></th>
 </tr></thead>
 <tbody>
-{% for s in suggestions %}
+{% for manufacturer, group in suggestions | groupby('manufacturer') %}
+  <tr class="group-header"><td colspan="7"><strong>{{ manufacturer }}</strong></td></tr>
+  {% for s in group %}
+  {% set raw = s['raw_samples'] | parse_flags %}
+  {% set merged = raw | length > 1 %}
   <tr>
+    <td><input type="checkbox" name="suggestion_ids" value="{{ s['id'] }}" form="suggestions-bulk-form"></td>
     <td>{{ s['manufacturer'] }}</td>
     <td>{{ s['model'] or '—' }}</td>
     <td class="num"><span class="score {{ 'hi' if s['confidence'] >= 70 else ('mid' if s['confidence'] >= 40 else 'lo') }}">{{ '%.0f' | format(s['confidence']) }}%</span></td>
-    <td class="num">{{ s['sighting_count'] }}</td>
-    <td class="meta">{% if s['example_url'] %}<a href="{{ s['example_url'] }}" target="_blank" rel="noopener">example</a>{% else %}&mdash;{% endif %}</td>
+    <td class="num">
+      {{ s['sighting_count'] }}
+      {% if merged %}<br><span class="badge flag">merged &times;{{ raw | length }}</span>{% endif %}
+    </td>
+    <td class="meta">
+      {% if s['example_url'] %}<a href="{{ s['example_url'] }}" target="_blank" rel="noopener">example</a>{% else %}&mdash;{% endif %}
+      {% if raw %}
+      <details>
+        <summary>raw values</summary>
+        <ul style="margin: .3rem 0 0; padding-left: 1.1rem;">
+        {% for r in raw %}
+          <li>{{ r['manufacturer'] }}{% if r['model'] %} / {{ r['model'] }}{% endif %}</li>
+        {% endfor %}
+        </ul>
+      </details>
+      {% endif %}
+    </td>
     <td class="meta">
       <form class="inline" method="post" action="{{ url_for('suggestion_approve', suggestion_id=s['id']) }}">
         <button class="small primary" type="submit">Approve</button>
@@ -103,9 +125,17 @@
       </form>
     </td>
   </tr>
+  {% endfor %}
 {% endfor %}
 </tbody>
 </table>
+<p style="padding: .6rem .2rem;">
+  <input type="hidden" name="item_id" value="{{ item['id'] }}" form="suggestions-bulk-form">
+  <button class="small primary" type="submit" form="suggestions-bulk-form"
+          formaction="{{ url_for('suggestion_bulk_approve') }}">Approve selected</button>
+  <button class="small" type="submit" form="suggestions-bulk-form"
+          formaction="{{ url_for('suggestion_bulk_dismiss') }}">Dismiss selected</button>
+</p>
 </div>
 <form method="post" action="{{ url_for('catalogue_settings') }}" class="filters card">
   <span>
