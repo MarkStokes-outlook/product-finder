@@ -66,6 +66,16 @@ CREATE TABLE IF NOT EXISTS product_price_observations (
     source TEXT NOT NULL,
     observed_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS product_price_candidates (
+    id INTEGER PRIMARY KEY,
+    product_id INTEGER NOT NULL REFERENCES products(id),
+    url TEXT NOT NULL,
+    domain TEXT NOT NULL,
+    price REAL NOT NULL,
+    currency TEXT NOT NULL,
+    confidence REAL NOT NULL,
+    found_at TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS product_suggestions (
     id INTEGER PRIMARY KEY,
     item_id INTEGER NOT NULL REFERENCES items(id),
@@ -147,6 +157,10 @@ _MIGRATIONS = [
     ("listings", "sold_captured", "INTEGER NOT NULL DEFAULT 0"),
     ("listings", "brand_checked", "INTEGER NOT NULL DEFAULT 0"),
     ("product_suggestions", "raw_samples", "TEXT NOT NULL DEFAULT '[]'"),
+    ("products", "canonical_price_url", "TEXT"),
+    ("products", "price_search_checked", "INTEGER NOT NULL DEFAULT 0"),
+    ("products", "last_price_check_at", "TEXT"),
+    ("products", "last_price_check_ok", "INTEGER"),
 ]
 
 
@@ -640,6 +654,117 @@ def list_price_observations(conn: sqlite3.Connection, product_id: int) -> list[s
         "SELECT * FROM product_price_observations WHERE product_id = ? ORDER BY observed_at",
         (product_id,),
     ).fetchall()
+
+
+# --- Retailer price discovery (see retailer_price.py) ------------------------
+#
+# Stage 1 produces candidates a human must approve before any canonical URL
+# exists; Stage 2 only ever refreshes a URL that's already been approved.
+# `price_search_checked` is a one-shot flag, same pattern as
+# `listings.brand_checked` — a search that finds nothing still counts as
+# "tried"; the product edit page's manual "Search again" action is the only
+# way back in, not automatic retries.
+
+
+def record_price_candidates(conn: sqlite3.Connection, product_id: int, candidates: list[dict]) -> None:
+    """Replace a product's pending price candidates with a fresh search
+    batch (never accumulated across searches) and mark it as searched."""
+    conn.execute("DELETE FROM product_price_candidates WHERE product_id = ?", (product_id,))
+    now = _now()
+    for c in candidates:
+        conn.execute(
+            "INSERT INTO product_price_candidates "
+            "(product_id, url, domain, price, currency, confidence, found_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (product_id, c["url"], c["domain"], c["price"], c["currency"], c["confidence"], now),
+        )
+    conn.execute("UPDATE products SET price_search_checked = 1 WHERE id = ?", (product_id,))
+    conn.commit()
+
+
+def list_price_candidates(conn: sqlite3.Connection, product_id: int) -> list[sqlite3.Row]:
+    return conn.execute(
+        "SELECT * FROM product_price_candidates WHERE product_id = ? ORDER BY confidence DESC",
+        (product_id,),
+    ).fetchall()
+
+
+def get_price_candidate(conn: sqlite3.Connection, candidate_id: int) -> sqlite3.Row | None:
+    return conn.execute(
+        "SELECT * FROM product_price_candidates WHERE id = ?", (candidate_id,)
+    ).fetchone()
+
+
+def clear_price_candidates(conn: sqlite3.Connection, product_id: int) -> None:
+    """Discard every candidate for a product without approving any —
+    'none of these are right', not a decision that should block a future
+    manual re-search."""
+    conn.execute("DELETE FROM product_price_candidates WHERE product_id = ?", (product_id,))
+    conn.commit()
+
+
+def list_products_needing_price_search(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+    """Active products with no canonical retailer URL that haven't had a
+    Stage-1 search attempt yet."""
+    return conn.execute(
+        "SELECT * FROM products WHERE archived = 0 AND canonical_price_url IS NULL "
+        "AND price_search_checked = 0"
+    ).fetchall()
+
+
+def approve_price_candidate(
+    conn: sqlite3.Connection, candidate_id: int, refreshed: dict | None
+) -> None:
+    """Adopt a candidate as the product's canonical retailer URL. `refreshed`
+    is a freshly re-fetched {"price", ...} at approval time (see
+    retailer_price.fetch_price) if that succeeded — falling back to the
+    candidate's own already-extracted price if a single refetch has a
+    transient hiccup, rather than leaving the product with nothing."""
+    candidate = get_price_candidate(conn, candidate_id)
+    if candidate is None:
+        return
+    price = refreshed["price"] if refreshed else candidate["price"]
+    conn.execute(
+        "UPDATE products SET canonical_price_url = ?, typical_new_price = ?, "
+        "last_price_check_at = ?, last_price_check_ok = ? WHERE id = ?",
+        (candidate["url"], price, _now(), int(refreshed is not None), candidate["product_id"]),
+    )
+    conn.execute(
+        "DELETE FROM product_price_candidates WHERE product_id = ?", (candidate["product_id"],)
+    )
+    conn.commit()
+
+
+def list_products_due_for_price_refresh(
+    conn: sqlite3.Connection, max_staleness_hours: int
+) -> list[sqlite3.Row]:
+    cutoff = (datetime.now(timezone.utc) - timedelta(hours=max_staleness_hours)).isoformat(
+        timespec="seconds"
+    )
+    return conn.execute(
+        "SELECT * FROM products WHERE archived = 0 AND canonical_price_url IS NOT NULL "
+        "AND (last_price_check_at IS NULL OR last_price_check_at < ?)",
+        (cutoff,),
+    ).fetchall()
+
+
+def record_price_refresh(conn: sqlite3.Connection, product_id: int, result: dict | None) -> None:
+    """Stage 2: apply a refetch of a product's already-approved canonical
+    URL. On failure, keep the last known typical_new_price — a dead or
+    unparseable page is a reason to stop trusting *future* updates, not to
+    discard the last real number observed."""
+    if result is not None:
+        conn.execute(
+            "UPDATE products SET typical_new_price = ?, last_price_check_at = ?, "
+            "last_price_check_ok = 1 WHERE id = ?",
+            (result["price"], _now(), product_id),
+        )
+    else:
+        conn.execute(
+            "UPDATE products SET last_price_check_at = ?, last_price_check_ok = 0 WHERE id = ?",
+            (_now(), product_id),
+        )
+    conn.commit()
 
 
 # --- App-wide settings (key/value; small enough not to need dedicated columns) -

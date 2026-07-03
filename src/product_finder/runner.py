@@ -5,10 +5,10 @@ from __future__ import annotations
 import logging
 import sqlite3
 
-from . import catalogue, db, scoring, sources
+from . import catalogue, db, extraction, retailer_price, scoring, sources
 from .alerts import console as console_alerts
 from .alerts import webhook as webhook_alerts
-from .config import AppConfig, ItemConfig, ProjectConfig
+from .config import AppConfig, ItemConfig, OllamaConfig, ProjectConfig
 from .models import ManualLink, MatchAlert
 from .sources.ebay import EbaySource
 
@@ -91,7 +91,7 @@ def run_once(cfg: AppConfig, conn: sqlite3.Connection) -> list[MatchAlert]:
                             # every cycle shouldn't dominate the average.
                             db.record_price_observation(conn, product.id, listing.price, listing.source)
                         if product is None and item_id and isinstance(source, EbaySource):
-                            _maybe_suggest_product(conn, source, listing_id, item_id)
+                            _maybe_suggest_product(conn, source, listing_id, item_id, cfg.ollama)
                         if is_new:
                             normal_price, target_deal_price, _ = scoring.effective_prices(item, product)
                             new_alerts.append(
@@ -105,6 +105,7 @@ def run_once(cfg: AppConfig, conn: sqlite3.Connection) -> list[MatchAlert]:
                                     extras={"match_id": match_id},
                                 )
                             )
+    retailer_price.run_discovery_and_refresh(conn, cfg)
     conn.commit()
 
     new_alerts.sort(key=lambda a: a.evaluation.deal_score, reverse=True)
@@ -112,10 +113,21 @@ def run_once(cfg: AppConfig, conn: sqlite3.Connection) -> list[MatchAlert]:
     return new_alerts
 
 
-def _maybe_suggest_product(conn: sqlite3.Connection, source: EbaySource, listing_id: int, item_id: int) -> None:
+def _maybe_suggest_product(
+    conn: sqlite3.Connection,
+    source: EbaySource,
+    listing_id: int,
+    item_id: int,
+    ollama_cfg: OllamaConfig,
+) -> None:
     """A listing that didn't resolve to any known catalogue product is a
     chance to discover a new one — but only worth an extra API call once
-    per listing ever, not on every rescan of the same still-unmatched one."""
+    per listing ever, not on every rescan of the same still-unmatched one.
+
+    Structured eBay brand/mpn fields are tried first (a much more reliable
+    signal). Only when those are absent — common with private/casual
+    sellers — does the optional Ollama free-text fallback get a look, over
+    the listing's own title/description, never a second API round-trip."""
     listing_row = db.get_listing(conn, listing_id)
     if listing_row is None or listing_row["brand_checked"]:
         return
@@ -128,6 +140,14 @@ def _maybe_suggest_product(conn: sqlite3.Connection, source: EbaySource, listing
     if details:
         db.record_suggestion_sighting(
             conn, item_id, details["brand"], details["model"], listing_row["url"]
+        )
+        return
+    text = " ".join(p for p in (listing_row["title"], listing_row["description"]) if p)
+    extracted = extraction.extract_brand_model(text, ollama_cfg)
+    if extracted:
+        db.record_suggestion_sighting(
+            conn, item_id, extracted["brand"], extracted["model"], listing_row["url"],
+            source="ollama",
         )
 
 

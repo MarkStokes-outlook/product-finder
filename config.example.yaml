@@ -70,6 +70,30 @@ sources:
       # app's own grade concept.
       url: "https://uk.webuy.com/search/?stext={term}"
 
+# Optional fallback for catalogue discovery: when a listing has no
+# structured eBay brand/mpn (common with private/casual sellers), ask a
+# local Ollama model to read the title/description instead. Same review
+# queue as structured suggestions — never writes to the catalogue directly.
+# Disabled by default since it depends on a local/network Ollama server.
+# ollama:
+#   enabled: true
+#   base_url: "http://localhost:11434"
+#   model: "llama3.1:8b"
+#   timeout: 20
+#   minimum_confidence: 0.75
+
+# Optional retailer price discovery via a self-hosted SearXNG instance (see
+# docs/strategy/roadmap.md, "Deal accuracy"). Stage 1 searches for retailer
+# pages and parses their own structured price data for you to review and
+# approve per product (product edit page); Stage 2 then refreshes only that
+# approved URL deterministically, no further searching. Disabled by default.
+# searxng:
+#   enabled: true
+#   base_url: "https://search.stoked.tech"
+#   timeout: 15
+#   max_results: 5
+#   refresh_interval_hours: 24
+
 projects:
   # Project-level `sources:` restricts every item in the project, on top of
   # any per-item `sources:` filter — e.g. no point searching CeX or Vinted

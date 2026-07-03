@@ -51,6 +51,36 @@ class EbayConfig:
     env: str = "production"  # production | sandbox
 
 
+@dataclass
+class SearxngConfig:
+    """Retailer price discovery via a self-hosted SearXNG instance — see
+    retailer_price.py. Stage 1 (search + structured-data parsing to produce
+    human-reviewable candidates) and Stage 2 (deterministic refresh of an
+    already-approved canonical URL) are both gated by `enabled`. Disabled by
+    default: it depends on a specific self-hosted service, not something a
+    fresh install should assume."""
+
+    enabled: bool = False
+    base_url: str = "https://search.stoked.tech"
+    timeout: int = 15
+    max_results: int = 5  # search results examined per product per attempt
+    refresh_interval_hours: int = 24
+
+
+@dataclass
+class OllamaConfig:
+    """Free-text brand/model extraction fallback for listings with no
+    structured eBay brand/mpn (common with private/casual sellers) — see
+    runner._maybe_suggest_product(). Disabled by default: it's an optional
+    local-network dependency, not something a fresh install should assume."""
+
+    enabled: bool = False
+    base_url: str = "http://localhost:11434"
+    model: str = "llama3.1:8b"
+    timeout: int = 20
+    minimum_confidence: float = 0.75
+
+
 EXTRA_SOURCE_TYPES = ("rss", "links")
 
 
@@ -105,6 +135,8 @@ class AppConfig:
     db_path: str = "data/product_finder.db"
     alerts: AlertsConfig = field(default_factory=AlertsConfig)
     sources: SourcesConfig = field(default_factory=SourcesConfig)
+    ollama: OllamaConfig = field(default_factory=OllamaConfig)
+    searxng: SearxngConfig = field(default_factory=SearxngConfig)
     projects: list[ProjectConfig] = field(default_factory=list)
 
 
@@ -218,6 +250,24 @@ def load_config(path: str | Path) -> AppConfig:
         extra=extra,
     )
 
+    ollama_raw = raw.get("ollama") or {}
+    ollama = OllamaConfig(
+        enabled=bool(ollama_raw.get("enabled", False)),
+        base_url=str(ollama_raw.get("base_url") or "http://localhost:11434"),
+        model=str(ollama_raw.get("model") or "llama3.1:8b"),
+        timeout=int(ollama_raw.get("timeout", 20)),
+        minimum_confidence=float(ollama_raw.get("minimum_confidence", 0.75)),
+    )
+
+    searxng_raw = raw.get("searxng") or {}
+    searxng = SearxngConfig(
+        enabled=bool(searxng_raw.get("enabled", False)),
+        base_url=str(searxng_raw.get("base_url") or "https://search.stoked.tech"),
+        timeout=int(searxng_raw.get("timeout", 15)),
+        max_results=int(searxng_raw.get("max_results", 5)),
+        refresh_interval_hours=int(searxng_raw.get("refresh_interval_hours", 24)),
+    )
+
     projects = [_load_project(p) for p in (raw.get("projects") or [])]
     slugs = [p.slug for p in projects]
     if len(slugs) != len(set(slugs)):
@@ -241,5 +291,7 @@ def load_config(path: str | Path) -> AppConfig:
         db_path=str(raw.get("db_path", "data/product_finder.db")),
         alerts=alerts,
         sources=sources,
+        ollama=ollama,
+        searxng=searxng,
         projects=projects,
     )

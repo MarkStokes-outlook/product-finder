@@ -15,7 +15,7 @@ from flask import (
     url_for,
 )
 
-from .. import db, runner, sources
+from .. import db, retailer_price, runner, sources
 from ..config import AppConfig, ItemConfig
 
 # Deals scoring at or above this are "hot" — matches the excellent/hi score
@@ -497,7 +497,15 @@ def create_app(cfg: AppConfig) -> Flask:
                 db.update_product(conn, product_id, **fields)
                 flash("Product updated.")
                 return redirect(url_for("item_edit", item_id=row["item_id"]))
-        return render_template("product_form.html", product=row, item=item, form=request.form)
+        return render_template(
+            "product_form.html",
+            product=row,
+            item=item,
+            form=request.form,
+            price_candidates=db.list_price_candidates(conn, product_id),
+            searxng_enabled=cfg.searxng.enabled,
+            price_refresh_interval_hours=cfg.searxng.refresh_interval_hours,
+        )
 
     @app.route("/products/<int:product_id>/archive", methods=["POST"])
     def product_archive(product_id):
@@ -518,6 +526,44 @@ def create_app(cfg: AppConfig) -> Flask:
         db.delete_product(conn, product_id)
         flash(f"Deleted product '{row['manufacturer']}'.")
         return redirect(url_for("item_edit", item_id=row["item_id"]))
+
+    # --- Retailer price discovery (see retailer_price.py) -------------------------
+
+    @app.route("/products/<int:product_id>/price-candidates/search", methods=["POST"])
+    def price_candidates_search(product_id):
+        conn = _get_conn(cfg)
+        row = db.get_product(conn, product_id)
+        if row is None:
+            abort(404)
+        if not cfg.searxng.enabled:
+            flash("Retailer price discovery is disabled (set searxng.enabled in config.yaml).")
+            return redirect(url_for("product_edit", product_id=product_id))
+        candidates = retailer_price.search_candidates(row["manufacturer"], row["model"] or "", cfg.searxng)
+        db.record_price_candidates(conn, product_id, candidates)
+        flash(f"Found {len(candidates)} retailer price candidate(s)." if candidates
+              else "No retailer price candidates found.")
+        return redirect(url_for("product_edit", product_id=product_id))
+
+    @app.route("/price-candidates/<int:candidate_id>/approve", methods=["POST"])
+    def price_candidate_approve(candidate_id):
+        conn = _get_conn(cfg)
+        candidate = db.get_price_candidate(conn, candidate_id)
+        if candidate is None:
+            abort(404)
+        refreshed = retailer_price.fetch_price(candidate["url"], cfg.searxng.timeout)
+        db.approve_price_candidate(conn, candidate_id, refreshed)
+        flash(f"Retailer price set from {candidate['domain']}.")
+        return redirect(url_for("product_edit", product_id=candidate["product_id"]))
+
+    @app.route("/products/<int:product_id>/price-candidates/dismiss", methods=["POST"])
+    def price_candidates_dismiss(product_id):
+        conn = _get_conn(cfg)
+        row = db.get_product(conn, product_id)
+        if row is None:
+            abort(404)
+        db.clear_price_candidates(conn, product_id)
+        flash("Price candidates dismissed.")
+        return redirect(url_for("product_edit", product_id=product_id))
 
     # --- Product suggestions (spotted automatically, awaiting review) -------------
 
