@@ -239,12 +239,11 @@ accounts, no cloud. Pages:
   reload.
 - **Project detail** (click any project) — the hub for that project: its own
   best-deal callout, its items (add/edit/archive/delete inline, with terms,
-  prices, priority and source filters), their matched listings with the same
-  filter/sort controls (source, grade, warnings, sort) filters used to have
-  on a separate Listings page, and its manual search links. Items and
-  listings live here rather than on separate pages, since both only make
-  sense in the context of a project. Same live auto-refresh as the
-  dashboard.
+  prices, priority and source filters), their matched listings with
+  filter/sort controls (source, grade, warnings, sort — previously a
+  separate Listings page), and its manual search links. Items and listings
+  live here rather than on separate pages, since both only make sense in the
+  context of a project. Same live auto-refresh as the dashboard.
 - **Projects** — create, rename, archive/unarchive, delete, and set which
   sources apply to the whole project.
 - **Manual searches** — the Gumtree/Facebook (and keyless eBay) links grouped
@@ -374,4 +373,5 @@ that project's manual search links. Both update themselves automatically as
 pytest
 ```
 
-Covers grading, scoring, deduplication and config loading.
+Covers grading, scoring, deduplication, config loading, and the web UI
+(dashboard, project pages, sources, project/item CRUD).
