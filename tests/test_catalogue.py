@@ -82,3 +82,25 @@ def test_tie_break_keeps_first_defined():
     first = make_product(id=1, match_terms=["makita ls1019l"])
     second = make_product(id=2, match_terms=["makita ls1019l"])
     assert match("Makita LS1019L", [first, second]) is first
+
+
+# --- Suggestion confidence -------------------------------------------------------
+
+
+def test_suggestion_confidence_single_sighting():
+    from product_finder.catalogue import suggestion_confidence
+
+    assert suggestion_confidence(1) == 70.0
+
+
+def test_suggestion_confidence_climbs_with_corroboration():
+    from product_finder.catalogue import suggestion_confidence
+
+    assert suggestion_confidence(2) == 78.0
+    assert suggestion_confidence(3) == 86.0
+
+
+def test_suggestion_confidence_caps_below_100():
+    from product_finder.catalogue import suggestion_confidence
+
+    assert suggestion_confidence(20) == 99.0

@@ -122,10 +122,9 @@ class EbaySource(Source):
             )
         return listings
 
-    def get_item(self, external_id: str) -> AuctionSnapshot | None:
-        """Single-item lookup for tracking an auction toward its close (see
-        auction_watch.py) — `external_id` is the same eBay itemId stored on
-        Listing.external_id from search(). Returns None if the item can no
+    def _fetch_item(self, external_id: str) -> dict | None:
+        """Raw single-item lookup (Browse API getItem) — the shared fetch
+        behind get_item() and get_item_details(). None if the item can no
         longer be fetched (e.g. eBay has since removed it)."""
         resp = requests.get(
             f"{_ENDPOINTS[self.cfg.sources.ebay.env]['item']}/{quote(external_id, safe='')}",
@@ -137,7 +136,15 @@ class EbaySource(Source):
         )
         if resp.status_code != 200:
             return None
-        data = resp.json()
+        return resp.json()
+
+    def get_item(self, external_id: str) -> AuctionSnapshot | None:
+        """Single-item lookup for tracking an auction toward its close (see
+        auction_watch.py) — `external_id` is the same eBay itemId stored on
+        Listing.external_id from search()."""
+        data = self._fetch_item(external_id)
+        if data is None:
+            return None
         priced = _price_value(data)
         if priced is None:
             return None
@@ -147,6 +154,21 @@ class EbaySource(Source):
             for a in data.get("estimatedAvailabilities", [])
         )
         return AuctionSnapshot(price=price, currency=currency, bid_count=data.get("bidCount"), ended=ended)
+
+    def get_item_details(self, external_id: str) -> dict | None:
+        """Seller-declared brand/model, when eBay's own structured item
+        specifics are filled in — a much more reliable signal for the
+        catalogue than inferring anything from free text (see
+        suggestions in catalogue.py). Returns None if unavailable (not
+        every listing has these fields filled in, and casual/private
+        sellers often skip them) or the item can't be fetched."""
+        data = self._fetch_item(external_id)
+        if data is None:
+            return None
+        brand = data.get("brand")
+        if not brand:
+            return None
+        return {"brand": str(brand), "model": str(data.get("mpn") or "")}
 
     def manual_links(self, item: ItemConfig) -> list[ManualLink]:
         links = []

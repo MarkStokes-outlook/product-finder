@@ -581,6 +581,79 @@ def test_matched_product_shown_on_project_detail(cfg, client):
     assert b"Makita SP6000</span>" in resp.data
 
 
+# --- Product suggestions ---------------------------------------------------------
+
+
+def test_item_edit_shows_pending_suggestions(cfg, client):
+    _, item_id = seed_match(cfg)
+    conn = db.connect(cfg.db_path)
+    db.record_suggestion_sighting(conn, item_id, "Makita", "LS0816F/2", "https://example.com/x")
+    conn.close()
+
+    resp = client.get(f"/items/{item_id}/edit")
+    assert b"Suggested products" in resp.data
+    assert b"Makita" in resp.data
+    assert b"70%" in resp.data
+
+
+def test_item_edit_hides_suggestions_section_when_none_pending(cfg, client):
+    _, item_id = seed_match(cfg)
+    resp = client.get(f"/items/{item_id}/edit")
+    assert b"Suggested products" not in resp.data
+
+
+def test_suggestion_approve_creates_product(cfg, client):
+    _, item_id = seed_match(cfg)
+    conn = db.connect(cfg.db_path)
+    suggestion = db.record_suggestion_sighting(conn, item_id, "Makita", "LS0816F/2", "https://example.com/x")
+    conn.close()
+
+    resp = client.post(f"/suggestions/{suggestion['id']}/approve", follow_redirects=True)
+    assert resp.status_code == 200
+    conn = db.connect(cfg.db_path)
+    products = db.list_products(conn, item_id)
+    assert len(products) == 1
+    assert products[0]["manufacturer"] == "Makita"
+    assert db.get_product_suggestion(conn, suggestion["id"])["status"] == "approved"
+
+
+def test_suggestion_dismiss(cfg, client):
+    _, item_id = seed_match(cfg)
+    conn = db.connect(cfg.db_path)
+    suggestion = db.record_suggestion_sighting(conn, item_id, "Makita", "LS0816F/2", "https://example.com/x")
+    conn.close()
+
+    client.post(f"/suggestions/{suggestion['id']}/dismiss")
+    conn = db.connect(cfg.db_path)
+    assert db.get_product_suggestion(conn, suggestion["id"])["status"] == "dismissed"
+    assert db.list_products(conn, item_id) == []
+
+
+def test_catalogue_settings_updates_threshold(cfg, client):
+    _, item_id = seed_match(cfg)
+    resp = client.post(
+        "/catalogue-settings", data={"auto_approve_threshold": "85"},
+        headers={"Referer": f"/items/{item_id}/edit"}, follow_redirects=True,
+    )
+    assert resp.status_code == 200
+    conn = db.connect(cfg.db_path)
+    assert db.get_auto_approve_threshold(conn) == 85.0
+
+
+def test_catalogue_settings_blank_disables_auto_approve(cfg, client):
+    _, item_id = seed_match(cfg)
+    conn = db.connect(cfg.db_path)
+    db.set_auto_approve_threshold(conn, 85.0)
+    conn.close()
+
+    client.post(
+        "/catalogue-settings", data={"auto_approve_threshold": ""},
+        headers={"Referer": f"/items/{item_id}/edit"},
+    )
+    conn = db.connect(cfg.db_path)
+    assert db.get_auto_approve_threshold(conn) is None
+
+
 def test_project_hero_excludes_flagged_listings_even_if_top_scored(cfg, client):
     # A flagged listing (e.g. a live auction — see scoring.is_live_auction)
     # can still score highest numerically, but must never headline the hero

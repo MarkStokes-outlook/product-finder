@@ -499,3 +499,40 @@ def test_ebay_get_item_returns_none_on_non_200():
     with mock.patch("product_finder.sources.ebay.requests.post", return_value=_mock_token_response()):
         with mock.patch("product_finder.sources.ebay.requests.get", return_value=item_resp):
             assert source.get_item("v1|1|0") is None
+
+
+def test_ebay_get_item_details_returns_brand_and_model():
+    from product_finder.sources.ebay import EbaySource
+
+    item_resp = mock.Mock()
+    item_resp.status_code = 200
+    item_resp.json.return_value = {"brand": "Makita", "mpn": "LS0816F/2"}
+    source = EbaySource(_ebay_cfg())
+    with mock.patch("product_finder.sources.ebay.requests.post", return_value=_mock_token_response()):
+        with mock.patch("product_finder.sources.ebay.requests.get", return_value=item_resp):
+            details = source.get_item_details("v1|1|0")
+
+    assert details == {"brand": "Makita", "model": "LS0816F/2"}
+
+
+def test_ebay_get_item_details_none_without_brand():
+    from product_finder.sources.ebay import EbaySource
+
+    item_resp = mock.Mock()
+    item_resp.status_code = 200
+    item_resp.json.return_value = {"title": "Some mitre saw, no structured brand field"}
+    source = EbaySource(_ebay_cfg())
+    with mock.patch("product_finder.sources.ebay.requests.post", return_value=_mock_token_response()):
+        with mock.patch("product_finder.sources.ebay.requests.get", return_value=item_resp):
+            assert source.get_item_details("v1|1|0") is None
+
+
+def test_ebay_get_item_details_none_on_fetch_failure():
+    from product_finder.sources.ebay import EbaySource
+
+    item_resp = mock.Mock()
+    item_resp.status_code = 404
+    source = EbaySource(_ebay_cfg())
+    with mock.patch("product_finder.sources.ebay.requests.post", return_value=_mock_token_response()):
+        with mock.patch("product_finder.sources.ebay.requests.get", return_value=item_resp):
+            assert source.get_item_details("v1|1|0") is None

@@ -1,0 +1,190 @@
+from unittest import mock
+
+from product_finder import auction_watch, db, runner, sources  # noqa: F401 (auction_watch unused, kept for parity)
+from product_finder.config import AppConfig, EbayConfig, ItemConfig, SourcesConfig
+from product_finder.models import Listing
+from product_finder.sources.base import Source
+
+
+def _setup(tmp_path):
+    cfg = AppConfig(
+        db_path=str(tmp_path / "t.db"),
+        sources=SourcesConfig(ebay=EbayConfig(app_id="id", cert_id="secret")),
+    )
+    conn = db.connect(cfg.db_path)
+    project_id = db.create_project(conn, "Workshop")
+    item_id = db.create_item(conn, project_id, ItemConfig(name="Mitre Saw", terms=["mitre saw"]))
+    return cfg, conn, item_id
+
+
+# --- db.record_suggestion_sighting / approve / dismiss --------------------------
+
+
+def test_first_sighting_creates_pending_suggestion(tmp_path):
+    cfg, conn, item_id = _setup(tmp_path)
+    row = db.record_suggestion_sighting(conn, item_id, "Makita", "LS0816F/2", "https://x/1")
+    assert row["status"] == "pending"
+    assert row["sighting_count"] == 1
+    assert row["confidence"] == 70.0
+
+
+def test_repeated_sighting_corroborates_and_raises_confidence(tmp_path):
+    cfg, conn, item_id = _setup(tmp_path)
+    db.record_suggestion_sighting(conn, item_id, "Makita", "LS0816F/2", "https://x/1")
+    row = db.record_suggestion_sighting(conn, item_id, "Makita", "LS0816F/2", "https://x/2")
+    assert row["sighting_count"] == 2
+    assert row["confidence"] == 78.0
+    assert row["example_url"] == "https://x/2"  # most recent sighting
+
+
+def test_dismissed_suggestion_is_never_reopened(tmp_path):
+    cfg, conn, item_id = _setup(tmp_path)
+    row = db.record_suggestion_sighting(conn, item_id, "Makita", "LS0816F/2", "https://x/1")
+    db.dismiss_suggestion(conn, row["id"])
+    again = db.record_suggestion_sighting(conn, item_id, "Makita", "LS0816F/2", "https://x/2")
+    assert again["status"] == "dismissed"
+    assert again["sighting_count"] == 1  # untouched, not corroborated further
+
+
+def test_auto_approve_threshold_promotes_suggestion_to_product(tmp_path):
+    cfg, conn, item_id = _setup(tmp_path)
+    db.set_auto_approve_threshold(conn, 75.0)
+    row = db.record_suggestion_sighting(conn, item_id, "Makita", "LS0816F/2", "https://x/1")
+    assert row["status"] == "pending"  # confidence 70 < 75
+    row2 = db.record_suggestion_sighting(conn, item_id, "Makita", "LS0816F/2", "https://x/2")
+    assert row2["status"] == "approved"  # confidence 78 >= 75
+    products = db.list_products(conn, item_id)
+    assert len(products) == 1
+    assert products[0]["manufacturer"] == "Makita"
+
+
+def test_no_auto_approve_by_default(tmp_path):
+    cfg, conn, item_id = _setup(tmp_path)
+    for i in range(10):
+        row = db.record_suggestion_sighting(conn, item_id, "Makita", "LS0816F/2", f"https://x/{i}")
+    assert row["status"] == "pending"
+    assert row["confidence"] == 99.0
+    assert db.list_products(conn, item_id) == []
+
+
+def test_approve_suggestion_creates_product_with_match_terms(tmp_path):
+    cfg, conn, item_id = _setup(tmp_path)
+    row = db.record_suggestion_sighting(conn, item_id, "Makita", "LS0816F/2", "https://x/1")
+    product_id = db.approve_suggestion(conn, row["id"])
+    product = db._product_from_row(db.get_product(conn, product_id))
+    assert product.manufacturer == "Makita"
+    assert product.match_terms == ["Makita LS0816F/2", "LS0816F/2"]
+    suggestion = db.get_product_suggestion(conn, row["id"])
+    assert suggestion["status"] == "approved"
+
+
+def test_approve_suggestion_without_model_uses_single_match_term(tmp_path):
+    cfg, conn, item_id = _setup(tmp_path)
+    row = db.record_suggestion_sighting(conn, item_id, "Makita", "", "https://x/1")
+    product_id = db.approve_suggestion(conn, row["id"])
+    product = db._product_from_row(db.get_product(conn, product_id))
+    assert product.match_terms == ["Makita"]
+
+
+def test_list_product_suggestions_filters_by_status(tmp_path):
+    cfg, conn, item_id = _setup(tmp_path)
+    pending = db.record_suggestion_sighting(conn, item_id, "Makita", "LS0816F/2", "https://x/1")
+    dismissed = db.record_suggestion_sighting(conn, item_id, "DeWalt", "DWS773", "https://x/2")
+    db.dismiss_suggestion(conn, dismissed["id"])
+    assert [s["id"] for s in db.list_product_suggestions(conn, item_id, "pending")] == [pending["id"]]
+    assert [s["id"] for s in db.list_product_suggestions(conn, item_id, "dismissed")] == [dismissed["id"]]
+
+
+def test_deleting_item_deletes_its_suggestions(tmp_path):
+    cfg, conn, item_id = _setup(tmp_path)
+    db.record_suggestion_sighting(conn, item_id, "Makita", "LS0816F/2", "https://x/1")
+    db.delete_item(conn, item_id)
+    assert conn.execute("SELECT COUNT(*) c FROM product_suggestions").fetchone()["c"] == 0
+
+
+# --- runner.py wiring -------------------------------------------------------------
+
+
+class FakeEbaySource(Source):
+    name = "ebay"
+
+    def __init__(self, cfg, listings, details=None):
+        super().__init__(cfg)
+        self._listings = listings
+        self._details = details or {}
+
+    def is_automated(self):
+        return True
+
+    def search(self, term, item):
+        return self._listings
+
+    def get_item_details(self, external_id):
+        return self._details.get(external_id)
+
+    def manual_links(self, item):
+        return []
+
+
+def _run_with_fake_ebay(cfg, conn, listings, details=None):
+    fake = FakeEbaySource(cfg, listings, details)
+    orig = sources.build_registry
+    sources.build_registry = lambda eff_cfg: {"ebay": fake}
+    try:
+        return runner.run_once(cfg, conn)
+    finally:
+        sources.build_registry = orig
+
+
+def test_unmatched_listing_with_structured_brand_creates_suggestion(tmp_path):
+    cfg, conn, item_id = _setup(tmp_path)
+    listing = Listing(source="ebay", external_id="e1", title="Makita LS0816F/2 mitre saw",
+                       price=250.0, url="https://x/e1")
+    with mock.patch(
+        "product_finder.runner.EbaySource", FakeEbaySource
+    ):
+        _run_with_fake_ebay(cfg, conn, [listing], details={"e1": {"brand": "Makita", "model": "LS0816F/2"}})
+
+    suggestions = db.list_product_suggestions(conn, item_id)
+    assert len(suggestions) == 1
+    assert suggestions[0]["manufacturer"] == "Makita"
+    assert suggestions[0]["example_url"] == "https://x/e1"
+
+
+def test_listing_only_brand_checked_once(tmp_path):
+    cfg, conn, item_id = _setup(tmp_path)
+    listing = Listing(source="ebay", external_id="e1", title="Makita LS0816F/2 mitre saw",
+                       price=250.0, url="https://x/e1")
+    details = {"e1": {"brand": "Makita", "model": "LS0816F/2"}}
+    with mock.patch("product_finder.runner.EbaySource", FakeEbaySource):
+        _run_with_fake_ebay(cfg, conn, [listing], details=details)
+        _run_with_fake_ebay(cfg, conn, [listing], details=details)  # rescan
+
+    suggestions = db.list_product_suggestions(conn, item_id)
+    assert len(suggestions) == 1
+    assert suggestions[0]["sighting_count"] == 1  # not incremented on rescan
+
+
+def test_no_suggestion_when_no_structured_brand(tmp_path):
+    cfg, conn, item_id = _setup(tmp_path)
+    listing = Listing(source="ebay", external_id="e1", title="Mitre saw, no brand info",
+                       price=90.0, url="https://x/e1")
+    with mock.patch("product_finder.runner.EbaySource", FakeEbaySource):
+        _run_with_fake_ebay(cfg, conn, [listing], details={})
+
+    assert db.list_product_suggestions(conn, item_id) == []
+    listing_row = conn.execute("SELECT brand_checked FROM listings WHERE external_id = 'e1'").fetchone()
+    assert listing_row["brand_checked"] == 1
+
+
+def test_no_suggestion_check_when_listing_already_matches_a_product(tmp_path):
+    cfg, conn, item_id = _setup(tmp_path)
+    db.create_product(conn, item_id, "Makita", "LS0816F/2", ["makita ls0816f/2"], None, None, None)
+    listing = Listing(source="ebay", external_id="e1", title="Makita LS0816F/2 mitre saw",
+                       price=250.0, url="https://x/e1")
+    with mock.patch("product_finder.runner.EbaySource", FakeEbaySource):
+        _run_with_fake_ebay(cfg, conn, [listing], details={"e1": {"brand": "Makita", "model": "LS0816F/2"}})
+
+    # Already resolved via catalogue.match() — no wasted get_item_details call,
+    # no duplicate/competing suggestion for a product we already have.
+    assert db.list_product_suggestions(conn, item_id) == []

@@ -88,6 +88,31 @@ typical *used* price for that product (flagged "above typical used price")
 — a saving vs. buying new doesn't mean much if it's still above what the
 used market normally charges.
 
+#### Suggested products
+
+Typing every manufacturer/model into the catalogue by hand doesn't scale, so
+`watch` also looks for new ones automatically — but only from **eBay's own
+structured item data** (the `brand`/`mpn` "item specifics" fields a seller
+fills in on their listing), never by guessing from free text. That's a
+seller's own declared fact, not an inference, so it's trustworthy enough to
+suggest without needing AI. It only checks a listing once (not on every
+rescan), and only when the listing didn't already match an existing
+catalogue product — no wasted lookups once you've added coverage.
+
+Each distinct manufacturer/model spotted this way becomes a **pending
+suggestion** on the item's edit page, with a confidence score that starts at
+70% and climbs as more independent listings corroborate the same
+manufacturer/model (capped at 99% — even seller-declared fields can be
+wrong). Nothing gets added to the catalogue without your approval by
+default. If you'd rather trust high-confidence suggestions to add
+themselves, there's an adjustable "auto-approve at or above N% confidence"
+setting right next to the suggestions list — leave it blank (the default)
+to review everything yourself. Dismissing a suggestion is permanent; it
+won't come back no matter how many more times it's seen.
+
+A free-text fallback (for listings with no structured brand/model at all —
+common with casual/private sellers) is planned but not built yet.
+
 ### Live Auctions
 
 An active eBay-style auction's price is just the current bid, not a

@@ -71,6 +71,54 @@
 </form>
 
 {% if item %}
+{% if suggestions %}
+<div class="page-head" style="margin-top: 1.8rem;">
+  <h2 style="margin: 0;">Suggested products</h2>
+</div>
+<p class="meta">
+  Spotted from listings' own manufacturer/model data (eBay's structured item
+  specifics, not guessed) — approve to add to the catalogue below, or dismiss
+  if it's not a fit.
+</p>
+<div class="card table-card">
+<table>
+<thead><tr>
+  <th>Manufacturer</th><th>Model</th><th>Confidence</th><th>Sightings</th><th>Example</th><th></th>
+</tr></thead>
+<tbody>
+{% for s in suggestions %}
+  <tr>
+    <td>{{ s['manufacturer'] }}</td>
+    <td>{{ s['model'] or '—' }}</td>
+    <td class="num"><span class="score {{ 'hi' if s['confidence'] >= 70 else ('mid' if s['confidence'] >= 40 else 'lo') }}">{{ '%.0f' | format(s['confidence']) }}%</span></td>
+    <td class="num">{{ s['sighting_count'] }}</td>
+    <td class="meta">{% if s['example_url'] %}<a href="{{ s['example_url'] }}" target="_blank" rel="noopener">example</a>{% else %}&mdash;{% endif %}</td>
+    <td class="meta">
+      <form class="inline" method="post" action="{{ url_for('suggestion_approve', suggestion_id=s['id']) }}">
+        <button class="small primary" type="submit">Approve</button>
+      </form>
+      &middot;
+      <form class="inline" method="post" action="{{ url_for('suggestion_dismiss', suggestion_id=s['id']) }}">
+        <button class="small" type="submit">Dismiss</button>
+      </form>
+    </td>
+  </tr>
+{% endfor %}
+</tbody>
+</table>
+</div>
+<form method="post" action="{{ url_for('catalogue_settings') }}" class="filters card">
+  <span>
+    <label for="auto_approve_threshold">Auto-approve at or above</label>
+    <input type="number" id="auto_approve_threshold" name="auto_approve_threshold" min="0" max="100" step="1"
+           style="width: 5rem;"
+           value="{{ auto_approve_threshold if auto_approve_threshold is not none else '' }}">
+  </span>
+  <span class="meta">% confidence — blank means everything waits for your review</span>
+  <button class="small" type="submit">Save</button>
+</form>
+{% endif %}
+
 <div class="page-head" style="margin-top: 1.8rem;">
   <h2 style="margin: 0;">Known products</h2>
   <a class="button primary small" href="{{ url_for('product_new', item_id=item['id']) }}">Add product</a>

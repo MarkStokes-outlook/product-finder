@@ -59,6 +59,26 @@ def _matches(text: str, term: str) -> bool:
     return re.search(r"(?<!\w)" + re.escape(term.lower()) + r"(?!\w)", text) is not None
 
 
+# Confidence for a catalogue *suggestion* sourced from structured,
+# seller-declared data (eBay's brand/mpn item specifics) rather than free
+# text — starts fairly high since it's not inferred, then climbs as more
+# independent listings corroborate the same manufacturer/model. Starting
+# points, not calibrated against real usage yet — tune once there's data.
+SUGGESTION_BASE_CONFIDENCE = 70.0
+SUGGESTION_CORROBORATION_STEP = 8.0
+SUGGESTION_MAX_CONFIDENCE = 99.0
+
+
+def suggestion_confidence(sighting_count: int) -> float:
+    """Confidence score (0-100) for a pending product suggestion, given how
+    many independent listings have produced the same manufacturer/model.
+    Never reaches 100 — even seller-declared fields can be wrong."""
+    return min(
+        SUGGESTION_MAX_CONFIDENCE,
+        SUGGESTION_BASE_CONFIDENCE + max(0, sighting_count - 1) * SUGGESTION_CORROBORATION_STEP,
+    )
+
+
 def match(text: str, products: Sequence[Product]) -> Product | None:
     """Resolve listing text (title + description) to the most specific
     matching catalogue product, or None if nothing matches.

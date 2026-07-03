@@ -66,6 +66,24 @@ CREATE TABLE IF NOT EXISTS product_price_observations (
     source TEXT NOT NULL,
     observed_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS product_suggestions (
+    id INTEGER PRIMARY KEY,
+    item_id INTEGER NOT NULL REFERENCES items(id),
+    manufacturer TEXT NOT NULL,
+    model TEXT NOT NULL DEFAULT '',
+    confidence REAL NOT NULL,
+    sighting_count INTEGER NOT NULL DEFAULT 1,
+    source TEXT NOT NULL DEFAULT 'ebay-structured',
+    example_url TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'pending',
+    first_seen TEXT NOT NULL,
+    last_seen TEXT NOT NULL,
+    UNIQUE(item_id, manufacturer, model)
+);
+CREATE TABLE IF NOT EXISTS app_settings (
+    key TEXT PRIMARY KEY,
+    value TEXT
+);
 CREATE TABLE IF NOT EXISTS listings (
     id INTEGER PRIMARY KEY,
     source TEXT NOT NULL,
@@ -127,6 +145,7 @@ _MIGRATIONS = [
     ("listings", "end_time", "TEXT"),
     ("listings", "last_poll_at", "TEXT"),
     ("listings", "sold_captured", "INTEGER NOT NULL DEFAULT 0"),
+    ("listings", "brand_checked", "INTEGER NOT NULL DEFAULT 0"),
 ]
 
 
@@ -471,13 +490,19 @@ def set_item_archived(conn: sqlite3.Connection, item_id: int, archived: bool) ->
 
 
 def delete_item(conn: sqlite3.Connection, item_id: int, _commit: bool = True) -> None:
-    """Hard delete an item and its matches/alerts (listings are kept)."""
+    """Hard delete an item and its matches/alerts/products (listings are kept)."""
     conn.execute(
         "DELETE FROM alerts_sent WHERE match_id IN "
         "(SELECT id FROM listing_matches WHERE item_id = ?)",
         (item_id,),
     )
     conn.execute("DELETE FROM listing_matches WHERE item_id = ?", (item_id,))
+    conn.execute(
+        "DELETE FROM product_price_observations WHERE product_id IN "
+        "(SELECT id FROM products WHERE item_id = ?)",
+        (item_id,),
+    )
+    conn.execute("DELETE FROM product_suggestions WHERE item_id = ?", (item_id,))
     conn.execute("DELETE FROM products WHERE item_id = ?", (item_id,))
     conn.execute("DELETE FROM items WHERE id = ?", (item_id,))
     if _commit:
@@ -610,6 +635,127 @@ def list_price_observations(conn: sqlite3.Connection, product_id: int) -> list[s
     ).fetchall()
 
 
+# --- App-wide settings (key/value; small enough not to need dedicated columns) -
+
+
+def get_setting(conn: sqlite3.Connection, key: str, default: str | None = None) -> str | None:
+    row = conn.execute("SELECT value FROM app_settings WHERE key = ?", (key,)).fetchone()
+    return row["value"] if row is not None else default
+
+
+def set_setting(conn: sqlite3.Connection, key: str, value: str | None) -> None:
+    conn.execute(
+        "INSERT INTO app_settings (key, value) VALUES (?, ?) "
+        "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        (key, value),
+    )
+    conn.commit()
+
+
+_AUTO_APPROVE_THRESHOLD_KEY = "catalogue_auto_approve_threshold"
+
+
+def get_auto_approve_threshold(conn: sqlite3.Connection) -> float | None:
+    """Confidence (0-100) at or above which a product suggestion is
+    auto-approved instead of waiting for review. None (the default) means
+    everything requires manual approval."""
+    raw = get_setting(conn, _AUTO_APPROVE_THRESHOLD_KEY)
+    return float(raw) if raw else None
+
+
+def set_auto_approve_threshold(conn: sqlite3.Connection, value: float | None) -> None:
+    set_setting(conn, _AUTO_APPROVE_THRESHOLD_KEY, str(value) if value is not None else "")
+
+
+# --- Product suggestions (candidates awaiting review — see catalogue.py) ------
+
+
+def get_product_suggestion(conn: sqlite3.Connection, suggestion_id: int) -> sqlite3.Row | None:
+    return conn.execute(
+        "SELECT * FROM product_suggestions WHERE id = ?", (suggestion_id,)
+    ).fetchone()
+
+
+def list_product_suggestions(
+    conn: sqlite3.Connection, item_id: int, status: str = "pending"
+) -> list[sqlite3.Row]:
+    return conn.execute(
+        "SELECT * FROM product_suggestions WHERE item_id = ? AND status = ? "
+        "ORDER BY confidence DESC",
+        (item_id, status),
+    ).fetchall()
+
+
+def record_suggestion_sighting(
+    conn: sqlite3.Connection,
+    item_id: int,
+    manufacturer: str,
+    model: str,
+    example_url: str,
+    source: str = "ebay-structured",
+) -> sqlite3.Row:
+    """Create or corroborate a pending suggestion for (item, manufacturer,
+    model). If it clears the auto-approve threshold, it's promoted straight
+    to a real catalogue product. Once a suggestion has been approved or
+    dismissed, further sightings are ignored — dismissal is a deliberate
+    "no", not something a few more listings should silently override."""
+    manufacturer = manufacturer.strip()
+    model = (model or "").strip()
+    now = _now()
+    existing = conn.execute(
+        "SELECT * FROM product_suggestions WHERE item_id = ? AND manufacturer = ? AND model = ?",
+        (item_id, manufacturer, model),
+    ).fetchone()
+    if existing and existing["status"] != "pending":
+        return existing
+
+    sighting_count = (existing["sighting_count"] + 1) if existing else 1
+    confidence = catalogue.suggestion_confidence(sighting_count)
+    if existing:
+        conn.execute(
+            "UPDATE product_suggestions SET sighting_count = ?, confidence = ?, "
+            "last_seen = ?, example_url = ? WHERE id = ?",
+            (sighting_count, confidence, now, example_url, existing["id"]),
+        )
+        suggestion_id = existing["id"]
+    else:
+        cur = conn.execute(
+            "INSERT INTO product_suggestions (item_id, manufacturer, model, confidence, "
+            "sighting_count, source, example_url, status, first_seen, last_seen) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)",
+            (item_id, manufacturer, model, confidence, sighting_count, source, example_url, now, now),
+        )
+        suggestion_id = cur.lastrowid
+    conn.commit()
+
+    threshold = get_auto_approve_threshold(conn)
+    if threshold is not None and confidence >= threshold:
+        approve_suggestion(conn, suggestion_id)
+    return get_product_suggestion(conn, suggestion_id)
+
+
+def approve_suggestion(conn: sqlite3.Connection, suggestion_id: int) -> int:
+    """Create the real catalogue product from a pending suggestion. Returns
+    the new product's id."""
+    suggestion = get_product_suggestion(conn, suggestion_id)
+    combined = f"{suggestion['manufacturer']} {suggestion['model']}".strip()
+    match_terms = [combined]
+    if suggestion["model"] and suggestion["model"] != combined:
+        match_terms.append(suggestion["model"])
+    product_id = create_product(
+        conn, suggestion["item_id"], suggestion["manufacturer"], suggestion["model"],
+        match_terms, None, None, None,
+    )
+    conn.execute("UPDATE product_suggestions SET status = 'approved' WHERE id = ?", (suggestion_id,))
+    conn.commit()
+    return product_id
+
+
+def dismiss_suggestion(conn: sqlite3.Connection, suggestion_id: int) -> None:
+    conn.execute("UPDATE product_suggestions SET status = 'dismissed' WHERE id = ?", (suggestion_id,))
+    conn.commit()
+
+
 # --- Auction close tracking (see auction_watch.py) -----------------------------
 
 
@@ -694,6 +840,18 @@ def upsert_listing(conn: sqlite3.Connection, listing: Listing) -> tuple[int, boo
         ),
     )
     return cur.lastrowid, True
+
+
+def get_listing(conn: sqlite3.Connection, listing_id: int) -> sqlite3.Row | None:
+    return conn.execute("SELECT * FROM listings WHERE id = ?", (listing_id,)).fetchone()
+
+
+def mark_brand_checked(conn: sqlite3.Connection, listing_id: int) -> None:
+    """Record that we've already looked this listing up for structured
+    brand/model data (see suggestions below) — regardless of whether it had
+    any, so we don't keep re-fetching a listing that simply has none."""
+    conn.execute("UPDATE listings SET brand_checked = 1 WHERE id = ?", (listing_id,))
+    conn.commit()
 
 
 def record_match(

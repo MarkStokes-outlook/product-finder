@@ -10,6 +10,7 @@ from .alerts import console as console_alerts
 from .alerts import webhook as webhook_alerts
 from .config import AppConfig, ItemConfig, ProjectConfig
 from .models import ManualLink, MatchAlert
+from .sources.ebay import EbaySource
 
 log = logging.getLogger(__name__)
 
@@ -89,6 +90,8 @@ def run_once(cfg: AppConfig, conn: sqlite3.Connection) -> list[MatchAlert]:
                             # sighting only — a long-unsold listing rescanned
                             # every cycle shouldn't dominate the average.
                             db.record_price_observation(conn, product.id, listing.price, listing.source)
+                        if product is None and item_id and isinstance(source, EbaySource):
+                            _maybe_suggest_product(conn, source, listing_id, item_id)
                         if is_new:
                             normal_price, target_deal_price, _ = scoring.effective_prices(item, product)
                             new_alerts.append(
@@ -107,6 +110,25 @@ def run_once(cfg: AppConfig, conn: sqlite3.Connection) -> list[MatchAlert]:
     new_alerts.sort(key=lambda a: a.evaluation.deal_score, reverse=True)
     _send_alerts(cfg, conn, new_alerts)
     return new_alerts
+
+
+def _maybe_suggest_product(conn: sqlite3.Connection, source: EbaySource, listing_id: int, item_id: int) -> None:
+    """A listing that didn't resolve to any known catalogue product is a
+    chance to discover a new one — but only worth an extra API call once
+    per listing ever, not on every rescan of the same still-unmatched one."""
+    listing_row = db.get_listing(conn, listing_id)
+    if listing_row is None or listing_row["brand_checked"]:
+        return
+    try:
+        details = source.get_item_details(listing_row["external_id"])
+    except Exception as exc:
+        log.warning("Product-detail lookup failed for %s: %s", listing_row["external_id"], exc)
+        details = None
+    db.mark_brand_checked(conn, listing_id)
+    if details:
+        db.record_suggestion_sighting(
+            conn, item_id, details["brand"], details["model"], listing_row["url"]
+        )
 
 
 def _send_alerts(cfg: AppConfig, conn: sqlite3.Connection, alerts: list[MatchAlert]) -> None:

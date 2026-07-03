@@ -439,6 +439,8 @@ def create_app(cfg: AppConfig) -> Flask:
             item_cfg=db._item_from_row(row),
             project=db.get_project(conn, row["project_id"]),
             products=db.list_products(conn, item_id),
+            suggestions=db.list_product_suggestions(conn, item_id),
+            auto_approve_threshold=db.get_auto_approve_threshold(conn),
             form=request.form,
         )
 
@@ -516,6 +518,45 @@ def create_app(cfg: AppConfig) -> Flask:
         db.delete_product(conn, product_id)
         flash(f"Deleted product '{row['manufacturer']}'.")
         return redirect(url_for("item_edit", item_id=row["item_id"]))
+
+    # --- Product suggestions (spotted automatically, awaiting review) -------------
+
+    @app.route("/suggestions/<int:suggestion_id>/approve", methods=["POST"])
+    def suggestion_approve(suggestion_id):
+        conn = _get_conn(cfg)
+        suggestion = db.get_product_suggestion(conn, suggestion_id)
+        if suggestion is None:
+            abort(404)
+        db.approve_suggestion(conn, suggestion_id)
+        label = f"{suggestion['manufacturer']} {suggestion['model']}".strip()
+        flash(f"Added '{label}' to the catalogue.")
+        return redirect(url_for("item_edit", item_id=suggestion["item_id"]))
+
+    @app.route("/suggestions/<int:suggestion_id>/dismiss", methods=["POST"])
+    def suggestion_dismiss(suggestion_id):
+        conn = _get_conn(cfg)
+        suggestion = db.get_product_suggestion(conn, suggestion_id)
+        if suggestion is None:
+            abort(404)
+        db.dismiss_suggestion(conn, suggestion_id)
+        flash("Suggestion dismissed.")
+        return redirect(url_for("item_edit", item_id=suggestion["item_id"]))
+
+    @app.route("/catalogue-settings", methods=["POST"])
+    def catalogue_settings():
+        conn = _get_conn(cfg)
+        raw = (request.form.get("auto_approve_threshold") or "").strip()
+        if raw:
+            try:
+                value = max(0.0, min(100.0, float(raw)))
+            except ValueError:
+                flash("Auto-approve threshold must be a number.")
+                return redirect(request.referrer or url_for("projects"))
+        else:
+            value = None
+        db.set_auto_approve_threshold(conn, value)
+        flash("Catalogue suggestion settings updated.")
+        return redirect(request.referrer or url_for("projects"))
 
     # --- Manual searches ----------------------------------------------------------
 
