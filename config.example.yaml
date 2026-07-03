@@ -26,6 +26,52 @@ sources:
   facebook:
     enabled: true            # manual-assisted links only (login-walled)
 
+  # Config-defined sources — add new sites with zero code.
+  # Templates may use {term}, {max_price}, {postcode}, {radius}.
+  #   type: rss   — automated: per-term RSS/Atom feed, listings scored like eBay
+  #                 (entries need a £ price in the title/description)
+  #   type: links — manual-assisted: pre-filtered search links in reports/UI
+  #
+  # Each entry below was curl-verified against the live site before being added
+  # (query actually changes the response, not just a plausible-looking URL).
+  # NOTE: HotUKDeals per-search RSS (hotukdeals.com/rss/search) no longer
+  # exists (404) — HUKD only publishes an unfiltered /rss/hot feed now, which
+  # can't be scoped to a search term, so it's not listed here.
+  extra:
+    - name: hardwareswapuk
+      type: rss
+      label: "r/HardwareSwapUK"
+      # NB: "hardware" here means PC/electronics components (GPUs, CPUs,
+      # monitors), not power tools — irrelevant to the Coachhouse Tools demo
+      # project below. Good general UK deal source for electronics items;
+      # scope it out per-item with `sources: [...]` where it doesn't apply.
+      # Confirmed: feed content changes per query (real term = 28KB, nonsense
+      # term = empty). Reddit rate-limits hard — leave interval_minutes as-is
+      # rather than adding more subreddits without spacing them out.
+      url: "https://www.reddit.com/r/hardwareswapuk/search.rss?q={term}&restrict_sr=1&sort=new"
+      # Reddit keeps old posts searchable forever; a post this old is very
+      # likely sold/expired, so drop anything older than 90 days.
+      max_age_days: 90
+    - name: vinted
+      type: links
+      label: "Vinted"
+      url: "https://www.vinted.co.uk/catalog?search_text={term}&price_to={max_price}"
+    - name: johnpyeauctions
+      type: links
+      label: "John Pye Auctions"
+      # Old johnpye.co.uk domain now redirects here; this is the live pattern.
+      url: "https://www.johnpyeauctions.co.uk/Browse?FullTextQuery={term}"
+    - name: preloved
+      type: links
+      label: "Preloved"
+      url: "https://www.preloved.co.uk/search?q={term}"
+    - name: cexwebuy
+      type: links
+      label: "CeX (WeBuy)"
+      # Graded secondhand electronics/tools reseller — pairs well with this
+      # app's own grade concept.
+      url: "https://uk.webuy.com/search/?stext={term}"
+
 projects:
   - name: "The Coachhouse Tools"
     slug: "coachhouse-tools"
@@ -55,3 +101,150 @@ projects:
         target_deal_price: 200
         priority: high
         # sources: [ebay]    # optional per-item source filter
+
+  # Demo project — exercises hardwareswapuk (its actual home turf: PC
+  # components) and cexwebuy (CeX is the standard UK spot for graded
+  # secondhand GPUs/consoles). Vinted/Preloved/John Pye rarely carry PC
+  # parts so they're left out here via the per-item `sources:` filter.
+  - name: "Gaming PC Upgrade"
+    slug: "gaming-pc-upgrade"
+    items:
+      - name: "Graphics Card"
+        terms:
+          - "RTX 3080"
+          - "RTX 4070"
+          - "RX 6800 XT"
+        max_price: 350
+        normal_price: 450
+        target_deal_price: 280
+        priority: high
+        notes: "12GB+ VRAM preferred. Ask about mining use / hours run. Card only, not a full build."
+        exclude_terms:
+          - "laptop"
+          - "mobile"
+          - "spares"
+          - "broken"
+          - "desktop pc"
+          - "gaming pc"
+          - "prebuilt"
+          - "full pc"
+          - "complete pc"
+          - "complete system"
+          - "full system"
+          - "tower pc"
+          - "itx pc"
+        sources: [ebay, gumtree, facebook, hardwareswapuk, cexwebuy]
+
+      - name: "1440p 144Hz Monitor"
+        terms:
+          - "1440p 144hz monitor"
+          - "27 inch gaming monitor"
+        max_price: 150
+        normal_price: 220
+        target_deal_price: 100
+        priority: normal
+        sources: [ebay, gumtree, facebook, hardwareswapuk, cexwebuy]
+
+      - name: "CPU"
+        terms:
+          - "Ryzen 7 CPU"
+          - "Ryzen 9 CPU"
+          - "Intel i7 CPU"
+          - "Intel i9 CPU"
+        max_price: 180
+        normal_price: 250
+        target_deal_price: 120
+        priority: normal
+        notes: "Processor only — see Motherboard item separately."
+        exclude_terms:
+          - "laptop"
+          - "desktop pc"
+          - "gaming pc"
+          - "prebuilt"
+          - "full pc"
+          - "complete pc"
+          - "complete system"
+          - "full system"
+          - "tower pc"
+          - "itx pc"
+        sources: [ebay, hardwareswapuk, cexwebuy]
+
+      - name: "Motherboard"
+        terms:
+          - "AM5 motherboard"
+          - "AM4 motherboard"
+          - "LGA1700 motherboard"
+        max_price: 100
+        normal_price: 150
+        target_deal_price: 60
+        priority: low
+        exclude_terms:
+          - "laptop"
+          - "desktop pc"
+          - "gaming pc"
+          - "prebuilt"
+          - "full pc"
+          - "complete pc"
+          - "complete system"
+          - "full system"
+          - "tower pc"
+          - "itx pc"
+        sources: [ebay, hardwareswapuk, cexwebuy]
+
+  # Demo project — exercises johnpyeauctions (surplus/used equipment is its
+  # bread and butter) and preloved (general classifieds). Deliberately
+  # excludes hardwareswapuk/cexwebuy/vinted — none of them carry generators
+  # or pressure washers.
+  - name: "Workshop & Garden Kit"
+    slug: "workshop-garden-kit"
+    items:
+      - name: "Petrol Generator"
+        terms:
+          - "petrol generator 3kw"
+          - "inverter generator"
+        max_price: 250
+        normal_price: 350
+        target_deal_price: 180
+        priority: normal
+        notes: "Honda or similar engine preferred; check hours run if listed."
+        exclude_terms:
+          - "toy"
+          - "RC"
+        sources: [ebay, gumtree, facebook, johnpyeauctions, preloved]
+
+      - name: "Petrol Pressure Washer"
+        terms:
+          - "Karcher pressure washer"
+          - "petrol pressure washer"
+        max_price: 120
+        normal_price: 180
+        target_deal_price: 70
+        priority: low
+        sources: [ebay, gumtree, facebook, johnpyeauctions, preloved]
+
+  # Demo project — exercises vinted, which has expanded well beyond clothing
+  # into a general "Home" category (furniture, homeware, small electronics).
+  - name: "Home Office Refresh"
+    slug: "home-office-refresh"
+    items:
+      - name: "Ergonomic Office Chair"
+        terms:
+          - "Herman Miller Aeron"
+          - "ergonomic office chair"
+        max_price: 200
+        normal_price: 350
+        target_deal_price: 120
+        priority: normal
+        exclude_terms:
+          - "gaming chair"
+        sources: [ebay, gumtree, facebook, vinted, preloved]
+
+      - name: "Standing Desk"
+        terms:
+          - "electric standing desk"
+          - "sit stand desk"
+        max_price: 150
+        normal_price: 250
+        target_deal_price: 90
+        priority: low
+        sources: [ebay, gumtree, facebook, vinted, preloved]

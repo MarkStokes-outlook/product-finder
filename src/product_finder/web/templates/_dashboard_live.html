@@ -1,0 +1,32 @@
+{% from "_match_table.html" import match_table %}
+<div class="actions" style="margin-bottom: 1rem;">
+  {% if reports.md %}<a class="button" href="{{ url_for('report_file', kind='md') }}">Markdown report</a>{% endif %}
+</div>
+
+<h2>Projects</h2>
+{% if summaries %}
+<div class="grid">
+  {% for p in summaries %}
+  <div class="card">
+    <h3><a href="{{ url_for('project_detail', project_id=p['id']) }}">{{ p['name'] }}</a></h3>
+    <div class="stat-nums">
+      <div><span class="num">{{ p['item_count'] }}</span><span class="lbl">items</span></div>
+      <div><span class="num">{{ p['match_count'] }}</span><span class="lbl">matches</span></div>
+      <div>
+        <span class="num">{% if p['best_score'] %}{{ '%.0f' | format(p['best_score']) }}{% else %}&mdash;{% endif %}</span>
+        <span class="lbl">best score</span>
+      </div>
+    </div>
+    <a class="button small" href="{{ url_for('listings', project_id=p['id']) }}">View listings</a>
+  </div>
+  {% endfor %}
+</div>
+{% else %}
+<div class="card empty">No projects yet — <a href="{{ url_for('project_new') }}">create one</a>.</div>
+{% endif %}
+
+<h2>Best current deals</h2>
+<div class="card table-card">{{ match_table(best) }}</div>
+
+<h2>Warnings &amp; likely false bargains</h2>
+<div class="card table-card">{{ match_table(warnings) }}</div>

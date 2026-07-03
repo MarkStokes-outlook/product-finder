@@ -1,0 +1,41 @@
+{% extends "base.html" %}
+{% block title %}Projects — Product Finder{% endblock %}
+{% block content %}
+<div class="page-head">
+  <h1>Projects</h1>
+  <div class="actions">
+    <a class="button primary" href="{{ url_for('project_new') }}">New project</a>
+    <form class="inline" method="post" action="{{ url_for('import_config') }}">
+      <button type="submit" title="Merge projects/items from config.yaml into the database">Import from YAML</button>
+    </form>
+  </div>
+</div>
+<div class="card table-card">
+<table>
+<thead><tr><th>Project</th><th>Slug</th><th>Items</th><th>Status</th><th>Actions</th></tr></thead>
+<tbody>
+{% for p in projects %}
+  <tr{% if p['archived'] %} class="archived"{% endif %}>
+    <td><strong><a href="{{ url_for('project_detail', project_id=p['id']) }}">{{ p['name'] }}</a></strong></td>
+    <td class="meta">{{ p['slug'] }}</td>
+    <td class="num"><a href="{{ url_for('items', project_id=p['id']) }}">{{ p['item_count'] }}</a></td>
+    <td>{% if p['archived'] %}<span class="badge grade-unknown">archived</span>
+        {% else %}<span class="badge target">active</span>{% endif %}</td>
+    <td>
+      <a class="button small" href="{{ url_for('project_edit', project_id=p['id']) }}">Edit</a>
+      <form class="inline" method="post" action="{{ url_for('project_archive', project_id=p['id']) }}">
+        <button class="small" type="submit">{{ 'Unarchive' if p['archived'] else 'Archive' }}</button>
+      </form>
+      <form class="inline" method="post" action="{{ url_for('project_delete', project_id=p['id']) }}"
+            onsubmit="return confirm('Delete project {{ p['name'] }} and all its items and matches?');">
+        <button class="small danger" type="submit">Delete</button>
+      </form>
+    </td>
+  </tr>
+{% else %}
+  <tr><td colspan="5" class="empty">No projects yet.</td></tr>
+{% endfor %}
+</tbody>
+</table>
+</div>
+{% endblock %}

@@ -1,0 +1,45 @@
+{% extends "base.html" %}
+{% block title %}Dashboard — Product Finder{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div>
+    <h1>Dashboard</h1>
+    <p class="meta">
+      Postcode: {{ cfg.postcode or '—' }} · Radius: {{ cfg.radius_miles }} miles ·
+      Sources: <a href="{{ url_for('source_list') }}">{{ known_sources | join(', ') }}</a> ·
+      Search runs automatically in the background (<code>watch</code>) — this page
+      updates itself when new results land.
+    </p>
+  </div>
+</div>
+
+<div id="dashboard-live" data-mtime="{{ reports_mtime or '' }}">
+{% include "_dashboard_live.html" %}
+</div>
+
+<script>
+(function () {
+  var container = document.getElementById("dashboard-live");
+  var lastMtime = container.dataset.mtime;
+
+  function poll() {
+    fetch("{{ url_for('api_status') }}")
+      .then(function (r) { return r.json(); })
+      .then(function (data) {
+        var mtime = data.reports_mtime ? String(data.reports_mtime) : "";
+        if (!mtime || mtime === lastMtime) return;
+        lastMtime = mtime;
+        return fetch("{{ url_for('dashboard_live') }}")
+          .then(function (r) { return r.text(); })
+          .then(function (html) {
+            container.innerHTML = html;
+            container.dataset.mtime = lastMtime;
+          });
+      })
+      .catch(function () { /* offline or transient — just try again next tick */ });
+  }
+
+  setInterval(poll, 15000);
+})();
+</script>
+{% endblock %}

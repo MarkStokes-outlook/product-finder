@@ -1,0 +1,56 @@
+{% extends "base.html" %}
+{% block title %}Sources — Product Finder{% endblock %}
+{% block content %}
+<div class="page-head">
+  <h1>Sources</h1>
+</div>
+<div class="card table-card">
+<table>
+<thead><tr><th>Source</th><th>Type</th><th>Automated</th><th>Status</th><th>Actions</th></tr></thead>
+<tbody>
+{% for s in rows %}
+  <tr>
+    <td>
+      <strong>{{ s.label }}</strong>
+      <div class="meta">{{ s.name }}</div>
+      {% if s.url %}<div class="meta">{{ s.url }}{% if s.max_age_days %} &middot; max age {{ s.max_age_days }}d{% endif %}</div>{% endif %}
+    </td>
+    <td class="meta">{{ s.kind }}</td>
+    <td>{% if s.automated %}<span class="badge target">automated</span>{% else %}<span class="badge grade-unknown">manual links</span>{% endif %}</td>
+    <td>{% if s.enabled %}<span class="badge target">enabled</span>{% else %}<span class="badge flag">disabled</span>{% endif %}</td>
+    <td>
+      <form class="inline" method="post" action="{{ url_for('source_toggle', name=s.name) }}">
+        <button class="small" type="submit">{{ 'Disable' if s.enabled else 'Enable' }}</button>
+      </form>
+    </td>
+  </tr>
+{% endfor %}
+</tbody>
+</table>
+</div>
+
+<h2>eBay API credentials</h2>
+<p class="hint">
+  Free developer keys from <a href="https://developer.ebay.com" target="_blank" rel="noopener">developer.ebay.com</a>
+  enable automated eBay search; without them eBay falls back to manual search links.
+</p>
+<form method="post" action="{{ url_for('source_ebay_keys') }}" class="card" style="max-width: 34rem;">
+  <label for="app_id">App ID (Client ID)</label>
+  <input type="text" id="app_id" name="app_id" value="{{ ebay.app_id }}" autocomplete="off">
+  <label for="cert_id">Cert ID (Client Secret)</label>
+  <input type="password" id="cert_id" name="cert_id" value="{{ ebay.cert_id }}" autocomplete="off">
+  <label for="env">Environment</label>
+  <select id="env" name="env">
+    <option value="production" {% if ebay.env == 'production' %}selected{% endif %}>Production</option>
+    <option value="sandbox" {% if ebay.env == 'sandbox' %}selected{% endif %}>Sandbox</option>
+  </select>
+  <p style="margin-top: 1.2rem;"><button class="primary" type="submit">Save</button></p>
+</form>
+
+<h2>Adding new endpoints</h2>
+<p class="hint">
+  New automated (<code>rss</code>) or manual-assisted (<code>links</code>) sources are defined in
+  <code>config.yaml</code> under <code>sources.extra</code> — see the comments there for the template
+  format. They appear here automatically once added; no import step needed.
+</p>
+{% endblock %}

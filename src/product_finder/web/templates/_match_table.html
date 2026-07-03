@@ -1,0 +1,32 @@
+{% macro match_table(rows, show_item=True) %}
+<table>
+<thead><tr>
+  <th>Score</th><th>Title</th>{% if show_item %}<th>Project / Item</th>{% endif %}
+  <th>Price</th><th>Normal</th><th>Saving</th><th>Grade</th><th>Flags</th>
+  <th>Source</th><th>First seen</th>
+</tr></thead>
+<tbody>
+{% for row in rows %}
+  {% set flags = row['flags'] | parse_flags %}
+  {% set score = row['deal_score'] or 0 %}
+  {% set cls = 'warning' if (flags or row['grade'] == 'spares/repair')
+     else ('excellent' if score >= 70 else '') %}
+  <tr{% if cls %} class="{{ cls }}"{% endif %}>
+    <td class="num"><span class="score {{ 'hi' if score >= 70 else ('mid' if score >= 40 else 'lo') }}">{{ '%.0f' | format(score) }}</span></td>
+    <td><a href="{{ row['url'] }}" target="_blank" rel="noopener">{{ row['title'] }}</a></td>
+    {% if show_item %}<td class="meta">{{ row['project_name'] }} / {{ row['item_name'] }}</td>{% endif %}
+    <td class="num"><strong>£{{ '%.2f' | format(row['price']) }}</strong><br>
+      {% if row['under_target'] %}<span class="badge target">under target</span>{% endif %}</td>
+    <td class="num">{% if row['normal_price'] %}£{{ '%.0f' | format(row['normal_price']) }}{% else %}&mdash;{% endif %}</td>
+    <td class="num">{% if row['margin_pct'] %}{{ '%.0f' | format(row['margin_pct']) }}%{% else %}&mdash;{% endif %}</td>
+    <td><span class="badge grade-{{ 'spares' if row['grade'] == 'spares/repair' else row['grade'] }}">{{ row['grade'] }}</span></td>
+    <td>{% for flag in flags %}<span class="badge flag">{{ flag }}</span>{% else %}&mdash;{% endfor %}</td>
+    <td class="meta">{{ row['source'] }}</td>
+    <td class="meta">{{ (row['first_seen'] or '')[:10] }}</td>
+  </tr>
+{% else %}
+  <tr><td colspan="{{ 10 if show_item else 9 }}" class="empty">Nothing here yet.</td></tr>
+{% endfor %}
+</tbody>
+</table>
+{% endmacro %}

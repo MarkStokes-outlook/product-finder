@@ -7,48 +7,60 @@ import sqlite3
 
 from . import db, scoring, sources
 from .alerts import console as console_alerts
-from .alerts import html as html_report
 from .alerts import markdown as markdown_report
 from .alerts import webhook as webhook_alerts
-from .config import AppConfig, ItemConfig
+from .config import AppConfig, ItemConfig, ProjectConfig
 from .models import ManualLink, MatchAlert
 
 log = logging.getLogger(__name__)
 
 
-def _item_sources(item: ItemConfig, cfg: AppConfig) -> list[str]:
+def item_sources(item: ItemConfig, cfg: AppConfig) -> list[str]:
     enabled = cfg.sources.enabled_names()
     if item.sources is None:
         return enabled
     return [s for s in item.sources if s in enabled]
 
 
-def collect_manual_links(cfg: AppConfig) -> list[ManualLink]:
+def load_projects(cfg: AppConfig, conn: sqlite3.Connection) -> list[ProjectConfig]:
+    """Active projects/items from the DB, seeding from YAML on first use."""
+    db.seed_from_config_if_empty(conn, cfg)
+    return db.load_project_configs(conn)
+
+
+def collect_manual_links(
+    cfg: AppConfig,
+    projects: list[ProjectConfig],
+    registry: dict[str, sources.Source] | None = None,
+) -> list[ManualLink]:
+    registry = registry if registry is not None else sources.build_registry(cfg)
     links: list[ManualLink] = []
-    for project in cfg.projects:
+    for project in projects:
         for item in project.items:
-            for name in _item_sources(item, cfg):
-                module = sources.ALL[name]
-                if not module.is_automated(cfg):
-                    links.extend(module.manual_links(item, cfg))
+            for name in item_sources(item, cfg):
+                source = registry.get(name)
+                if source is not None and not source.is_automated():
+                    links.extend(source.manual_links(item))
     return links
 
 
 def run_once(cfg: AppConfig, conn: sqlite3.Connection) -> list[MatchAlert]:
     """Run one full cycle. Returns the new (not previously alerted) matches."""
-    item_ids = db.sync_config(conn, cfg)
+    cfg = db.effective_config(conn, cfg)
+    projects = load_projects(cfg, conn)
+    registry = sources.build_registry(cfg)
     new_alerts: list[MatchAlert] = []
 
-    for project in cfg.projects:
+    for project in projects:
         for item in project.items:
-            item_id = item_ids[(project.slug, item.name)]
-            for name in _item_sources(item, cfg):
-                module = sources.ALL[name]
-                if not module.is_automated(cfg):
+            item_id = item.id
+            for name in item_sources(item, cfg):
+                source = registry.get(name)
+                if source is None or not source.is_automated():
                     continue
                 for term in item.terms:
                     try:
-                        listings = module.search(term, item, cfg)
+                        listings = source.search(term, item)
                     except Exception as exc:
                         # Source failures must never crash the run.
                         log.warning("%s search failed for %r: %s", name, term, exc)
@@ -79,10 +91,9 @@ def run_once(cfg: AppConfig, conn: sqlite3.Connection) -> list[MatchAlert]:
     _send_alerts(cfg, conn, new_alerts)
 
     if cfg.alerts.markdown_report:
-        links = collect_manual_links(cfg)
+        links = collect_manual_links(cfg, projects, registry)
         path = markdown_report.write_report(conn, cfg, links)
-        html_path = html_report.write_html_report(conn, cfg, links)
-        log.info("Reports written to %s and %s", path, html_path)
+        log.info("Report written to %s", path)
     return new_alerts
 
 

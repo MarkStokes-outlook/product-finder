@@ -14,9 +14,10 @@ def test_load_example_config():
     assert cfg.interval_minutes == 60
     assert cfg.alerts.console is True
     assert cfg.alerts.markdown_report is True
-    assert len(cfg.projects) == 1
-    project = cfg.projects[0]
-    assert project.slug == "coachhouse-tools"
+    by_slug = {p.slug: p for p in cfg.projects}
+    assert "coachhouse-tools" in by_slug
+
+    project = by_slug["coachhouse-tools"]
     assert len(project.items) == 2
     saw = project.items[0]
     assert saw.name == "Track Saw"
@@ -26,6 +27,19 @@ def test_load_example_config():
     assert saw.priority == "high"
     assert "toy" in saw.exclude_terms
     assert saw.sources is None  # all enabled sources
+
+    # Demo projects exercising the config-driven extra sources — each scopes
+    # `sources:` to only the endpoints that actually suit its domain.
+    gaming = by_slug["gaming-pc-upgrade"]
+    gpu = gaming.items[0]
+    assert gpu.name == "Graphics Card"
+    assert set(gpu.sources) >= {"hardwareswapuk", "cexwebuy"}
+
+    workshop = by_slug["workshop-garden-kit"]
+    assert set(workshop.items[0].sources) >= {"johnpyeauctions", "preloved"}
+
+    home_office = by_slug["home-office-refresh"]
+    assert set(home_office.items[0].sources) >= {"vinted", "preloved"}
 
 
 def test_missing_file():

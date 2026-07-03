@@ -1,0 +1,64 @@
+{% extends "base.html" %}
+{% from "_match_table.html" import match_table %}
+{% block title %}Listings — Product Finder{% endblock %}
+{% block content %}
+<h1>Listings</h1>
+<form method="get" class="filters card">
+  <span>
+    <label for="project_id">Project</label>
+    <select id="project_id" name="project_id" onchange="this.form.submit()">
+      <option value="">All</option>
+      {% for p in projects %}
+      <option value="{{ p['id'] }}" {% if filters.project_id == p['id'] %}selected{% endif %}>{{ p['name'] }}</option>
+      {% endfor %}
+    </select>
+  </span>
+  <span>
+    <label for="item_id">Item</label>
+    <select id="item_id" name="item_id">
+      <option value="">All</option>
+      {% for i in items %}
+      <option value="{{ i['id'] }}" {% if filters.item_id == i['id'] %}selected{% endif %}>{{ i['name'] }}</option>
+      {% endfor %}
+    </select>
+  </span>
+  <span>
+    <label for="source">Source</label>
+    <select id="source" name="source">
+      <option value="">All</option>
+      {% for s in known_sources %}
+      <option value="{{ s }}" {% if filters.source == s %}selected{% endif %}>{{ s }}</option>
+      {% endfor %}
+    </select>
+  </span>
+  <span>
+    <label for="grade">Grade</label>
+    <select id="grade" name="grade">
+      <option value="">All</option>
+      {% for g in ['A', 'B', 'C', 'spares/repair', 'unknown'] %}
+      <option value="{{ g }}" {% if filters.grade == g %}selected{% endif %}>{{ g }}</option>
+      {% endfor %}
+    </select>
+  </span>
+  <span>
+    <label for="flagged">Warnings</label>
+    <select id="flagged" name="flagged">
+      <option value="" {% if not filters.flagged %}selected{% endif %}>All</option>
+      <option value="no" {% if filters.flagged == 'no' %}selected{% endif %}>Clean only</option>
+      <option value="yes" {% if filters.flagged == 'yes' %}selected{% endif %}>Flagged only</option>
+    </select>
+  </span>
+  <span>
+    <label for="sort">Sort by</label>
+    <select id="sort" name="sort">
+      <option value="score" {% if filters.sort == 'score' %}selected{% endif %}>Deal score</option>
+      <option value="price" {% if filters.sort == 'price' %}selected{% endif %}>Price (low first)</option>
+      <option value="first_seen" {% if filters.sort == 'first_seen' %}selected{% endif %}>Newest first</option>
+    </select>
+  </span>
+  <button class="primary" type="submit">Apply</button>
+  <a class="button" href="{{ url_for('listings') }}">Reset</a>
+</form>
+<p class="meta">{{ rows | length }} listing(s){% if rows | length == 500 %} (showing first 500){% endif %}</p>
+<div class="card table-card">{{ match_table(rows) }}</div>
+{% endblock %}

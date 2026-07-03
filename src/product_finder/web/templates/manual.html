@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+{% block title %}Manual searches — Product Finder{% endblock %}
+{% block content %}
+<h1>Manual searches</h1>
+<p class="meta">These sources are not automated — open the links to check manually.
+Links are pre-filtered with your search terms, price caps and postcode radius.</p>
+{% set ns = namespace(project=none) %}
+{% for project_name, item_name, links in groups %}
+  {% if project_name != ns.project %}
+    {% set ns.project = project_name %}
+    <h2>{{ project_name }}</h2>
+  {% endif %}
+  <div class="card">
+    <h3>{{ item_name }}</h3>
+    <ul style="margin: .3rem 0 .2rem; padding-left: 1.2rem;">
+    {% for link in links %}
+      <li><a href="{{ link.url }}" target="_blank" rel="noopener">{{ link.label }}</a></li>
+    {% endfor %}
+    </ul>
+  </div>
+{% else %}
+<div class="card empty">No manual-assisted sources configured, or no items yet.</div>
+{% endfor %}
+{% endblock %}

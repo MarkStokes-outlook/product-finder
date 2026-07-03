@@ -1,0 +1,16 @@
+{% extends "base.html" %}
+{% block title %}{{ 'Edit' if project else 'New' }} project — Product Finder{% endblock %}
+{% block content %}
+<h1>{{ 'Edit project' if project else 'New project' }}</h1>
+<form method="post" class="card" style="max-width: 34rem;">
+  <label for="name">Name</label>
+  <input type="text" id="name" name="name" required autofocus
+         value="{{ project['name'] if project else '' }}">
+  {% if project %}<p class="hint">Slug: {{ project['slug'] }} (fixed)</p>{% endif %}
+  <p style="margin-top: 1.2rem;">
+    <button class="primary" type="submit">Save</button>
+    <a class="button" href="{{ url_for('projects') }}">Cancel</a>
+    {% if project %}<a class="button" href="{{ url_for('items', project_id=project['id']) }}">Edit items in this project</a>{% endif %}
+  </p>
+</form>
+{% endblock %}

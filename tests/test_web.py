@@ -1,0 +1,416 @@
+from pathlib import Path
+
+import pytest
+
+from product_finder import db
+from product_finder.config import AppConfig
+from product_finder.models import Evaluation, Listing
+from product_finder.web.app import create_app
+
+
+@pytest.fixture
+def cfg(tmp_path):
+    return AppConfig(
+        db_path=str(tmp_path / "test.db"),
+        report_path=str(tmp_path / "reports" / "latest.md"),
+    )
+
+
+@pytest.fixture
+def client(cfg):
+    app = create_app(cfg)
+    app.config["TESTING"] = True
+    return app.test_client()
+
+
+def seed_match(cfg, flags=None, grade="A", score=85.0):
+    conn = db.connect(cfg.db_path)
+    project_id = db.create_project(conn, "Coachhouse Tools")
+    from product_finder.config import ItemConfig
+
+    item_id = db.create_item(
+        conn,
+        project_id,
+        ItemConfig(name="Track Saw", terms=["track saw"], normal_price=500,
+                   target_deal_price=300, priority="high"),
+    )
+    listing_id, _ = db.upsert_listing(
+        conn,
+        Listing(source="ebay", external_id="E1", title="Makita SP6000 saw",
+                price=245.0, url="https://example.com/1"),
+    )
+    db.record_match(
+        conn, listing_id, item_id,
+        Evaluation(grade=grade, flags=flags or [], margin_abs=255.0,
+                   margin_pct=51.0, under_target=True, deal_score=score),
+    )
+    conn.commit()
+    conn.close()
+    return project_id, item_id
+
+
+# --- Dashboard ---------------------------------------------------------------
+
+
+def test_dashboard_empty(client):
+    resp = client.get("/")
+    assert resp.status_code == 200
+    assert b"No projects yet" in resp.data
+
+
+def test_dashboard_with_data(cfg, client):
+    seed_match(cfg)
+    resp = client.get("/")
+    assert resp.status_code == 200
+    assert b"Coachhouse Tools" in resp.data
+    assert b"Makita SP6000 saw" in resp.data
+    assert b"under target" in resp.data
+
+
+def test_dashboard_warning_section(cfg, client):
+    seed_match(cfg, flags=["faulty"], grade="spares/repair", score=20.0)
+    resp = client.get("/")
+    assert b"faulty" in resp.data
+
+
+# --- Dashboard live refresh (no manual trigger, no full page reload) -----------
+
+
+def test_no_manual_run_trigger_in_ui(client):
+    resp = client.get("/")
+    assert b"Run search now" not in resp.data
+    assert client.get("/run").status_code == 404
+
+
+def test_api_status_no_reports_yet(client):
+    resp = client.get("/api/status")
+    assert resp.status_code == 200
+    assert resp.get_json() == {"reports_mtime": None}
+
+
+def test_api_status_reflects_report_mtime(cfg, client):
+    report_path = Path(cfg.report_path)
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    report_path.write_text("# report")
+    resp = client.get("/api/status")
+    data = resp.get_json()
+    assert data["reports_mtime"] is not None
+    assert data["reports_mtime"] == pytest.approx(report_path.stat().st_mtime)
+
+
+def test_dashboard_live_fragment_has_no_layout(cfg, client):
+    seed_match(cfg)
+    resp = client.get("/dashboard/live")
+    assert resp.status_code == 200
+    assert b"Makita SP6000 saw" in resp.data
+    assert b"<nav>" not in resp.data  # fragment only, not the full page shell
+    assert b"<html" not in resp.data
+
+
+def test_dashboard_page_embeds_live_fragment_and_polls(cfg, client):
+    seed_match(cfg)
+    resp = client.get("/")
+    assert b'id="dashboard-live"' in resp.data
+    assert b"Makita SP6000 saw" in resp.data  # fragment included on first load too
+    assert b"setInterval" in resp.data
+    assert b"/api/status" in resp.data
+    assert b"/dashboard/live" in resp.data
+
+
+# --- Sources page ---------------------------------------------------------------
+
+
+def test_sources_page_lists_builtin_and_extra(cfg, client):
+    resp = client.get("/sources")
+    assert resp.status_code == 200
+    assert b"eBay" in resp.data
+    assert b"Gumtree" in resp.data
+    assert b"Facebook Marketplace" in resp.data
+
+
+def test_sources_page_shows_new_extra_source_no_import_needed(tmp_path, client):
+    from product_finder.config import ExtraSourceConfig, SourcesConfig
+    from product_finder.web.app import create_app
+
+    cfg = AppConfig(
+        db_path=str(tmp_path / "test.db"),
+        report_path=str(tmp_path / "reports" / "latest.md"),
+        sources=SourcesConfig(extra=[
+            ExtraSourceConfig(name="newsite", type="links", url="https://n.example/?q={term}",
+                               label="New Site"),
+        ]),
+    )
+    app = create_app(cfg)
+    app.config["TESTING"] = True
+    resp = app.test_client().get("/sources")
+    assert b"New Site" in resp.data
+
+
+def test_source_toggle_disables_and_re_enables(cfg, client):
+    resp = client.post("/sources/gumtree/toggle", follow_redirects=True)
+    assert b"disabled" in resp.data
+
+    conn = db.connect(cfg.db_path)
+    row = conn.execute("SELECT enabled FROM source_settings WHERE name='gumtree'").fetchone()
+    assert row["enabled"] == 0
+
+    # Reflected immediately on the dashboard's source list — no restart needed.
+    resp = client.get("/")
+    assert b"gumtree" not in resp.data
+
+    client.post("/sources/gumtree/toggle")
+    row = conn.execute("SELECT enabled FROM source_settings WHERE name='gumtree'").fetchone()
+    assert row["enabled"] == 1
+
+
+def test_source_toggle_unknown_name_404s(client):
+    resp = client.post("/sources/not-a-real-source/toggle")
+    assert resp.status_code == 404
+
+
+def test_source_ebay_keys_save_and_prefill(cfg, client):
+    resp = client.post(
+        "/sources/ebay/keys",
+        data={"app_id": "app123", "cert_id": "cert456", "env": "sandbox"},
+        follow_redirects=True,
+    )
+    assert resp.status_code == 200
+    assert b"app123" in resp.data
+    assert b"sandbox" in resp.data
+
+    conn = db.connect(cfg.db_path)
+    row = conn.execute("SELECT * FROM source_settings WHERE name='ebay'").fetchone()
+    assert row["ebay_app_id"] == "app123"
+    assert row["ebay_cert_id"] == "cert456"
+    assert row["ebay_env"] == "sandbox"
+
+
+# --- Project detail (live per-project dashboard, replaces the HTML report) -----
+
+
+def test_project_detail_shows_items_grouped_with_matches(cfg, client):
+    project_id, _ = seed_match(cfg)
+    resp = client.get(f"/projects/{project_id}")
+    assert resp.status_code == 200
+    assert b"Track Saw" in resp.data
+    assert b"Makita SP6000 saw" in resp.data
+    assert b"Target deal price" in resp.data or b"Target deal price:" in resp.data
+
+
+def test_project_detail_shows_item_with_no_matches_yet(cfg, client):
+    conn = db.connect(cfg.db_path)
+    project_id = db.create_project(conn, "Empty Project")
+    from product_finder.config import ItemConfig
+    db.create_item(conn, project_id, ItemConfig(name="Widget", terms=["widget"]))
+    conn.commit()
+    resp = client.get(f"/projects/{project_id}")
+    assert resp.status_code == 200
+    assert b"Widget" in resp.data
+    assert b"Nothing here yet" in resp.data
+
+
+def test_project_detail_404_for_unknown_project(client):
+    assert client.get("/projects/999").status_code == 404
+    assert client.get("/projects/999/live").status_code == 404
+
+
+def test_project_detail_live_fragment_has_no_layout(cfg, client):
+    project_id, _ = seed_match(cfg)
+    resp = client.get(f"/projects/{project_id}/live")
+    assert resp.status_code == 200
+    assert b"Makita SP6000 saw" in resp.data
+    assert b"<nav>" not in resp.data
+    assert b"<html" not in resp.data
+
+
+def test_project_detail_page_polls_for_live_updates(cfg, client):
+    project_id, _ = seed_match(cfg)
+    resp = client.get(f"/projects/{project_id}")
+    assert b'id="project-live"' in resp.data
+    assert b"setInterval" in resp.data
+    assert f"/projects/{project_id}/live".encode() in resp.data
+
+
+def test_project_detail_includes_manual_links_for_non_automated_sources(cfg, client):
+    project_id, _ = seed_match(cfg)
+    resp = client.get(f"/projects/{project_id}")
+    assert b"Manual searches" in resp.data
+    assert b"Gumtree" in resp.data
+
+
+def test_dashboard_project_card_links_to_project_detail(cfg, client):
+    project_id, _ = seed_match(cfg)
+    resp = client.get("/")
+    assert f'/projects/{project_id}"'.encode() in resp.data
+
+
+def test_projects_page_name_links_to_project_detail(cfg, client):
+    project_id, _ = seed_match(cfg)
+    resp = client.get("/projects")
+    assert f'/projects/{project_id}"'.encode() in resp.data
+
+
+# --- HTML report removed (superseded by the live project dashboard) ------------
+
+
+def test_html_report_route_gone(cfg, client):
+    assert client.get("/reports/html").status_code == 404
+
+
+def test_no_html_report_mentions_anywhere(cfg, client):
+    project_id, _ = seed_match(cfg)
+    for url in ("/", f"/projects/{project_id}"):
+        resp = client.get(url)
+        assert b"HTML report" not in resp.data
+
+
+# --- Project CRUD --------------------------------------------------------------
+
+
+def test_project_create(cfg, client):
+    resp = client.post("/projects/new", data={"name": "Homelab"}, follow_redirects=True)
+    assert resp.status_code == 200
+    assert b"Homelab" in resp.data
+    conn = db.connect(cfg.db_path)
+    row = conn.execute("SELECT * FROM projects WHERE name = 'Homelab'").fetchone()
+    assert row is not None
+    assert row["slug"] == "homelab"
+
+
+def test_project_create_requires_name(client):
+    resp = client.post("/projects/new", data={"name": ""}, follow_redirects=True)
+    assert b"required" in resp.data
+
+
+def test_project_edit(cfg, client):
+    project_id, _ = seed_match(cfg)
+    client.post(f"/projects/{project_id}/edit", data={"name": "Renamed"})
+    conn = db.connect(cfg.db_path)
+    assert conn.execute(
+        "SELECT name FROM projects WHERE id = ?", (project_id,)
+    ).fetchone()["name"] == "Renamed"
+
+
+def test_project_archive_and_delete(cfg, client):
+    project_id, item_id = seed_match(cfg)
+    client.post(f"/projects/{project_id}/archive")
+    conn = db.connect(cfg.db_path)
+    assert conn.execute(
+        "SELECT archived FROM projects WHERE id = ?", (project_id,)
+    ).fetchone()["archived"] == 1
+    conn.close()
+
+    client.post(f"/projects/{project_id}/delete")
+    conn = db.connect(cfg.db_path)
+    assert conn.execute("SELECT COUNT(*) c FROM projects").fetchone()["c"] == 0
+    assert conn.execute("SELECT COUNT(*) c FROM items").fetchone()["c"] == 0
+    assert conn.execute("SELECT COUNT(*) c FROM listing_matches").fetchone()["c"] == 0
+
+
+# --- Item CRUD -----------------------------------------------------------------
+
+
+def test_item_create(cfg, client):
+    project_id, _ = seed_match(cfg)
+    resp = client.post(
+        "/items/new",
+        data={
+            "project_id": project_id,
+            "name": "Mitre Saw",
+            "terms": "sliding mitre saw\nDeWalt mitre saw",
+            "exclude_terms": "toy",
+            "max_price": "300",
+            "normal_price": "350",
+            "target_deal_price": "200",
+            "priority": "high",
+            "notes": "prefer DeWalt",
+            "source_ebay": "1",
+        },
+        follow_redirects=True,
+    )
+    assert resp.status_code == 200
+    conn = db.connect(cfg.db_path)
+    row = conn.execute("SELECT * FROM items WHERE name = 'Mitre Saw'").fetchone()
+    assert row is not None
+    item = db._item_from_row(row)
+    assert item.terms == ["sliding mitre saw", "DeWalt mitre saw"]
+    assert item.exclude_terms == ["toy"]
+    assert item.max_price == 300
+    assert item.sources == ["ebay"]  # only ebay ticked
+
+
+def test_item_create_requires_terms(cfg, client):
+    project_id, _ = seed_match(cfg)
+    resp = client.post(
+        "/items/new",
+        data={"project_id": project_id, "name": "Widget", "terms": ""},
+        follow_redirects=True,
+    )
+    assert b"search term" in resp.data
+    conn = db.connect(cfg.db_path)
+    assert conn.execute(
+        "SELECT COUNT(*) c FROM items WHERE name = 'Widget'"
+    ).fetchone()["c"] == 0
+
+
+def test_item_edit(cfg, client):
+    _, item_id = seed_match(cfg)
+    client.post(
+        f"/items/{item_id}/edit",
+        data={"name": "Track Saw", "terms": "plunge saw", "priority": "low",
+              "normal_price": "450"},
+    )
+    conn = db.connect(cfg.db_path)
+    item = db._item_from_row(db.get_item(conn, item_id))
+    assert item.terms == ["plunge saw"]
+    assert item.priority == "low"
+    assert item.normal_price == 450
+    assert item.sources is None  # no boxes ticked = all sources
+
+
+def test_item_archive_and_delete(cfg, client):
+    _, item_id = seed_match(cfg)
+    client.post(f"/items/{item_id}/archive")
+    conn = db.connect(cfg.db_path)
+    assert conn.execute(
+        "SELECT archived FROM items WHERE id = ?", (item_id,)
+    ).fetchone()["archived"] == 1
+    conn.close()
+
+    client.post(f"/items/{item_id}/delete")
+    conn = db.connect(cfg.db_path)
+    assert conn.execute("SELECT COUNT(*) c FROM items").fetchone()["c"] == 0
+    assert conn.execute("SELECT COUNT(*) c FROM listing_matches").fetchone()["c"] == 0
+    # listings themselves are kept
+    assert conn.execute("SELECT COUNT(*) c FROM listings").fetchone()["c"] == 1
+
+
+# --- Listings & manual pages ------------------------------------------------------
+
+
+def test_listings_page_and_filters(cfg, client):
+    project_id, item_id = seed_match(cfg)
+    resp = client.get("/listings")
+    assert resp.status_code == 200
+    assert b"Makita SP6000 saw" in resp.data
+
+    resp = client.get(f"/listings?project_id={project_id}&grade=A&flagged=no&sort=price")
+    assert b"Makita SP6000 saw" in resp.data
+
+    resp = client.get("/listings?grade=spares/repair")
+    assert b"Makita SP6000 saw" not in resp.data
+
+
+def test_manual_page(cfg, client):
+    seed_match(cfg)
+    resp = client.get("/manual")
+    assert resp.status_code == 200
+    assert b"Gumtree" in resp.data
+    assert b"Facebook Marketplace" in resp.data
+
+
+def test_archived_project_excluded_from_manual(cfg, client):
+    project_id, _ = seed_match(cfg)
+    client.post(f"/projects/{project_id}/archive")
+    resp = client.get("/manual")
+    assert b"Track Saw" not in resp.data

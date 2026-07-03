@@ -1,0 +1,48 @@
+{% extends "base.html" %}
+{% block title %}{{ project['name'] }} — Product Finder{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div>
+    <h1>{{ project['name'] }}{% if project['archived'] %} <span class="badge grade-unknown">archived</span>{% endif %}</h1>
+    <p class="meta">
+      Updates automatically as <code>watch</code> finds new results.
+      <a href="{{ url_for('items', project_id=project['id']) }}">Manage items</a> ·
+      <a href="{{ url_for('listings', project_id=project['id']) }}">All listings</a> ·
+      <a href="{{ url_for('project_edit', project_id=project['id']) }}">Rename</a>
+    </p>
+  </div>
+  <div class="actions">
+    <a class="button" href="{{ url_for('projects') }}">&larr; All projects</a>
+  </div>
+</div>
+
+<div id="project-live" data-mtime="{{ reports_mtime or '' }}">
+{% include "_project_detail_live.html" %}
+</div>
+
+<script>
+(function () {
+  var container = document.getElementById("project-live");
+  var lastMtime = container.dataset.mtime;
+
+  function poll() {
+    fetch("{{ url_for('api_status') }}")
+      .then(function (r) { return r.json(); })
+      .then(function (data) {
+        var mtime = data.reports_mtime ? String(data.reports_mtime) : "";
+        if (!mtime || mtime === lastMtime) return;
+        lastMtime = mtime;
+        return fetch("{{ url_for('project_detail_live', project_id=project['id']) }}")
+          .then(function (r) { return r.text(); })
+          .then(function (html) {
+            container.innerHTML = html;
+            container.dataset.mtime = lastMtime;
+          });
+      })
+      .catch(function () { /* offline or transient — just try again next tick */ });
+  }
+
+  setInterval(poll, 15000);
+})();
+</script>
+{% endblock %}

@@ -182,16 +182,121 @@ projects:
 ```bash
 python -m product_finder run-once        # one search cycle, alert on new matches
 python -m product_finder watch           # run continuously at interval_minutes
+python -m product_finder web             # local web UI at http://127.0.0.1:8765
 python -m product_finder report          # regenerate reports/latest.md from stored data
-python -m product_finder report-html     # regenerate reports/latest.html from stored data
-python -m product_finder list-projects   # show configured projects
-python -m product_finder list-items      # show configured items
+python -m product_finder import-config   # merge YAML projects/items into the database
+python -m product_finder list-projects   # show projects
+python -m product_finder list-items      # show items
 ```
 
 All commands accept `-c path/to/config.yaml` (default `config.yaml`) and `-v`
-for debug logging.
+for debug logging. `web` also accepts `--port`.
+
+### Running on a schedule
+
+`watch` and `web` are independent processes — searches must not depend on the
+UI being open, and shouldn't block a page load. Run `watch` in the background
+alongside `web`:
+
+```bash
+nohup python -m product_finder watch > watch.log 2>&1 &
+disown
+```
+
+Both processes read/write the same SQLite DB concurrently (WAL mode handles
+this safely). There's no manual "run now" trigger in the web UI — search only
+ever happens in `watch` (or a one-off `run-once`), never inside the web
+process; the dashboard just polls for and displays whatever `watch` finds.
+
+For something that survives reboots/logout, wrap the `watch` command in a
+launchd LaunchAgent (macOS) or systemd unit (Linux) instead of `nohup`.
 
 ---
+
+## Web UI
+
+```bash
+python -m product_finder web
+```
+
+A local, server-rendered UI at `http://127.0.0.1:8765` — localhost only, no
+accounts, no cloud. Pages:
+
+- **Dashboard** — project summaries, best current deals, a warnings/false
+  bargains section, and a link to the latest report. Polls every 15s for
+  new results (from the background `watch` process) and swaps in fresh data
+  without a full page reload. Click a project to open its detail page.
+- **Project detail** (click any project) — that project's items, each with
+  its own matched-listings table and price/priority context, plus its manual
+  search links. Same live auto-refresh as the dashboard.
+- **Projects** — create, rename, archive/unarchive, delete.
+- **Items** — full editing of every field (terms, exclude terms, prices,
+  priority, notes, per-item source filters), grouped by project.
+- **Listings** — browse discovered listings; filter by project, item, source,
+  grade, and warning flags; sort by deal score, price, or first seen.
+- **Manual searches** — the Gumtree/Facebook (and keyless eBay) links grouped
+  by project and item.
+- **Sources** — enable/disable any source (built-in or config-defined) and
+  set eBay API credentials, without touching YAML or restarting anything.
+
+### Where projects and items live
+
+Once seeded, **the database is the source of truth for projects and items** —
+edit them in the web UI, not the YAML. The YAML remains the place for
+settings: postcode, radius, interval, and alerts.
+
+- On first run (CLI or web) an empty database is seeded from the YAML
+  `projects:` section automatically.
+- To re-import after editing the YAML by hand, run
+  `python -m product_finder import-config` or use the **Import from YAML**
+  button on the Projects page. Import merges by project slug and item name,
+  overwriting those items' fields.
+- Archived projects/items are kept but excluded from searches, reports, and
+  manual links.
+
+### Where sources live
+
+Unlike projects/items, source *definitions* (URL templates, type) always come
+from `sources.extra` in YAML — no import step, no duplication into the DB.
+Add a new endpoint to `config.yaml` and it appears on the Sources page
+immediately. Only two things can be overridden in the DB, via the Sources
+page: whether a source is **enabled**, and **eBay API credentials**
+(`app_id`/`cert_id`/`env`) — both take effect on the very next search, in any
+process (`web`, `watch`, `run-once`), no restart needed.
+
+---
+
+## Adding Sources
+
+Every source implements one small contract (`src/product_finder/sources/base.py`):
+`name`, `is_automated()`, `search(term, item)` and `manual_links(item)`. All
+downstream logic (grading, scoring, dedup, alerts, reports, web UI) only sees
+normalised `Listing` objects, so it never knows or cares where they came from.
+
+Most new sites need **no code at all** — add them under `sources.extra` in
+`config.yaml`:
+
+```yaml
+sources:
+  extra:
+    - name: hukd                # automated: RSS/Atom feed per search term
+      type: rss
+      label: HotUKDeals
+      url: "https://www.hotukdeals.com/rss/search?q={term}"
+    - name: johnpye             # manual-assisted: pre-filtered search links
+      type: links
+      label: John Pye Auctions
+      url: "https://www.johnpye.co.uk/?s={term}"
+```
+
+Templates may use `{term}`, `{max_price}`, `{postcode}` and `{radius}`.
+RSS entries must mention a `£` price in the title or description; entries
+without one are skipped (scoring needs a price). Items can target extra
+sources by name in their `sources:` filter, and they appear in the web UI
+like any built-in.
+
+Sites needing a real API integration (like eBay) get a subclass of `Source`
+registered in `sources/__init__.py` — one file plus one registry line.
 
 ## Source Limitations
 
@@ -238,12 +343,12 @@ Normal price: £500 · Target deal price: £300 · Priority: high
 ✅ = at or under target deal price. A **Manual searches** section at the end
 lists pre-filtered links for the non-automated sources.
 
-An HTML version (`reports/latest.html`) is generated alongside the Markdown
-report on every run — same data, with colour highlighting: green rows for
-excellent deals (score ≥ 70, no warnings), red rows for spares/repair or
-flagged listings, and an "under target" badge on prices at or below the
-target deal price. Open it in a browser; there is no server and no
-JavaScript.
+There's no separate HTML report file — the **project detail page** in the web
+UI (click a project anywhere in the UI) shows the same thing live: each
+item grouped with its matched listings, colour-highlighted the same way
+(green for excellent deals, red for spares/repair or flagged listings), plus
+that project's manual search links. It updates itself automatically as
+`watch` finds new results — no regenerating, no opening a file.
 
 ---
 

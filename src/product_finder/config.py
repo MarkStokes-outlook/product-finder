@@ -25,6 +25,7 @@ class ItemConfig:
     notes: str = ""
     exclude_terms: list[str] = field(default_factory=list)
     sources: list[str] | None = None  # None = all enabled sources
+    id: int | None = None  # set when loaded from the database
 
 
 @dataclass
@@ -32,6 +33,7 @@ class ProjectConfig:
     name: str
     slug: str
     items: list[ItemConfig]
+    id: int | None = None  # set when loaded from the database
 
 
 @dataclass
@@ -49,11 +51,36 @@ class EbayConfig:
     env: str = "production"  # production | sandbox
 
 
+EXTRA_SOURCE_TYPES = ("rss", "links")
+
+
+@dataclass
+class ExtraSourceConfig:
+    """A config-defined source: no code needed per site.
+
+    type "rss"   — automated: fetch and parse an RSS/Atom feed per term.
+    type "links" — manual-assisted: generate search links from a URL template.
+    Templates may use {term}, {max_price}, {postcode}, {radius}.
+    """
+
+    name: str
+    type: str
+    url: str
+    label: str = ""
+    enabled: bool = True
+    # rss only: drop entries older than this (their pubDate/updated/published).
+    # Feeds like Reddit search keep old posts searchable indefinitely, so
+    # without this a "deal" can be a 2-year-old thread for an item long since
+    # sold. Entries with no parseable date are kept (nothing to filter on).
+    max_age_days: int | None = None
+
+
 @dataclass
 class SourcesConfig:
     ebay: EbayConfig = field(default_factory=EbayConfig)
     gumtree_enabled: bool = True
     facebook_enabled: bool = True
+    extra: list[ExtraSourceConfig] = field(default_factory=list)
 
     def enabled_names(self) -> list[str]:
         names = []
@@ -63,7 +90,11 @@ class SourcesConfig:
             names.append("gumtree")
         if self.facebook_enabled:
             names.append("facebook")
+        names.extend(e.name for e in self.extra if e.enabled)
         return names
+
+    def all_names(self) -> list[str]:
+        return list(KNOWN_SOURCES) + [e.name for e in self.extra]
 
 
 @dataclass
@@ -94,11 +125,7 @@ def _load_item(raw: dict, project_slug: str) -> ItemConfig:
     terms = raw.get("terms") or []
     if not terms:
         raise ConfigError(f"Item '{name}' has no search terms")
-    sources = raw.get("sources")
-    if sources is not None:
-        unknown = [s for s in sources if s not in KNOWN_SOURCES]
-        if unknown:
-            raise ConfigError(f"Item '{name}' has unknown sources: {unknown}")
+    sources = raw.get("sources")  # validated against all source names after load
     priority = str(raw.get("priority", "normal")).lower()
     if priority not in ("high", "normal", "low"):
         raise ConfigError(f"Item '{name}' priority must be high/normal/low")
@@ -145,6 +172,41 @@ def load_config(path: str | Path) -> AppConfig:
 
     sources_raw = raw.get("sources") or {}
     ebay_raw = sources_raw.get("ebay") or {}
+    extra = []
+    for raw_extra in (sources_raw.get("extra") or []):
+        ename = str(raw_extra.get("name") or "").strip().lower()
+        if not ename:
+            raise ConfigError("Extra source is missing 'name'")
+        if ename in KNOWN_SOURCES or any(e.name == ename for e in extra):
+            raise ConfigError(f"Duplicate source name: '{ename}'")
+        etype = str(raw_extra.get("type") or "links").lower()
+        if etype not in EXTRA_SOURCE_TYPES:
+            raise ConfigError(
+                f"Extra source '{ename}' has unknown type '{etype}' "
+                f"(expected one of {EXTRA_SOURCE_TYPES})"
+            )
+        url = str(raw_extra.get("url") or "")
+        if "{term}" not in url:
+            raise ConfigError(f"Extra source '{ename}' url must contain {{term}}")
+        max_age_raw = raw_extra.get("max_age_days")
+        max_age_days = None
+        if max_age_raw is not None:
+            try:
+                max_age_days = int(max_age_raw)
+            except (TypeError, ValueError):
+                raise ConfigError(f"Extra source '{ename}' max_age_days must be an integer")
+            if max_age_days <= 0:
+                raise ConfigError(f"Extra source '{ename}' max_age_days must be positive")
+        extra.append(
+            ExtraSourceConfig(
+                name=ename,
+                type=etype,
+                url=url,
+                label=str(raw_extra.get("label") or ""),
+                enabled=bool(raw_extra.get("enabled", True)),
+                max_age_days=max_age_days,
+            )
+        )
     sources = SourcesConfig(
         ebay=EbayConfig(
             enabled=bool(ebay_raw.get("enabled", True)),
@@ -154,12 +216,20 @@ def load_config(path: str | Path) -> AppConfig:
         ),
         gumtree_enabled=bool((sources_raw.get("gumtree") or {}).get("enabled", True)),
         facebook_enabled=bool((sources_raw.get("facebook") or {}).get("enabled", True)),
+        extra=extra,
     )
 
     projects = [_load_project(p) for p in (raw.get("projects") or [])]
     slugs = [p.slug for p in projects]
     if len(slugs) != len(set(slugs)):
         raise ConfigError("Duplicate project slugs in config")
+    allowed = set(sources.all_names())
+    for project in projects:
+        for item in project.items:
+            if item.sources is not None:
+                unknown = [s for s in item.sources if s not in allowed]
+                if unknown:
+                    raise ConfigError(f"Item '{item.name}' has unknown sources: {unknown}")
 
     return AppConfig(
         postcode=str(raw.get("postcode") or ""),

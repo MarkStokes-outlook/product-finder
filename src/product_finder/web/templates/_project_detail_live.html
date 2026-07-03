@@ -1,0 +1,25 @@
+{% from "_match_table.html" import match_table %}
+{% for item in items %}
+  <h2>{{ item['name'] }}{% if item['archived'] %} <span class="badge grade-unknown">archived</span>{% endif %}</h2>
+  <p class="meta">
+    Normal price: {% if item['normal_price'] %}£{{ '%.0f' | format(item['normal_price']) }}{% else %}&mdash;{% endif %}
+    &middot; Target deal price: {% if item['target_deal_price'] %}£{{ '%.0f' | format(item['target_deal_price']) }}{% else %}&mdash;{% endif %}
+    &middot; Priority: {{ item['priority'] }}
+    &middot; <a href="{{ url_for('item_edit', item_id=item['id']) }}">Edit item</a>
+  </p>
+  <div class="card table-card">{{ match_table(matches_by_item.get(item['id'], []), show_item=False) }}</div>
+{% else %}
+  <div class="card empty">No items in this project yet — <a href="{{ url_for('item_new', project_id=project['id']) }}">add one</a>.</div>
+{% endfor %}
+
+{% if manual_links %}
+<h2>Manual searches</h2>
+<p class="meta">These sources aren't automated — open the links to check manually:</p>
+<div class="card">
+<ul style="margin: 0; padding-left: 1.2rem;">
+  {% for link in manual_links %}
+  <li><a href="{{ link.url }}" target="_blank" rel="noopener">{{ link.label }}</a></li>
+  {% endfor %}
+</ul>
+</div>
+{% endif %}

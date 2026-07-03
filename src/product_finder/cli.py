@@ -8,36 +8,38 @@ import sys
 import time
 
 from . import db, runner, sources
-from .alerts import html as html_report
 from .alerts import markdown as markdown_report
 from .config import AppConfig, ConfigError, load_config
 
 log = logging.getLogger("product_finder")
 
 
-def _print_run_summary(cfg: AppConfig, new_alerts: list) -> None:
+def _print_run_summary(cfg: AppConfig, projects: list, new_alerts: list) -> None:
     if new_alerts:
         print(f"\n{len(new_alerts)} new match(es) found.")
     else:
         print("No new matches this run.")
-    manual = runner.collect_manual_links(cfg)
+    registry = sources.build_registry(cfg)
+    manual = runner.collect_manual_links(cfg, projects, registry)
     if manual:
-        automated = [n for n in cfg.sources.enabled_names() if sources.ALL[n].is_automated(cfg)]
+        automated = [n for n, s in registry.items() if s.is_automated()]
         skipped = sorted({l.source for l in manual})
         print(f"Automated sources: {', '.join(automated) or 'none'}")
         print(f"Manual-assisted sources ({', '.join(skipped)}): "
               f"{len(manual)} search links in the report.")
     if cfg.alerts.markdown_report:
-        print(f"Reports: {cfg.report_path} / {html_report.html_report_path(cfg)}")
+        print(f"Report: {cfg.report_path}")
 
 
 def cmd_run_once(cfg: AppConfig) -> int:
     conn = db.connect(cfg.db_path)
     try:
         new_alerts = runner.run_once(cfg, conn)
+        cfg = db.effective_config(conn, cfg)  # for the summary's source list
+        projects = db.load_project_configs(conn)
     finally:
         conn.close()
-    _print_run_summary(cfg, new_alerts)
+    _print_run_summary(cfg, projects, new_alerts)
     return 0
 
 
@@ -48,7 +50,9 @@ def cmd_watch(cfg: AppConfig) -> int:
         conn = db.connect(cfg.db_path)
         try:
             new_alerts = runner.run_once(cfg, conn)
-            _print_run_summary(cfg, new_alerts)
+            run_cfg = db.effective_config(conn, cfg)  # picks up live Sources-page edits
+            projects = db.load_project_configs(conn)
+            _print_run_summary(run_cfg, projects, new_alerts)
         except Exception as exc:
             log.error("Run failed: %s", exc)
         finally:
@@ -63,33 +67,47 @@ def cmd_watch(cfg: AppConfig) -> int:
 def cmd_report(cfg: AppConfig) -> int:
     conn = db.connect(cfg.db_path)
     try:
-        path = markdown_report.write_report(conn, cfg, runner.collect_manual_links(cfg))
+        cfg = db.effective_config(conn, cfg)
+        projects = runner.load_projects(cfg, conn)
+        path = markdown_report.write_report(
+            conn, cfg, runner.collect_manual_links(cfg, projects)
+        )
     finally:
         conn.close()
     print(f"Report written to {path}")
     return 0
 
 
-def cmd_report_html(cfg: AppConfig) -> int:
+def cmd_import_config(cfg: AppConfig) -> int:
     conn = db.connect(cfg.db_path)
     try:
-        path = html_report.write_html_report(conn, cfg, runner.collect_manual_links(cfg))
+        count = db.import_config(conn, cfg)
     finally:
         conn.close()
-    print(f"HTML report written to {path}")
+    print(f"Imported {len(cfg.projects)} project(s), {count} item(s) from YAML config.")
     return 0
 
 
 def cmd_list_projects(cfg: AppConfig) -> int:
-    for project in cfg.projects:
+    conn = db.connect(cfg.db_path)
+    try:
+        projects = runner.load_projects(cfg, conn)
+    finally:
+        conn.close()
+    for project in projects:
         print(f"{project.slug}: {project.name} ({len(project.items)} item(s))")
-    if not cfg.projects:
+    if not projects:
         print("No projects configured.")
     return 0
 
 
 def cmd_list_items(cfg: AppConfig) -> int:
-    for project in cfg.projects:
+    conn = db.connect(cfg.db_path)
+    try:
+        projects = runner.load_projects(cfg, conn)
+    finally:
+        conn.close()
+    for project in projects:
         print(f"{project.name}:")
         for item in project.items:
             bits = [f"max £{item.max_price:g}" if item.max_price else "no max"]
@@ -100,8 +118,17 @@ def cmd_list_items(cfg: AppConfig) -> int:
             bits.append(f"priority {item.priority}")
             print(f"  - {item.name} ({', '.join(bits)})")
             print(f"    terms: {', '.join(item.terms)}")
-    if not cfg.projects:
+    if not projects:
         print("No projects configured.")
+    return 0
+
+
+def cmd_web(cfg: AppConfig, port: int) -> int:
+    from .web.app import create_app
+
+    app = create_app(cfg)
+    print(f"Product Finder UI: http://127.0.0.1:{port} (Ctrl-C to stop)")
+    app.run(host="127.0.0.1", port=port, debug=False)
     return 0
 
 
@@ -116,9 +143,11 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("run-once", help="Run one search cycle, alert on new matches")
     sub.add_parser("watch", help="Run continuously at the configured interval")
     sub.add_parser("report", help="Regenerate the Markdown report from stored data")
-    sub.add_parser("report-html", help="Regenerate the HTML report from stored data")
-    sub.add_parser("list-projects", help="List configured projects")
-    sub.add_parser("list-items", help="List configured items per project")
+    sub.add_parser("import-config", help="Import/merge YAML projects and items into the database")
+    sub.add_parser("list-projects", help="List projects")
+    sub.add_parser("list-items", help="List items per project")
+    web = sub.add_parser("web", help="Run the local web UI (localhost only)")
+    web.add_argument("-p", "--port", type=int, default=8765, help="Port (default 8765)")
     args = parser.parse_args(argv)
 
     logging.basicConfig(
@@ -132,11 +161,14 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Config error: {exc}", file=sys.stderr)
         return 2
 
+    if args.command == "web":
+        return cmd_web(cfg, args.port)
+
     commands = {
         "run-once": cmd_run_once,
         "watch": cmd_watch,
         "report": cmd_report,
-        "report-html": cmd_report_html,
+        "import-config": cmd_import_config,
         "list-projects": cmd_list_projects,
         "list-items": cmd_list_items,
     }

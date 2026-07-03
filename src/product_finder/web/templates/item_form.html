@@ -1,0 +1,80 @@
+{% extends "base.html" %}
+{% block title %}{{ 'Edit' if item else 'New' }} item — Product Finder{% endblock %}
+{% block content %}
+<h1>{{ 'Edit item' if item else 'New item' }}</h1>
+{# On validation errors the submitted form values win; otherwise the stored item. #}
+{% set v = form if form else {} %}
+<form method="post" class="card" style="max-width: 34rem;">
+  {% if not item %}
+  <label for="project_id">Project</label>
+  <select id="project_id" name="project_id" required>
+    {% for p in projects if not p['archived'] %}
+    <option value="{{ p['id'] }}" {% if selected_project == p['id'] %}selected{% endif %}>{{ p['name'] }}</option>
+    {% endfor %}
+  </select>
+  {% else %}
+  <p class="meta">Project: {{ item['project_name'] }}</p>
+  {% endif %}
+
+  <label for="name">Name</label>
+  <input type="text" id="name" name="name" required
+         value="{{ v.get('name', item['name'] if item else '') }}">
+
+  <label for="terms">Search terms (one per line)</label>
+  <textarea id="terms" name="terms" rows="4" required>{{ v.get('terms', item_cfg.terms | join('\n') if item else '') }}</textarea>
+
+  <label for="exclude_terms">Exclude terms (one per line)</label>
+  <textarea id="exclude_terms" name="exclude_terms" rows="2">{{ v.get('exclude_terms', item_cfg.exclude_terms | join('\n') if item else '') }}</textarea>
+
+  <div class="field-row">
+    <div>
+      <label for="max_price">Max price (£)</label>
+      <input type="number" step="0.01" min="0" id="max_price" name="max_price"
+             value="{{ v.get('max_price', ('%g' | format(item['max_price'])) if item and item['max_price'] else '') }}">
+      <p class="hint">Hard filter</p>
+    </div>
+    <div>
+      <label for="normal_price">Normal price (£)</label>
+      <input type="number" step="0.01" min="0" id="normal_price" name="normal_price"
+             value="{{ v.get('normal_price', ('%g' | format(item['normal_price'])) if item and item['normal_price'] else '') }}">
+      <p class="hint">Market value estimate</p>
+    </div>
+    <div>
+      <label for="target_deal_price">Target deal (£)</label>
+      <input type="number" step="0.01" min="0" id="target_deal_price" name="target_deal_price"
+             value="{{ v.get('target_deal_price', ('%g' | format(item['target_deal_price'])) if item and item['target_deal_price'] else '') }}">
+      <p class="hint">At/under = deal</p>
+    </div>
+  </div>
+
+  <label for="priority">Priority</label>
+  <select id="priority" name="priority">
+    {% set current = v.get('priority', item['priority'] if item else 'normal') %}
+    {% for level in ['high', 'normal', 'low'] %}
+    <option value="{{ level }}" {% if current == level %}selected{% endif %}>{{ level }}</option>
+    {% endfor %}
+  </select>
+
+  <label>Sources</label>
+  <div class="checks">
+  {% set item_sources = item_cfg.sources if item else none %}
+  {% for s in known_sources %}
+  <label>
+    <input type="checkbox" name="source_{{ s }}" value="1"
+      {% if form and form.get('source_' ~ s) %}checked
+      {% elif not form and (item_sources is none or s in item_sources) %}checked{% endif %}>
+    {{ s }}
+  </label>
+  {% endfor %}
+  </div>
+  <p class="hint">All ticked (or none) = search every enabled source.</p>
+
+  <label for="notes">Notes</label>
+  <textarea id="notes" name="notes" rows="2">{{ v.get('notes', item['notes'] if item else '') }}</textarea>
+
+  <p style="margin-top: 1.2rem;">
+    <button class="primary" type="submit">Save</button>
+    <a class="button" href="{{ url_for('items') }}">Cancel</a>
+  </p>
+</form>
+{% endblock %}

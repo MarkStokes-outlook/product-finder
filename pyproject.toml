@@ -6,6 +6,7 @@ requires-python = ">=3.10"
 dependencies = [
     "PyYAML>=6.0",
     "requests>=2.31",
+    "flask>=3.0",
 ]
 
 [project.optional-dependencies]
@@ -20,6 +21,9 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+product_finder = ["web/templates/*.html"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
