@@ -79,6 +79,18 @@ accumulated price history rather than a single stored number. A deal score
 computed against a trend is a fundamentally better judgement than one
 computed against a static estimate, independent of any UI or feature work.
 
+## Sources and trust
+
+Marketplace connectors are only valuable if the information they contribute can be trusted. As Product Finder expands beyond eBay into retailers, Amazon, Facebook Marketplace, RSS feeds and other sources, every connector should emit the same normalised listing model while keeping source-specific quirks isolated behind the connector.
+
+More sources should never mean lower confidence. Every source should contribute not only price and product information, but evidence about the listing itself: seller identity, listing images, condition, provenance, and anything else that helps judge whether the opportunity is genuine.
+
+Over time this should grow into a dedicated trust model alongside pricing. Suspicious pricing, unusually prolific sellers, reused images, reverse-image matches, stock photography, inconsistent locations, and known scam patterns should reduce confidence in a listing rather than simply lowering its deal score. Trust and value are different questions, and the system should learn to answer both independently before making a recommendation.
+
+Affiliate links also belong here. They should be treated as an implementation detail of the destination resolver rather than the listing itself, allowing the same buying experience whether a destination is monetised or not.
+
+Affiliate links also change the product shape: Product Finder should eventually support anonymous discovery and click-through while reserving saved projects, watched products, alerts, and personal preferences for signed-in users. The public experience can answer "is there a good deal right now?"; the signed-in experience can remember what a person cares about and keep watching on their behalf.
+
 ## Identity resolution
 
 **v1 shipped (canonical-URL matching).** This was live debt, not latent —
@@ -127,7 +139,18 @@ into architecture for its own sake if pulled forward too early — it only
 pays off once the catalogue underneath it is clean and de-duplicated.
 Knowledge layered on a noisy foundation just gives the noise a longer reach.
 
+Over time the catalogue should also become the system's understanding of *where* a product can be bought. That means recognising trusted retailers, marketplace listings, affiliate-supported destinations, accessories, compatible alternatives, and replacement parts as first-class knowledge rather than scattered links. The aim is not to promote retailers, but to help the buyer reach the best purchasing option while keeping the decision grounded in the catalogue's verified understanding of the product.
+
 ## Recommendations
+
+Recommendations are the final layer of the system, not an independent capability. Before Product Finder can confidently tell someone to buy, wait, or choose an alternative, it first needs trustworthy answers to four separate questions:
+
+- What is this product? (Catalogue)
+- What is it worth? (Pricing)
+- Have I already seen it? (Identity)
+- Can I trust this listing? (Sources and trust)
+
+Only once those foundations are in place should the system form an opinion. Recommendations should therefore consume the outputs of the catalogue, pricing, identity, and trust layers rather than re-implementing their logic.
 
 Today's "intelligence" is a single number computed at the moment a listing
 is seen. It has no memory — it can't say whether now is a *good time* to
@@ -137,6 +160,20 @@ option") requires exactly the two things above: real price history to judge
 timing against, and product knowledge to know what else could satisfy the
 same want. This is the natural endpoint of the other sections, not a
 parallel workstream — it has little to build on until they exist.
+
+
+## Users and saved projects
+
+The current system is effectively single-user: projects are configured by the operator and the application assumes one owner. That is fine for a private tool, but affiliate-driven public discovery changes the shape of the product. If other people can arrive, search, click through, and then decide to save their own watched products, the system needs an explicit account boundary.
+
+The intended product split is:
+
+- Anonymous users can search, browse live deals, and click through to listing or retailer destinations.
+- Signed-in users can create projects, save watched products, configure alerts, preserve preferences, and build their own buying radar over time.
+
+Long term, authentication should be handled by Authentik/OIDC rather than a bespoke password system. If implementation needs a stepping stone, a minimal internal user model may be acceptable, but it should be shaped so it can be replaced or backed by Authentik without rewriting project ownership, permissions, or saved-state logic.
+
+This is not just a login feature. It is the ownership model for saved projects, alerts, affiliate attribution, and personal recommendations.
 
 ## Keeping the system healthy
 
@@ -168,6 +205,11 @@ future use of AI here should look like that pattern, not a new one.
 Genuinely interesting, not currently justified by the assets above, and not
 meant to be planned against:
 
+- Affiliate link engine / destination resolver
+- Public anonymous search plus signed-in saved projects
+- Multi-source marketplace ecosystem (Amazon, retailers, Facebook Marketplace, etc.)
+- Listing trust and scam detection (seller reputation, reused images, reverse-imSureage matching, suspicious pricing)
+- Reverse image search for provenance and fraud detection
 - Browser extension
 - Mobile app
 - Cloud sync
@@ -183,3 +225,15 @@ This document guides direction, not sequence. Real usage always outranks
 it — if using Product Finder points somewhere this roadmap doesn't mention,
 follow that instead and update this document later, not the other way
 round.
+
+A useful way to think about Product Finder is as five cooperating knowledge layers:
+
+1. **Catalogue** — What is this?
+2. **Pricing** — Is it good value?
+3. **Identity** — Have I already seen it?
+4. **Trust** — Can I believe it?
+5. **Recommendations** — Should I buy it?
+
+New features should strengthen one of these layers rather than cutting across several. The recommendation layer should remain the consumer of the others, not a shortcut around them.
+
+A second boundary matters as soon as the product becomes public: anonymous discovery and signed-in ownership should stay separate. Searching and click-through should not require an account; saving projects, alerts, preferences, and long-running recommendations should.
