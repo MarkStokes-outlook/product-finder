@@ -737,6 +737,82 @@ def find_duplicate_products(conn: sqlite3.Connection) -> list[list[sqlite3.Row]]
     return [group for group in groups.values() if len(group) > 1]
 
 
+# A product whose matched listings average under this fraction of the item's
+# normal price is priced like an accessory, not the wanted product.
+_SUSPECT_PRICE_RATIO = 0.25
+# ...and one where most matched titles name an accessory probably is one.
+_SUSPECT_TITLE_SHARE = 0.5
+# Both signals need at least this many matches before accusing anything.
+_SUSPECT_MIN_MATCHES = 2
+
+
+def find_suspect_products(conn: sqlite3.Connection) -> list[dict]:
+    """Active products whose own matched listings suggest they're an
+    accessory, consumable or spare part rather than the wanted product —
+    approved from seller "model" fields that were really part numbers.
+
+    Evidence-based and read-only: a product is only accused on what its
+    matches actually show (average price far below the item's normal
+    price, or most matched titles naming an accessory), never on model
+    shape alone — some brands use bare article numbers for real products.
+    Products with fewer than _SUSPECT_MIN_MATCHES matches are never
+    listed: no evidence, no accusation. Archiving is the human's call
+    (see /catalogue); an archived product stops matching and its old
+    matches lose their product_id on the next rescan of each listing."""
+    rows = conn.execute(
+        """
+        SELECT p.id, p.item_id, p.manufacturer, p.model,
+               i.name AS item_name, i.normal_price AS item_normal,
+               COUNT(m.id) AS match_count, AVG(l.price) AS avg_price
+        FROM products p
+        JOIN items i ON i.id = p.item_id
+        JOIN listing_matches m ON m.product_id = p.id
+        JOIN listings l ON l.id = m.listing_id
+        WHERE p.archived = 0
+        GROUP BY p.id
+        HAVING match_count >= ?
+        ORDER BY avg_price
+        """,
+        (_SUSPECT_MIN_MATCHES,),
+    ).fetchall()
+    suspects = []
+    for row in rows:
+        reasons = []
+        if row["item_normal"] and row["avg_price"] < row["item_normal"] * _SUSPECT_PRICE_RATIO:
+            reasons.append(
+                f"matches average £{row['avg_price']:.0f} against a "
+                f"£{row['item_normal']:.0f} item"
+            )
+        titles = [
+            r["title"] for r in conn.execute(
+                "SELECT l.title FROM listing_matches m JOIN listings l ON l.id = m.listing_id "
+                "WHERE m.product_id = ?", (row["id"],),
+            )
+        ]
+        share = catalogue.accessory_title_share(titles)
+        if share >= _SUSPECT_TITLE_SHARE:
+            reasons.append(
+                f"{share:.0%} of matched titles name an accessory"
+            )
+        if not reasons:
+            continue
+        if catalogue.looks_like_part_number(row["model"]):
+            reasons.append("model is shaped like a part number")
+        suspects.append({
+            "id": row["id"],
+            "item_id": row["item_id"],
+            "item_name": row["item_name"],
+            "manufacturer": row["manufacturer"],
+            "model": row["model"],
+            "match_count": row["match_count"],
+            "avg_price": row["avg_price"],
+            "item_normal": row["item_normal"],
+            "reasons": reasons,
+            "sample_title": titles[0] if titles else "",
+        })
+    return suspects
+
+
 def dedupe_products(conn: sqlite3.Connection) -> int:
     """Merge every exact-duplicate product group into its oldest member.
     Returns how many duplicate rows were folded away. Idempotent."""

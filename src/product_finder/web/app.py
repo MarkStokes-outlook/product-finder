@@ -639,8 +639,24 @@ def create_app(cfg: AppConfig) -> Flask:
         return render_template(
             "catalogue.html",
             suggestions=db.list_all_pending_suggestions(conn),
+            suspects=db.find_suspect_products(conn),
             auto_approve_threshold=db.get_auto_approve_threshold(conn),
         )
+
+    @app.route("/products/bulk-archive", methods=["POST"])
+    def product_bulk_archive():
+        conn = _get_conn(cfg)
+        count = 0
+        for product_id in request.form.getlist("product_ids", type=int):
+            if db.get_product(conn, product_id) is not None:
+                db.set_product_archived(conn, product_id, True)
+                count += 1
+        flash(
+            f"Archived {count} product(s) — they stop matching immediately and "
+            "existing matches un-verify on each listing's next rescan."
+            if count else "No products selected."
+        )
+        return _suggestion_redirect(None)
 
     @app.route("/suggestions/<int:suggestion_id>/approve", methods=["POST"])
     def suggestion_approve(suggestion_id):

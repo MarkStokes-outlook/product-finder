@@ -13,6 +13,51 @@
   excluded from bulk approval: a bare brand makes a poor product.
 </p>
 
+{% if suspects %}
+<div class="page-head" style="margin-top: 1.2rem;">
+  <h2 style="margin: 0;">Suspect products</h2>
+  <span class="meta">{{ suspects | length }} flagged</span>
+</div>
+<p class="hint">
+  Approved products whose own matched listings look like accessories, spares or
+  consumables rather than the wanted product (part numbers in the seller's
+  "model" field — dust bags, spray tips, repair kits). Archiving stops them
+  matching immediately; nothing is deleted, and un-archiving from the item page
+  undoes it.
+</p>
+<form id="suspects-form" method="post" action="{{ url_for('product_bulk_archive') }}">
+  <input type="hidden" name="next" value="{{ url_for('catalogue_review') }}">
+</form>
+<div class="card table-card">
+<table>
+<thead><tr>
+  <th><input type="checkbox" id="pf-select-suspects" title="Select all suspects"></th>
+  <th>Product</th><th>Item</th><th>Evidence</th><th>Example match</th>
+</tr></thead>
+<tbody>
+{% for s in suspects %}
+  <tr>
+    <td><input type="checkbox" name="product_ids" value="{{ s.id }}" form="suspects-form"></td>
+    <td><strong>{{ s.manufacturer }} {{ s.model }}</strong></td>
+    <td class="meta">{{ s.item_name }}</td>
+    <td class="meta">{% for r in s.reasons %}{{ r }}{% if not loop.last %}; {% endif %}{% endfor %} ({{ s.match_count }} matches)</td>
+    <td class="meta">{{ s.sample_title[:70] }}</td>
+  </tr>
+{% endfor %}
+</tbody>
+</table>
+<p style="padding: .6rem .2rem;">
+  <button class="small primary" type="submit" form="suspects-form">Archive selected</button>
+</p>
+</div>
+<script>
+document.getElementById("pf-select-suspects").addEventListener("change", function () {
+  document.querySelectorAll('input[name="product_ids"]').forEach(
+    (box) => { box.checked = this.checked; }, this);
+});
+</script>
+{% endif %}
+
 {% if not suggestions %}
 <div class="card"><p class="meta" style="margin:0;">Nothing waiting for review — the watcher will queue new suggestions as listings are scanned.</p></div>
 {% else %}

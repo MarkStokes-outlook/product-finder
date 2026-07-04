@@ -197,6 +197,53 @@ def normalize_suggestion(manufacturer: str, model: str | None) -> tuple[str, str
     return manufacturer, normalize_model(model)
 
 
+# --- Accessory / spare-part detection (suspect products) --------------------------
+#
+# Sellers put *part numbers* in the model field for accessories (dust bags,
+# spray tips, repair kits), so "approve anything with a manufacturer and
+# model" quietly fills the catalogue with consumables. These signals expose
+# them from the evidence their own matched listings provide. Deterministic
+# and explainable, same style as grading.py — no inference.
+
+# Words that, appearing in a matched listing's title, suggest the "product"
+# is really an accessory/consumable/spare for the wanted item. Word-boundary
+# matched (so "tip" doesn't fire on "tipped").
+ACCESSORY_KEYWORDS = (
+    "bag", "bags", "filter", "filters", "tip", "tips", "nozzle", "nozzles",
+    "hose", "seal", "gasket", "kit", "spare", "spares", "replacement",
+    "attachment", "adapter", "adaptor", "cable", "bracket", "mount",
+    "cover", "lid", "brush", "brushes", "pad", "pads", "belt", "blade",
+    "blades", "wheel", "castor", "detector", "stand", "tripod", "battery",
+    "charger", "case", "sticker", "manual",
+)
+
+_PART_NUMBER_PATTERNS = (
+    re.compile(r"^\d{6,}$"),                # bare EAN/article number: 2371069
+    re.compile(r"^\d\.\d{3}-\d{3}\.\d$"),   # Kärcher part style: 2.863-314.0
+)
+
+
+def looks_like_part_number(model: str) -> bool:
+    """True when a model string is shaped like a parts-catalogue number
+    rather than a product model. Supporting signal only — some brands
+    (Wagner) use bare article numbers for real products too, so this must
+    never condemn a product on its own."""
+    return any(p.match(model.strip()) for p in _PART_NUMBER_PATTERNS)
+
+
+def accessory_title_share(titles: Sequence[str]) -> float:
+    """Fraction of listing titles containing at least one accessory
+    keyword. Titles are what sellers write to be found, so an accessory
+    listing almost always names itself one."""
+    if not titles:
+        return 0.0
+    hits = sum(
+        1 for title in titles
+        if any(_matches(title.lower(), kw) for kw in ACCESSORY_KEYWORDS)
+    )
+    return hits / len(titles)
+
+
 def match(text: str, products: Sequence[Product]) -> Product | None:
     """Resolve listing text (title + description) to the most specific
     matching catalogue product, or None if nothing matches.

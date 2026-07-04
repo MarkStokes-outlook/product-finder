@@ -165,6 +165,81 @@ def test_catalogue_tidy_cli(tmp_path, capsys):
     assert "1 exact duplicate(s) folded away" in out
 
 
+# --- Suspect products (accessories approved as products) -------------------------
+
+
+def _listing_match(conn, item_id, product_id, external_id, title, price):
+    listing_id, _ = db.upsert_listing(conn, Listing(
+        source="ebay", external_id=external_id, title=title, price=price,
+        url=f"https://x/{external_id}"))
+    _match(conn, listing_id, item_id, product_id)
+    return listing_id
+
+
+def test_part_number_shapes():
+    assert catalogue.looks_like_part_number("2371069")        # Wagner article no.
+    assert catalogue.looks_like_part_number("2.863-314.0")    # Kärcher part style
+    assert not catalogue.looks_like_part_number("DWS774")
+    assert not catalogue.looks_like_part_number("i7-4790s")
+    assert not catalogue.looks_like_part_number("VC3012M")
+
+
+def test_accessory_title_share_word_boundaries():
+    assert catalogue.accessory_title_share(["Festool dust bags x5"]) == 1.0
+    # "tipped" must not fire the "tip" keyword.
+    assert catalogue.accessory_title_share(["Carbide tipped mitre saw"]) == 0.0
+
+
+def test_accessory_priced_product_is_suspect(tmp_path):
+    cfg, conn, item_id = _setup(tmp_path)
+    conn.execute("UPDATE items SET normal_price = 400 WHERE id = ?", (item_id,))
+    product = db.create_product(conn, item_id, "Festool", "204308", ["204308"], None, None, None)
+    _listing_match(conn, item_id, product, "E1", "Festool 204308 spares", 12.0)
+    _listing_match(conn, item_id, product, "E2", "204308 for Festool CT MINI", 15.0)
+    suspects = db.find_suspect_products(conn)
+    assert len(suspects) == 1
+    assert suspects[0]["id"] == product
+    assert any("average" in r for r in suspects[0]["reasons"])
+
+
+def test_accessory_titled_product_is_suspect_even_at_normal_price(tmp_path):
+    cfg, conn, item_id = _setup(tmp_path)
+    conn.execute("UPDATE items SET normal_price = 100 WHERE id = ?", (item_id,))
+    product = db.create_product(conn, item_id, "Makita", "W107418353", [], None, None, None)
+    _listing_match(conn, item_id, product, "E1", "Makita filter bags pack", 60.0)
+    _listing_match(conn, item_id, product, "E2", "Makita replacement hose", 70.0)
+    suspects = db.find_suspect_products(conn)
+    assert len(suspects) == 1
+    assert any("accessory" in r for r in suspects[0]["reasons"])
+
+
+def test_real_product_is_not_suspect(tmp_path):
+    cfg, conn, item_id = _setup(tmp_path)
+    conn.execute("UPDATE items SET normal_price = 450 WHERE id = ?", (item_id,))
+    product = db.create_product(conn, item_id, "Makita", "LS1019L", ["ls1019l"], None, None, None)
+    _listing_match(conn, item_id, product, "E1", "Makita LS1019L sliding mitre saw", 320.0)
+    _listing_match(conn, item_id, product, "E2", "Makita LS1019L saw, great condition", 300.0)
+    assert db.find_suspect_products(conn) == []
+
+
+def test_single_match_is_never_accused(tmp_path):
+    cfg, conn, item_id = _setup(tmp_path)
+    conn.execute("UPDATE items SET normal_price = 400 WHERE id = ?", (item_id,))
+    product = db.create_product(conn, item_id, "Festool", "204308", [], None, None, None)
+    _listing_match(conn, item_id, product, "E1", "Festool dust bags", 12.0)
+    assert db.find_suspect_products(conn) == []
+
+
+def test_archived_product_not_listed(tmp_path):
+    cfg, conn, item_id = _setup(tmp_path)
+    conn.execute("UPDATE items SET normal_price = 400 WHERE id = ?", (item_id,))
+    product = db.create_product(conn, item_id, "Festool", "204308", [], None, None, None)
+    _listing_match(conn, item_id, product, "E1", "Festool dust bags", 12.0)
+    _listing_match(conn, item_id, product, "E2", "Festool dust bags again", 14.0)
+    db.set_product_archived(conn, product, True)
+    assert db.find_suspect_products(conn) == []
+
+
 # --- Global /catalogue review page ----------------------------------------------
 
 
@@ -219,6 +294,27 @@ def test_individual_approve_of_brand_only_still_allowed(web):
     assert resp.status_code == 302
     assert resp.headers["Location"].endswith("/catalogue")
     assert len(db.list_products(conn, item_id)) == 1
+
+
+def test_catalogue_page_shows_suspects_and_bulk_archive_works(web):
+    cfg, conn, item_id, client = web
+    conn.execute("UPDATE items SET normal_price = 400 WHERE id = ?", (item_id,))
+    product = db.create_product(conn, item_id, "Festool", "204308", ["204308"], None, None, None)
+    _listing_match(conn, item_id, product, "E1", "Festool 204308 dust bags", 12.0)
+    _listing_match(conn, item_id, product, "E2", "Dust bags for Festool", 15.0)
+    conn.commit()
+    resp = client.get("/catalogue")
+    assert b"Suspect products" in resp.data
+    assert b"Festool" in resp.data
+
+    resp = client.post("/products/bulk-archive", data={
+        "product_ids": [str(product)], "next": "/catalogue",
+    }, follow_redirects=True)
+    assert b"Archived 1 product(s)" in resp.data
+    assert db.get_product(conn, product)["archived"] == 1
+    # Archived: no longer offered to catalogue.match, no longer accused.
+    assert db.list_products_for_matching(conn, item_id) == []
+    assert b"Suspect products" not in client.get("/catalogue").data
 
 
 def test_suggestion_redirect_rejects_offsite_next(web):
