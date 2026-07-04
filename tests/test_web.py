@@ -106,6 +106,46 @@ def test_project_with_only_flagged_matches_shows_idle_preview(cfg, client):
     assert b"Still watching" in resp.data
 
 
+def _set_end_time(cfg, external_id, end_time):
+    conn = db.connect(cfg.db_path)
+    conn.execute(
+        "UPDATE listings SET end_time = ? WHERE external_id = ?", (end_time, external_id)
+    )
+    conn.commit()
+    conn.close()
+
+
+def test_ended_listing_disappears_from_all_browsing_surfaces(cfg, client):
+    # An ended auction/listing isn't buyable at any price — the moment its
+    # end time passes it must vanish from matches, top picks, project
+    # counts and the stat strip, without waiting for a watch cycle.
+    project_id, _ = seed_match(cfg, score=90.0)
+    _set_end_time(cfg, "E1", "2020-01-01T00:00:00.000Z")
+    conn = db.connect(cfg.db_path)
+    assert db.query_matches(conn) == []
+    assert db.project_top_picks(conn) == {}
+    summary = db.project_summaries(conn)[0]
+    assert summary["match_count"] == 0
+    assert summary["best_score"] is None
+    assert db.dashboard_stats(conn)["clean_matches"] == 0
+    conn.close()
+    resp = client.get("/")
+    assert b"Makita SP6000 saw" not in resp.data
+    assert b"Still watching" in resp.data  # project card falls back to idle
+
+
+def test_listing_with_future_end_time_still_shown(cfg, client):
+    project_id, _ = seed_match(cfg, score=90.0)
+    _set_end_time(cfg, "E1", "2099-01-01T00:00:00.000Z")
+    conn = db.connect(cfg.db_path)
+    assert len(db.query_matches(conn)) == 1
+    assert project_id in db.project_top_picks(conn)
+    assert db.dashboard_stats(conn)["clean_matches"] == 1
+    conn.close()
+    resp = client.get("/")
+    assert b"Makita SP6000 saw" in resp.data
+
+
 def test_dashboard_hero_shows_best_deal(cfg, client):
     seed_match(cfg, score=90.0)
     resp = client.get("/")

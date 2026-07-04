@@ -1291,6 +1291,17 @@ _SORTS = {
     "first_seen": "l.first_seen DESC",
 }
 
+# An ended listing (auction finished, or a fixed-price listing whose end date
+# has passed) isn't buyable at any price, so it never belongs on a browsing
+# or preview surface — it should vanish the moment the clock passes, not a
+# watch cycle later. eBay end_time strings ("2026-07-06T20:51:35.000Z", UTC)
+# compare lexically against SQLite's UTC 'now' rendered in the same
+# YYYY-MM-DDTHH:MM:SS prefix format. Rows stay in the DB for provenance and
+# price history, and auction_watch deliberately keeps its own listing
+# queries — it must keep polling briefly *past* end time to capture the
+# closing price (see AuctionSnapshot.ended).
+_NOT_ENDED = "(l.end_time IS NULL OR l.end_time > strftime('%Y-%m-%dT%H:%M:%S', 'now'))"
+
 
 def query_matches(
     conn: sqlite3.Connection,
@@ -1307,8 +1318,9 @@ def query_matches(
 
     Always excludes non-primary sightings (see resolve_identity()) — a
     listing that's a confirmed duplicate of another, already-surfaced one
-    stays in the database for provenance but never appears in results."""
-    clauses, params = ["l.is_primary_sighting = 1"], []
+    stays in the database for provenance but never appears in results.
+    Ended listings (see _NOT_ENDED) are likewise always excluded."""
+    clauses, params = ["l.is_primary_sighting = 1", _NOT_ENDED], []
     if project_id is not None:
         clauses.append("p.id = ?")
         params.append(project_id)
@@ -1340,13 +1352,14 @@ def project_summaries(conn: sqlite3.Connection) -> list[sqlite3.Row]:
     resolve_identity()) via the CASE guards below, so a confirmed
     cross-source duplicate doesn't inflate the count or surface a stale
     score — the LEFT JOINs are kept as LEFT so item_count (which doesn't
-    depend on matches existing at all) is unaffected."""
+    depend on matches existing at all) is unaffected. Ended listings (see
+    _NOT_ENDED) are excluded the same way."""
     return conn.execute(
-        """
+        f"""
         SELECT p.id, p.name, p.slug, p.archived,
                COUNT(DISTINCT i.id) AS item_count,
-               COUNT(CASE WHEN l.is_primary_sighting = 1 THEN m.id END) AS match_count,
-               MAX(CASE WHEN l.is_primary_sighting = 1 THEN m.deal_score END) AS best_score
+               COUNT(CASE WHEN l.is_primary_sighting = 1 AND {_NOT_ENDED} THEN m.id END) AS match_count,
+               MAX(CASE WHEN l.is_primary_sighting = 1 AND {_NOT_ENDED} THEN m.deal_score END) AS best_score
         FROM projects p
         LEFT JOIN items i ON i.project_id = p.id AND i.archived = 0
         LEFT JOIN listing_matches m ON m.item_id = i.id
@@ -1366,7 +1379,7 @@ def project_top_picks(conn: sqlite3.Connection) -> dict[int, sqlite3.Row]:
     this" surface, so the best clean deal beats a higher-scoring warned one.
     A project whose matches are all flagged shows the idle state instead."""
     rows = conn.execute(
-        """
+        f"""
         SELECT * FROM (
             SELECT p.id AS project_id, i.name AS item_name,
                    l.title, l.price, l.currency, l.url, l.source, l.image_url,
@@ -1377,6 +1390,7 @@ def project_top_picks(conn: sqlite3.Connection) -> dict[int, sqlite3.Row]:
             JOIN items i ON i.id = m.item_id
             JOIN projects p ON p.id = i.project_id
             WHERE p.archived = 0 AND l.is_primary_sighting = 1
+              AND {_NOT_ENDED}
               AND m.flags = '[]' AND m.grade != 'spares/repair'
         )
         WHERE rn = 1
@@ -1403,7 +1417,7 @@ def dashboard_stats(conn: sqlite3.Connection) -> dict:
         timespec="seconds"
     )
     row = conn.execute(
-        """
+        f"""
         SELECT
           COUNT(CASE WHEN m.flags = '[]' AND m.grade != 'spares/repair'
                      THEN m.id END) AS clean_matches,
@@ -1417,7 +1431,7 @@ def dashboard_stats(conn: sqlite3.Connection) -> dict:
         JOIN listings l ON l.id = m.listing_id
         JOIN items i ON i.id = m.item_id AND i.archived = 0
         JOIN projects p ON p.id = i.project_id AND p.archived = 0
-        WHERE l.is_primary_sighting = 1
+        WHERE l.is_primary_sighting = 1 AND {_NOT_ENDED}
         """,
         (new_cutoff,),
     ).fetchone()
