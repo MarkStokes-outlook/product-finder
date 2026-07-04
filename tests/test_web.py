@@ -995,3 +995,98 @@ def test_archived_project_excluded_from_manual(cfg, client):
     client.post(f"/projects/{project_id}/archive")
     resp = client.get("/manual")
     assert b"Track Saw" not in resp.data
+
+
+# --- Duplicate review (identity v2) --------------------------------------------
+
+
+def seed_duplicate_pair(cfg):
+    """A project with two live listings that look like the same physical
+    item (identical title, same location, ~20% price apart) plus a scanned
+    pending pair. Returns (project_id, dup_id, listing_ids)."""
+    conn = db.connect(cfg.db_path)
+    project_id = db.create_project(conn, "Gaming")
+    from product_finder.config import ItemConfig
+
+    item_id = db.create_item(
+        conn, project_id,
+        ItemConfig(name="Monitor", terms=["monitor"], normal_price=300, target_deal_price=150),
+    )
+    title = "VIEWEDGE C2712FDA-P Monitor 27 inch FHD 144hz"
+    ids = []
+    for ext, price in (("L1", 83.89), ("L2", 69.99)):
+        listing_id, _ = db.upsert_listing(conn, Listing(
+            source="ebay", external_id=ext, title=title, price=price,
+            url=f"https://example.com/{ext}", location="EN6***",
+        ))
+        db.record_match(conn, listing_id, item_id, Evaluation(
+            grade="A", flags=[], margin_abs=0.0, margin_pct=0.0,
+            under_target=False, deal_score=50.0,
+        ))
+        ids.append(listing_id)
+    db.scan_duplicate_candidates(conn)
+    dup_id = conn.execute("SELECT id FROM listing_duplicates").fetchone()["id"]
+    conn.close()
+    return project_id, dup_id, ids
+
+
+def test_project_page_shows_duplicate_section(cfg, client):
+    project_id, _, _ = seed_duplicate_pair(cfg)
+    resp = client.get(f"/projects/{project_id}")
+    assert b"Possible duplicates" in resp.data
+    assert b"identical title" in resp.data
+    assert b"same location" in resp.data
+    assert b"Same item" in resp.data
+    assert b"Different items" in resp.data
+
+
+def test_confirm_duplicate_hides_other_listing(cfg, client):
+    project_id, dup_id, (a, b) = seed_duplicate_pair(cfg)
+    resp = client.post(f"/duplicates/{dup_id}/confirm", data={"kept_listing_id": b},
+                       follow_redirects=True)
+    assert resp.status_code == 200
+    conn = db.connect(cfg.db_path)
+    assert len(db.query_matches(conn, project_id=project_id)) == 1
+    # Decided pair now lives in the fold-away with an Undo.
+    page = client.get(f"/projects/{project_id}")
+    assert b"Decided pairs" in page.data
+    assert b"Undo" in page.data
+
+
+def test_dismiss_duplicate_removes_from_pending(cfg, client):
+    project_id, dup_id, _ = seed_duplicate_pair(cfg)
+    client.post(f"/duplicates/{dup_id}/dismiss")
+    conn = db.connect(cfg.db_path)
+    assert db.list_duplicate_candidates(conn, project_id=project_id) == []
+    assert len(db.query_matches(conn, project_id=project_id)) == 2  # nothing hidden
+
+
+def test_revert_duplicate_restores_pending(cfg, client):
+    project_id, dup_id, (a, b) = seed_duplicate_pair(cfg)
+    client.post(f"/duplicates/{dup_id}/confirm", data={"kept_listing_id": b})
+    client.post(f"/duplicates/{dup_id}/revert")
+    conn = db.connect(cfg.db_path)
+    assert len(db.list_duplicate_candidates(conn, project_id=project_id)) == 1
+    assert len(db.query_matches(conn, project_id=project_id)) == 2
+
+
+def test_bulk_confirm_keeps_cheaper(cfg, client):
+    project_id, dup_id, (a, b) = seed_duplicate_pair(cfg)
+    client.post("/duplicates/bulk-confirm", data={"project_id": project_id, "dup_ids": [dup_id]})
+    conn = db.connect(cfg.db_path)
+    row = conn.execute("SELECT * FROM listing_duplicates").fetchone()
+    assert row["status"] == "confirmed"
+    assert row["kept_listing_id"] == b  # the £69.99 one
+    matches = db.query_matches(conn, project_id=project_id)
+    assert len(matches) == 1 and matches[0]["price"] == 69.99
+
+
+def test_dashboard_shows_pending_duplicates_note(cfg, client):
+    seed_duplicate_pair(cfg)
+    resp = client.get("/")
+    assert b"1 possible duplicate to review" in resp.data
+
+
+def test_missing_duplicate_404s(cfg, client):
+    seed_duplicate_pair(cfg)
+    assert client.post("/duplicates/999/confirm").status_code == 404

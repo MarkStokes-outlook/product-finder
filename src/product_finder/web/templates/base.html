@@ -237,6 +237,26 @@ a:hover .cta { filter: brightness(1.08); }
 .project-pick .pick-price { font-weight: 800; font-variant-numeric: tabular-nums; }
 .project-pick .pick-saving { color: var(--green-bright); font-size: .78rem; font-weight: 700; }
 .project-pick.idle { color: var(--muted); font-size: .82rem; font-style: italic; }
+.project-dupes { font-size: .78rem; margin: .25rem 0 0; }
+
+/* Duplicate-pair review ("Possible duplicates", identity v2): two listings
+   side by side, human picks which survives. Kept deliberately quiet — it's
+   housekeeping, not a deal surface. */
+.dup-pair { padding: .9rem 1rem; margin-bottom: .8rem; }
+.dup-head { display: flex; align-items: center; gap: .6rem; flex-wrap: wrap;
+            margin-bottom: .65rem; }
+.dup-head .item-label { font-weight: 600; font-size: .88rem; }
+.dup-sides { display: grid; grid-template-columns: 1fr 1fr; gap: .8rem; }
+@media (max-width: 720px) { .dup-sides { grid-template-columns: 1fr; } }
+.dup-side { display: flex; gap: .7rem; padding: .7rem; border: 1px solid var(--border);
+            border-radius: 8px; background: var(--surface); }
+.dup-side.suggested { border-color: rgb(52 211 153 / .45); }
+.dup-side .thumb { width: 4.6rem; height: 4.6rem; flex: none; border-radius: 8px;
+                   font-size: 1.2rem; }
+.dup-side-body { min-width: 0; display: flex; flex-direction: column; gap: .3rem; }
+.dup-side-body > a { font-weight: 600; font-size: .9rem; }
+.dup-side-body form { margin-top: auto; }
+.dup-actions { margin-top: .65rem; display: flex; gap: .6rem; align-items: center; }
 
 button, .button { display: inline-block; font: inherit; font-size: .84rem; font-weight: 500;
   padding: .42rem .95rem; border-radius: 8px; cursor: pointer; text-decoration: none;

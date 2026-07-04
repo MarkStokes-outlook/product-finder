@@ -14,6 +14,113 @@
 <div class="hero-empty">No matches yet — still watching.</div>
 {% endif %}
 
+{% macro dup_side(d, prefix, listing_id, suggested) %}
+<div class="dup-side{{ ' suggested' if suggested }}">
+  <div class="thumb">
+    {% if d[prefix ~ 'image_url'] %}
+    <img src="{{ d[prefix ~ 'image_url'] }}" alt="" loading="lazy"
+         referrerpolicy="no-referrer" onerror="this.remove()">
+    {% endif %}
+  </div>
+  <div class="dup-side-body">
+    <a href="{{ d[prefix ~ 'url'] }}" target="_blank" rel="noopener">{{ d[prefix ~ 'title'] }}</a>
+    <div class="price-row"><span class="price-now">£{{ '%.2f' | format(d[prefix ~ 'price']) }}</span></div>
+    <span class="meta">
+      {{ d[prefix ~ 'source'] }}
+      {% if d[prefix ~ 'condition'] %}&middot; {{ d[prefix ~ 'condition'] }}{% endif %}
+      {% if d[prefix ~ 'location'] %}&middot; {{ d[prefix ~ 'location'] }}{% endif %}
+      {% if d[prefix ~ 'first_seen'] %}&middot; seen {{ d[prefix ~ 'first_seen'] | timeago }}{% endif %}
+    </span>
+    <form method="post" action="{{ url_for('duplicate_confirm', dup_id=d['id']) }}">
+      <input type="hidden" name="kept_listing_id" value="{{ listing_id }}">
+      <button class="small{{ ' primary' if suggested }}" type="submit">Same item — keep this one</button>
+    </form>
+  </div>
+</div>
+{% endmacro %}
+
+{% if duplicates_pending or duplicates_decided %}
+<h2 id="duplicates">Possible duplicates{% if duplicates_pending_total %} ({{ duplicates_pending_total }}){% endif %}</h2>
+<p class="meta">
+  Listings that look like the same physical item listed more than once.
+  Keeping one hides the other from deals and alerts (nothing is deleted, and
+  you can undo). Dismissing a pair means it's never suggested again.
+  {% if duplicates_pending_total > duplicates_pending | length %}
+  Showing the {{ duplicates_pending | length }} highest-confidence pairs — decide these and more surface.
+  {% endif %}
+</p>
+<form id="dups-bulk-form" method="post"><input type="hidden" name="project_id" value="{{ project['id'] }}"></form>
+{% for d in duplicates_pending %}
+{% set sig = d['signals'] | parse_flags %}
+{% set suggest_a = d['a_price'] <= d['b_price'] %}
+<div class="card dup-pair">
+  <div class="dup-head">
+    <label class="meta" style="margin: 0; font-weight: 400;">
+      <input type="checkbox" name="dup_ids" value="{{ d['id'] }}" form="dups-bulk-form">
+    </label>
+    <span class="item-label">{{ d['item_name'] }}</span>
+    <span class="score {{ 'hi' if d['confidence'] >= 80 else 'mid' }}">{{ '%.0f' | format(d['confidence']) }}%</span>
+    {% if sig.title_sim is defined %}
+      {% if sig.title_sim >= 0.999 %}<span class="badge">identical title</span>
+      {% else %}<span class="badge">titles {{ '%.0f' | format(sig.title_sim * 100) }}% similar</span>{% endif %}
+    {% endif %}
+    {% if sig.price_delta_pct is defined %}
+      {% if sig.price_delta_pct < 1 %}<span class="badge">same price</span>
+      {% else %}<span class="badge">prices {{ '%.0f' | format(sig.price_delta_pct) }}% apart</span>{% endif %}
+    {% endif %}
+    {% if sig.same_location %}<span class="badge">same location</span>{% endif %}
+    {% if sig.same_image %}<span class="badge">same photo</span>{% endif %}
+    {% if sig.cross_source %}<span class="badge">different marketplaces</span>{% endif %}
+  </div>
+  <div class="dup-sides">
+    {{ dup_side(d, 'a_', d['listing_a'], suggest_a) }}
+    {{ dup_side(d, 'b_', d['listing_b'], not suggest_a) }}
+  </div>
+  <div class="dup-actions">
+    <form class="inline" method="post" action="{{ url_for('duplicate_dismiss', dup_id=d['id']) }}">
+      <button class="small" type="submit">Different items</button>
+    </form>
+  </div>
+</div>
+{% endfor %}
+{% if duplicates_pending %}
+<p style="padding: .2rem 0 .6rem;">
+  <button class="small primary" type="submit" form="dups-bulk-form"
+          formaction="{{ url_for('duplicate_bulk_confirm') }}"
+          onclick="return confirm('Confirm selected pairs as duplicates, keeping the cheaper listing of each?');">Confirm selected (keep cheaper)</button>
+  <button class="small" type="submit" form="dups-bulk-form"
+          formaction="{{ url_for('duplicate_bulk_dismiss') }}">Dismiss selected</button>
+</p>
+{% endif %}
+{% if duplicates_decided %}
+<details class="warnings">
+  <summary>Decided pairs ({{ duplicates_decided | length }})</summary>
+  <div class="card table-card">
+  <table>
+  <thead><tr><th>Item</th><th>Listings</th><th>Decision</th><th>When</th><th></th></tr></thead>
+  <tbody>
+  {% for d in duplicates_decided %}
+    <tr>
+      <td class="meta">{{ d['item_name'] }}</td>
+      <td class="meta">{{ d['a_title'] }} (£{{ '%.2f' | format(d['a_price']) }})
+        vs {{ d['b_title'] }} (£{{ '%.2f' | format(d['b_price']) }})</td>
+      <td>{% if d['status'] == 'confirmed' %}<span class="badge target">same item</span>
+          {% else %}<span class="badge">different items</span>{% endif %}</td>
+      <td class="meta">{{ d['decided_at'] | timeago }}</td>
+      <td class="meta">
+        <form class="inline" method="post" action="{{ url_for('duplicate_revert', dup_id=d['id']) }}">
+          <button class="small" type="submit">Undo</button>
+        </form>
+      </td>
+    </tr>
+  {% endfor %}
+  </tbody>
+  </table>
+  </div>
+</details>
+{% endif %}
+{% endif %}
+
 <div class="page-head" style="margin-top: 1.8rem;">
   <h2 style="margin: 0;">Items &amp; listings</h2>
   <a class="button primary small" href="{{ url_for('item_new', project_id=project['id']) }}">Add item</a>

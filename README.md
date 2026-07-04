@@ -203,11 +203,6 @@ Potential future enhancements include:
 - AI-assisted listing analysis.
 - Historical pricing trends.
 - Image analysis for condition.
-- Fuzzy cross-marketplace duplicate detection (matching by normalized
-  title/price similarity when no platform-native ID is shared) — grouped for
-  human review only, never auto-merged, plus the dismiss/remember workflow
-  that implies. Canonical-URL matching (same platform's own ID recoverable
-  straight from the URL, e.g. eBay) already ships — see Known Limitations.
 - Browser UI.
 - Mobile notifications.
 - Seller reputation scoring.
@@ -510,15 +505,23 @@ that project's manual search links. Both update themselves automatically as
 - The deal score is priority-blind by design: item priority is "how much do
   I want this", not "how good is this deal", and is intended for ranking or
   spotlight selection downstream rather than being baked into the score.
-- Cross-source de-duplication (`identity.py`/`db.resolve_identity()`) only
-  resolves the case where a platform's own native ID is recoverable straight
-  from the URL — v1 ships eBay only, e.g. an RSS feed entry that happens to
-  link directly to an eBay item page. It does **not** attempt fuzzy
-  title/price matching, so the same physical item independently listed
-  across two marketplaces with no shared ID (e.g. the same saw on eBay and
-  Gumtree) still counts twice — deliberately: merging solely on title/price
-  similarity across marketplaces risks silently conflating two different
-  real items. See "Future Ideas" below.
+- De-duplication is two layers, and only the first is automatic.
+  Canonical-URL identity (`identity.py`/`db.resolve_identity()`) auto-links
+  sightings sharing a platform's own native ID recoverable straight from the
+  URL (eBay only so far). Fuzzy duplicate detection (`duplicates.py`) covers
+  the rest — the same physical item double-listed or cross-posted with no
+  shared ID — but only ever *proposes* pairs for human review ("Possible
+  duplicates" on the project page): merging on title/price similarity alone
+  risks conflating two different real items, so nothing is hidden without a
+  human confirming it. Same-marketplace pairs additionally need matching
+  seller location (or an identical photo URL) before being proposed —
+  without that, identical titles usually mean two different sellers selling
+  the same model, which are genuinely separate opportunities. A relisting
+  seller who hides or changes their location therefore slips through.
+- Once a duplicate pair is confirmed, the hidden listing stays hidden even
+  if the kept one later ends while the hidden one is still live — the
+  opportunity vanishes from view until the pair's decision is undone (the
+  "Decided pairs" fold-away on the project page has an Undo).
 - Multi-item/price-range detection (`scoring.is_multi_item_or_price_range`)
   only reads the listing *title*, never the description — deliberate, to
   avoid misreading single-item markdown framing like "was £299, now £95" in

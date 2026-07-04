@@ -22,7 +22,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from statistics import median
 
-from . import catalogue, identity, price_trend
+from . import catalogue, duplicates, identity, price_trend
 from .config import AppConfig, ItemConfig, ProjectConfig
 from .models import Evaluation, Listing
 
@@ -157,6 +157,20 @@ CREATE TABLE IF NOT EXISTS listing_identity_members (
     matched_by TEXT NOT NULL DEFAULT 'canonical_url',
     created_at TEXT NOT NULL,
     UNIQUE(identity_id, listing_id)
+);
+CREATE TABLE IF NOT EXISTS listing_duplicates (
+    id INTEGER PRIMARY KEY,
+    listing_a INTEGER NOT NULL REFERENCES listings(id),
+    listing_b INTEGER NOT NULL REFERENCES listings(id),  -- listing_a < listing_b, always
+    item_id INTEGER NOT NULL REFERENCES items(id),       -- match scope it was detected in
+    confidence REAL NOT NULL,                             -- 0-100, display/ranking only
+    signals TEXT NOT NULL DEFAULT '{}',                   -- JSON, see duplicates.evaluate_pair
+    status TEXT NOT NULL DEFAULT 'pending',               -- pending | confirmed | dismissed
+    kept_listing_id INTEGER REFERENCES listings(id),      -- set on confirm
+    first_seen TEXT NOT NULL,
+    last_seen TEXT NOT NULL,
+    decided_at TEXT,
+    UNIQUE(listing_a, listing_b)
 );
 CREATE TABLE IF NOT EXISTS source_runs (
     id INTEGER PRIMARY KEY,
@@ -1196,7 +1210,11 @@ def resolve_identity(conn: sqlite3.Connection, listing_id: int, listing: Listing
         conn.commit()
         return identity_id, True
 
-    if listing.source == platform and row["primary_source"] != platform:
+    if (
+        listing.source == platform
+        and row["primary_source"] != platform
+        and not _is_hidden_duplicate(conn, listing_id)
+    ):
         conn.execute(
             "UPDATE listing_identities SET primary_listing_id = ? WHERE id = ?",
             (listing_id, identity_id),
@@ -1212,6 +1230,234 @@ def resolve_identity(conn: sqlite3.Connection, listing_id: int, listing: Listing
     conn.execute("UPDATE listings SET is_primary_sighting = 0 WHERE id = ?", (listing_id,))
     conn.commit()
     return identity_id, False
+
+
+# --- Fuzzy duplicate candidates (identity v2 — see duplicates.py) --------------
+
+
+def _is_hidden_duplicate(conn: sqlite3.Connection, listing_id: int) -> bool:
+    """True when a human confirmed this listing as the non-kept side of a
+    duplicate pair. Guards resolve_identity()'s promotion branch — a native
+    platform row arriving after a proxy must not get is_primary_sighting
+    set back to 1 if a person already decided it duplicates another listing."""
+    return conn.execute(
+        "SELECT 1 FROM listing_duplicates WHERE status = 'confirmed' "
+        "AND kept_listing_id != ? AND (listing_a = ? OR listing_b = ?)",
+        (listing_id, listing_id, listing_id),
+    ).fetchone() is not None
+
+
+def scan_duplicate_candidates(conn: sqlite3.Connection) -> int:
+    """One generation pass: propose probable same-physical-item pairs for
+    human review (never merging anything — see duplicates.py). Returns how
+    many new pending pairs were recorded.
+
+    Candidates come from live, primary listings matched to the same item —
+    item scope is both what bounds the pairwise comparison and where
+    double-counting actually hurts (same item, two alerts, two dashboard
+    rows). A pair already recorded in *any* status is never re-proposed:
+    that uniqueness is the "don't ask again" memory, the same discipline as
+    record_suggestion_sighting() ignoring already-decided suggestions."""
+    rows = conn.execute(
+        f"""
+        SELECT DISTINCT m.item_id, l.id, l.title, l.price, l.source, l.location, l.image_url
+        FROM listing_matches m
+        JOIN listings l ON l.id = m.listing_id
+        WHERE l.is_primary_sighting = 1 AND {_NOT_ENDED}
+        ORDER BY m.item_id, l.id
+        """
+    ).fetchall()
+    by_item: dict[int, list[sqlite3.Row]] = {}
+    for row in rows:
+        by_item.setdefault(row["item_id"], []).append(row)
+
+    existing_pairs: set[tuple[int, int]] = set()
+    pending_per_item: dict[int, int] = {}
+    for row in conn.execute(
+        "SELECT listing_a, listing_b, item_id, status FROM listing_duplicates"
+    ):
+        existing_pairs.add((row["listing_a"], row["listing_b"]))
+        if row["status"] == "pending":
+            pending_per_item[row["item_id"]] = pending_per_item.get(row["item_id"], 0) + 1
+
+    now = _now()
+    created = 0
+    for item_id, listings in by_item.items():
+        proposals = []
+        for idx, a in enumerate(listings):
+            for b in listings[idx + 1:]:
+                key = (min(a["id"], b["id"]), max(a["id"], b["id"]))
+                if key in existing_pairs:
+                    conn.execute(
+                        "UPDATE listing_duplicates SET last_seen = ? "
+                        "WHERE listing_a = ? AND listing_b = ? AND status = 'pending'",
+                        (now, key[0], key[1]),
+                    )
+                    continue
+                result = duplicates.evaluate_pair(a, b)
+                if result is not None:
+                    proposals.append((key, *result))
+        # Highest confidence first, capped so one noisy item can't flood
+        # the review queue.
+        proposals.sort(key=lambda p: p[1], reverse=True)
+        budget = duplicates.MAX_PENDING_PER_ITEM - pending_per_item.get(item_id, 0)
+        for key, confidence, signals in proposals[: max(budget, 0)]:
+            conn.execute(
+                "INSERT INTO listing_duplicates (listing_a, listing_b, item_id, "
+                "confidence, signals, status, first_seen, last_seen) "
+                "VALUES (?, ?, ?, ?, ?, 'pending', ?, ?)",
+                (key[0], key[1], item_id, confidence, json.dumps(signals), now, now),
+            )
+            existing_pairs.add(key)
+            created += 1
+    conn.commit()
+    return created
+
+
+# Both sides of a pair, aliased a_/b_, for the review UI's side-by-side cards.
+_DUPLICATE_SELECT = f"""
+SELECT d.*, i.name AS item_name, i.project_id,
+       la.title AS a_title, la.price AS a_price, la.source AS a_source,
+       la.condition AS a_condition, la.location AS a_location,
+       la.first_seen AS a_first_seen, la.image_url AS a_image_url,
+       la.url AS a_url, la.end_time AS a_end_time,
+       lb.title AS b_title, lb.price AS b_price, lb.source AS b_source,
+       lb.condition AS b_condition, lb.location AS b_location,
+       lb.first_seen AS b_first_seen, lb.image_url AS b_image_url,
+       lb.url AS b_url, lb.end_time AS b_end_time
+FROM listing_duplicates d
+JOIN items i ON i.id = d.item_id
+JOIN listings la ON la.id = d.listing_a
+JOIN listings lb ON lb.id = d.listing_b
+"""
+
+
+def list_duplicate_candidates(
+    conn: sqlite3.Connection,
+    project_id: int | None = None,
+    status: str = "pending",
+    limit: int | None = None,
+) -> list[sqlite3.Row]:
+    """Duplicate pairs for review. Pending pairs are only shown while both
+    sides are still live and primary — once one side has ended or been
+    hidden by a canonical merge, there's nothing left to double-count, so
+    reviewing the pair is pointless (the row stays, harmlessly pending, and
+    is never re-proposed). Decided pairs are shown regardless, so a past
+    decision can always be found and reverted."""
+    clauses = ["d.status = ?"]
+    params: list = [status]
+    if status == "pending":
+        clauses.append("la.is_primary_sighting = 1 AND lb.is_primary_sighting = 1")
+        for alias in ("la", "lb"):
+            clauses.append(_NOT_ENDED.replace("l.", f"{alias}."))
+    if project_id is not None:
+        clauses.append("i.project_id = ?")
+        params.append(project_id)
+    # Pending pairs surface most-confident first (each card carries its item
+    # label, and the web UI caps how many render) — decided pairs, newest
+    # decision first.
+    order = "d.decided_at DESC" if status != "pending" else "d.confidence DESC, d.id"
+    tail = f" LIMIT {int(limit)}" if limit else ""
+    return conn.execute(
+        f"{_DUPLICATE_SELECT} WHERE {' AND '.join(clauses)} ORDER BY {order}{tail}",
+        params,
+    ).fetchall()
+
+
+def get_duplicate(conn: sqlite3.Connection, dup_id: int) -> sqlite3.Row | None:
+    return conn.execute(
+        f"{_DUPLICATE_SELECT} WHERE d.id = ?", (dup_id,)
+    ).fetchone()
+
+
+def confirm_duplicate(
+    conn: sqlite3.Connection, dup_id: int, kept_listing_id: int | None = None
+) -> int:
+    """Human decision: the pair is the same physical item. Hides the non-kept
+    listing from every browsing/alerting surface via is_primary_sighting —
+    the same suppression mechanism canonical identity uses; no rows are
+    deleted, so a wrong call can always be reverted. Returns the kept
+    listing id.
+
+    kept_listing_id=None auto-picks: the live listing if only one still is,
+    else the cheaper (used by bulk confirm)."""
+    dup = get_duplicate(conn, dup_id)
+    if dup is None or dup["status"] != "pending":
+        raise ValueError(f"No pending duplicate pair {dup_id}")
+    if kept_listing_id is None:
+        now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
+        a_live = dup["a_end_time"] is None or dup["a_end_time"] > now
+        b_live = dup["b_end_time"] is None or dup["b_end_time"] > now
+        if a_live != b_live:
+            kept_listing_id = dup["listing_a"] if a_live else dup["listing_b"]
+        else:
+            kept_listing_id = (
+                dup["listing_a"] if dup["a_price"] <= dup["b_price"] else dup["listing_b"]
+            )
+    if kept_listing_id not in (dup["listing_a"], dup["listing_b"]):
+        raise ValueError(f"Listing {kept_listing_id} is not part of pair {dup_id}")
+    hidden = dup["listing_b"] if kept_listing_id == dup["listing_a"] else dup["listing_a"]
+    conn.execute(
+        "UPDATE listing_duplicates SET status = 'confirmed', kept_listing_id = ?, "
+        "decided_at = ? WHERE id = ?",
+        (kept_listing_id, _now(), dup_id),
+    )
+    conn.execute("UPDATE listings SET is_primary_sighting = 0 WHERE id = ?", (hidden,))
+    conn.commit()
+    return kept_listing_id
+
+
+def dismiss_duplicate(conn: sqlite3.Connection, dup_id: int) -> None:
+    """Human decision: two different items. Remembered forever — the pair is
+    never proposed again (see scan_duplicate_candidates)."""
+    conn.execute(
+        "UPDATE listing_duplicates SET status = 'dismissed', decided_at = ? "
+        "WHERE id = ? AND status = 'pending'",
+        (_now(), dup_id),
+    )
+    conn.commit()
+
+
+def revert_duplicate(conn: sqlite3.Connection, dup_id: int) -> None:
+    """Undo a confirm or dismiss, back to pending. Restoring the hidden
+    side's is_primary_sighting to 1 is safe even when canonical identity
+    disagrees — resolve_identity() re-demotes it on the next watch cycle."""
+    dup = get_duplicate(conn, dup_id)
+    if dup is None or dup["status"] == "pending":
+        return
+    if dup["status"] == "confirmed" and dup["kept_listing_id"] is not None:
+        hidden = (
+            dup["listing_b"] if dup["kept_listing_id"] == dup["listing_a"] else dup["listing_a"]
+        )
+        conn.execute("UPDATE listings SET is_primary_sighting = 1 WHERE id = ?", (hidden,))
+    conn.execute(
+        "UPDATE listing_duplicates SET status = 'pending', kept_listing_id = NULL, "
+        "decided_at = NULL WHERE id = ?",
+        (dup_id,),
+    )
+    conn.commit()
+
+
+def pending_duplicate_counts(conn: sqlite3.Connection) -> dict[int, int]:
+    """Reviewable pending pairs per project id (same both-live-and-primary
+    visibility rule as list_duplicate_candidates), for the dashboard's
+    per-project "possible duplicates" note."""
+    not_ended_a = _NOT_ENDED.replace("l.", "la.")
+    not_ended_b = _NOT_ENDED.replace("l.", "lb.")
+    rows = conn.execute(
+        f"""
+        SELECT i.project_id, COUNT(*) AS c
+        FROM listing_duplicates d
+        JOIN items i ON i.id = d.item_id
+        JOIN listings la ON la.id = d.listing_a
+        JOIN listings lb ON lb.id = d.listing_b
+        WHERE d.status = 'pending'
+          AND la.is_primary_sighting = 1 AND lb.is_primary_sighting = 1
+          AND {not_ended_a} AND {not_ended_b}
+        GROUP BY i.project_id
+        """
+    ).fetchall()
+    return {row["project_id"]: row["c"] for row in rows}
 
 
 def record_match(

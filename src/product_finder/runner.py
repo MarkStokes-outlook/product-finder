@@ -129,6 +129,10 @@ def run_once(cfg: AppConfig, conn: sqlite3.Connection) -> list[MatchAlert]:
     for name, stats in health.items():
         db.record_source_run(conn, name, **stats)
     retailer_price.run_discovery_and_refresh(conn, cfg)
+    # Fuzzy duplicate detection (identity v2 — see duplicates.py): propose
+    # probable same-physical-item pairs for human confirm/dismiss on the
+    # project page. Proposals only; nothing is ever merged automatically.
+    db.scan_duplicate_candidates(conn)
     conn.commit()
 
     new_alerts.sort(key=lambda a: a.evaluation.deal_score, reverse=True)

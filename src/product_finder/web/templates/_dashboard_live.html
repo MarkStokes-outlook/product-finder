@@ -45,6 +45,12 @@
     {% else %}
     <div class="project-pick idle">Still watching — no matches yet.</div>
     {% endif %}
+    {% set dupes = pending_duplicates.get(p['id']) %}
+    {% if dupes %}
+    <p class="meta project-dupes">
+      <a href="{{ url_for('project_detail', project_id=p['id']) }}#duplicates">{{ dupes }} possible duplicate{{ 's' if dupes != 1 }} to review</a>
+    </p>
+    {% endif %}
     <a class="button small" href="{{ url_for('project_detail', project_id=p['id']) }}">Open project</a>
   </div>
   {% endfor %}

@@ -290,17 +290,26 @@ results. Every sighting still gets its own `listings` row and `listing_matches`
 entry — nothing is deleted or collapsed, so provenance and the ability to unpick
 a bad merge are both preserved.
 
-As market coverage expands, identity becomes more important. The same physical
-item independently listed on two marketplaces with *no* shared ID — for example
-the same saw on eBay and Gumtree — still counts twice. There is no provable
-identifier to key off, only title/price/location/image similarity, and merging
-across marketplaces on that alone risks silently conflating two different real
-items.
+**v2 shipped (fuzzy candidate grouping, human-decided).** The same physical
+item listed with *no* shared ID — a seller double-listing on one marketplace,
+or cross-posting to another — has no provable identifier to key off, only
+title/price/location/image similarity, and merging on that alone risks
+silently conflating two different real items. So v2 never merges: it proposes
+candidate pairs for human confirm/dismiss ("Possible duplicates" on the
+project page), mirroring `product_suggestions`' pending/approved/dismissed
+pattern, with a decided pair remembered forever (a dismissal is never
+re-asked) and every decision undoable. The key precision rule, learned from
+real data rather than assumed: identical titles on the same marketplace
+usually mean different sellers selling the same product model — separate real
+opportunities — so same-source pairs also require seller evidence (matching
+location, or an identical photo) before being proposed. Confirmed duplicates
+are hidden through the same `is_primary_sighting` mechanism canonical
+identity uses; nothing is deleted.
 
-Future work should use fuzzy candidate grouping surfaced for human
-confirm/dismiss rather than automatic merging. This should mirror
-`product_suggestions`' pending/approved/dismissed pattern and include a "don't
-ask again" dismiss/remember workflow.
+What identity still can't do: perceptual image matching (only exact photo-URL
+equality contributes today), seller-identity evidence beyond location (waiting
+on connectors declaring seller fields), and resurfacing a hidden duplicate
+automatically if the kept listing ends first.
 
 Also still unresolved: a single listing matching more than one item's search
 terms still gets scored/alerted once per item. That's intentional where each

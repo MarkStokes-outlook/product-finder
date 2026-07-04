@@ -131,6 +131,7 @@ def _dashboard_data(conn, cfg: AppConfig) -> dict:
         "best": db.query_matches(conn, flagged=False, sort="score", limit=11),
         "warnings": db.query_matches(conn, flagged=True, sort="score", limit=10),
         "stats": db.dashboard_stats(conn),
+        "pending_duplicates": db.pending_duplicate_counts(conn),
     }
 
 
@@ -196,6 +197,17 @@ def _project_detail_data(
         "manual_links": manual_links,
         "hero_deals": hero_deals,
         "filters": f,
+        # Display cap: the initial backlog on real data runs to hundreds of
+        # pairs per project — render only the top slice by confidence and let
+        # the queue drain decision by decision (the heading shows the total).
+        "duplicates_pending": db.list_duplicate_candidates(conn, project_id=project_id, limit=30),
+        "duplicates_pending_total": db.pending_duplicate_counts(conn).get(project_id, 0),
+        "duplicates_decided": sorted(
+            db.list_duplicate_candidates(conn, project_id=project_id, status="confirmed", limit=50)
+            + db.list_duplicate_candidates(conn, project_id=project_id, status="dismissed", limit=50),
+            key=lambda r: r["decided_at"] or "",
+            reverse=True,
+        ),
     }
 
 
@@ -671,6 +683,81 @@ def create_app(cfg: AppConfig) -> Flask:
         db.set_auto_approve_threshold(conn, value)
         flash("Catalogue suggestion settings updated.")
         return redirect(request.referrer or url_for("projects"))
+
+    # --- Duplicate listings (spotted automatically, awaiting review) ---------------
+
+    def _duplicate_redirect(dup):
+        return redirect(
+            url_for("project_detail", project_id=dup["project_id"]) + "#duplicates"
+        )
+
+    @app.route("/duplicates/<int:dup_id>/confirm", methods=["POST"])
+    def duplicate_confirm(dup_id):
+        conn = _get_conn(cfg)
+        dup = db.get_duplicate(conn, dup_id)
+        if dup is None:
+            abort(404)
+        kept_listing_id = request.form.get("kept_listing_id", type=int)
+        try:
+            db.confirm_duplicate(conn, dup_id, kept_listing_id)
+        except ValueError:
+            flash("That pair has already been decided.")
+            return _duplicate_redirect(dup)
+        flash("Confirmed as the same item — the other listing is hidden now.")
+        return _duplicate_redirect(dup)
+
+    @app.route("/duplicates/<int:dup_id>/dismiss", methods=["POST"])
+    def duplicate_dismiss(dup_id):
+        conn = _get_conn(cfg)
+        dup = db.get_duplicate(conn, dup_id)
+        if dup is None:
+            abort(404)
+        db.dismiss_duplicate(conn, dup_id)
+        flash("Marked as different items — this pair won't be suggested again.")
+        return _duplicate_redirect(dup)
+
+    @app.route("/duplicates/<int:dup_id>/revert", methods=["POST"])
+    def duplicate_revert(dup_id):
+        conn = _get_conn(cfg)
+        dup = db.get_duplicate(conn, dup_id)
+        if dup is None:
+            abort(404)
+        db.revert_duplicate(conn, dup_id)
+        flash("Decision undone — the pair is awaiting review again.")
+        return _duplicate_redirect(dup)
+
+    @app.route("/duplicates/bulk-confirm", methods=["POST"])
+    def duplicate_bulk_confirm():
+        # Auto-picks which listing to keep (the cheaper live one) — see
+        # db.confirm_duplicate(kept_listing_id=None).
+        conn = _get_conn(cfg)
+        project_id = request.form.get("project_id", type=int)
+        count = 0
+        for dup_id in request.form.getlist("dup_ids", type=int):
+            dup = db.get_duplicate(conn, dup_id)
+            if dup is not None and dup["status"] == "pending":
+                db.confirm_duplicate(conn, dup_id)
+                count += 1
+        flash(f"Confirmed {count} pair(s), keeping the cheaper listing of each."
+              if count else "No pairs selected.")
+        target = url_for("project_detail", project_id=project_id) + "#duplicates" \
+            if project_id else url_for("dashboard")
+        return redirect(target)
+
+    @app.route("/duplicates/bulk-dismiss", methods=["POST"])
+    def duplicate_bulk_dismiss():
+        conn = _get_conn(cfg)
+        project_id = request.form.get("project_id", type=int)
+        count = 0
+        for dup_id in request.form.getlist("dup_ids", type=int):
+            dup = db.get_duplicate(conn, dup_id)
+            if dup is not None and dup["status"] == "pending":
+                db.dismiss_duplicate(conn, dup_id)
+                count += 1
+        flash(f"Dismissed {count} pair(s)." if count else "No pairs selected.")
+        target = url_for("project_detail", project_id=project_id) + "#duplicates" \
+            if project_id else url_for("dashboard")
+        return redirect(target)
 
     # --- Manual searches ----------------------------------------------------------
 
