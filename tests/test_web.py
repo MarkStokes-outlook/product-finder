@@ -73,6 +73,39 @@ def test_dashboard_warning_section(cfg, client):
     assert b"faulty" in resp.data
 
 
+def test_project_top_picks_prefers_clean_deal_over_higher_scoring_flagged(cfg, client):
+    # Preview cards are a "grab this" surface, like the hero — the best
+    # clean match wins even when a flagged/spares listing scores higher.
+    project_id, item_id = seed_match(cfg, score=60.0)  # clean, "Makita SP6000 saw"
+    conn = db.connect(cfg.db_path)
+    flagged_id, _ = db.upsert_listing(
+        conn,
+        Listing(source="ebay", external_id="E2", title="Broken parts saw",
+                price=40.0, url="https://example.com/2"),
+    )
+    db.record_match(
+        conn, flagged_id, item_id,
+        Evaluation(grade="spares/repair", flags=["faulty"], margin_abs=460.0,
+                   margin_pct=92.0, under_target=True, deal_score=95.0),
+    )
+    conn.commit()
+    picks = db.project_top_picks(conn)
+    conn.close()
+    assert picks[project_id]["title"] == "Makita SP6000 saw"
+    assert picks[project_id]["deal_score"] == 60.0
+
+
+def test_project_with_only_flagged_matches_shows_idle_preview(cfg, client):
+    seed_match(cfg, flags=["faulty"], grade="spares/repair", score=95.0)
+    conn = db.connect(cfg.db_path)
+    assert db.project_top_picks(conn) == {}
+    conn.close()
+    resp = client.get("/")
+    # Warned listing still appears in the warnings section, but the project
+    # card falls back to the idle state rather than promoting it as a pick.
+    assert b"Still watching" in resp.data
+
+
 def test_dashboard_hero_shows_best_deal(cfg, client):
     seed_match(cfg, score=90.0)
     resp = client.get("/")

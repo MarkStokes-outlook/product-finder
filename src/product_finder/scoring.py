@@ -56,6 +56,8 @@ TARGET_BONUS = 10.0
 IMPLAUSIBLE_PRICE_RATIO = 0.12
 
 FLAG_IMPLAUSIBLE_PRICE = "price implausible for item"
+FLAG_LIVE_AUCTION = "live auction"
+FLAG_MULTI_ITEM = "multiple items / price range"
 
 
 def warning_flags(text: str) -> list[str]:
@@ -192,11 +194,17 @@ def deal_score(
     _, pct_below = margins(price, normal_price)
     score = BASELINE_SCORE  # neutral baseline for a fairly priced listing
     score += margin_term(pct_below, verified)
-    if (
-        target_deal_price
-        and price <= target_deal_price
-        and not is_price_implausible(price, normal_price, verified)
-    ):
+    # The target bonus only ever rewards a price you could actually commit
+    # to right now. A live auction's current bid, a bundle/range listing's
+    # ambiguous price, and an implausibly cheap unverified price all fail
+    # that test — the same three categories evaluate() refuses to mark
+    # under_target, kept in lockstep here.
+    ambiguous_price = (
+        FLAG_LIVE_AUCTION in flags
+        or FLAG_MULTI_ITEM in flags
+        or is_price_implausible(price, normal_price, verified)
+    )
+    if target_deal_price and price <= target_deal_price and not ambiguous_price:
         score += TARGET_BONUS
     score += _GRADE_ADJUST.get(grade, 0.0)
     score -= min(len(flags) * 8.0, 30.0)
@@ -251,8 +259,9 @@ def evaluate(listing: Listing, item: ItemConfig, product: Product | None = None)
     verified = product is not None
     grade = grading.classify(listing.text)
     flags = warning_flags(listing.text)
-    if is_live_auction(listing):
-        flags = flags + ["live auction"]
+    live_auction = is_live_auction(listing)
+    if live_auction:
+        flags = flags + [FLAG_LIVE_AUCTION]
     elif typical_used_price and typical_used_price > 0 and listing.price > typical_used_price * 1.1:
         # >10% above the typical used price — not just noise around the median.
         flags = flags + ["above typical used price"]
@@ -261,17 +270,19 @@ def evaluate(listing: Listing, item: ItemConfig, product: Product | None = None)
         flags = flags + [FLAG_IMPLAUSIBLE_PRICE]
     multi_item = is_multi_item_or_price_range(listing)
     if multi_item:
-        flags = flags + ["multiple items / price range"]
+        flags = flags + [FLAG_MULTI_ITEM]
     margin_abs, margin_pct = margins(listing.price, normal_price)
-    # Never a confirmed "target met" off an ambiguous range/bundle price —
-    # same reasoning as never treating a live auction's current bid as a
-    # committed price (see is_live_auction): we don't know which item in
-    # the bundle, or which end of the range, the price actually applies to.
-    # An implausibly cheap unverified price is the same story again: it's
-    # almost certainly not this item's price, so it can't meet its target.
+    # Never a confirmed "target met" off a price that isn't a committed,
+    # unambiguous price for this exact item: a live auction's current bid
+    # can still rise (see is_live_auction), a bundle/range listing's price
+    # may apply to any item in it or either end of the range, and an
+    # implausibly cheap unverified price is almost certainly not this
+    # item's price at all. deal_score() withholds the target bonus for the
+    # same three categories.
     under_target = bool(
         target_deal_price
         and listing.price <= target_deal_price
+        and not live_auction
         and not multi_item
         and not implausible
     )

@@ -402,6 +402,47 @@ def test_deal_score_is_priority_blind():
     assert high.deal_score == low.deal_score
 
 
+# --- Under-target / target-bonus consistency across ambiguous-price listings ----
+
+
+def test_live_auction_never_under_target():
+    # A current bid under the target is not a committed price — the auction
+    # can (and usually does) end higher. Same principle as multi-item and
+    # implausible-price listings: no confirmed "target met" off an
+    # uncommittable price.
+    item = make_item()  # target_deal_price=300
+    ev = scoring.evaluate(make_auction_listing("Makita track saw, good condition", 150), item)
+    assert "live auction" in ev.flags
+    assert ev.under_target is False
+
+
+def test_target_bonus_withheld_for_live_auction_and_multi_item_flags():
+    # With the bonus suppressed, a target price present-or-absent must make
+    # no difference to the score for these flag categories.
+    for flag in (scoring.FLAG_LIVE_AUCTION, scoring.FLAG_MULTI_ITEM):
+        with_target = scoring.deal_score(290, 500, 300, grading.GRADE_B, [flag])
+        without_target = scoring.deal_score(290, 500, None, grading.GRADE_B, [flag])
+        assert with_target == without_target, flag
+
+
+def test_fixed_price_listing_outscores_equivalent_live_auction():
+    item = make_item()
+    fixed = scoring.evaluate(make_listing("Makita track saw, good condition", 250), item)
+    auction = scoring.evaluate(
+        make_auction_listing("Makita track saw, good condition", 250), item
+    )
+    assert fixed.deal_score > auction.deal_score
+
+
+def test_single_item_listing_outscores_equivalent_multi_item():
+    item = make_item()
+    single = scoring.evaluate(make_listing("Makita track saw, good condition", 250), item)
+    bundle = scoring.evaluate(
+        make_listing("Makita track saw job lot, good condition", 250), item
+    )
+    assert single.deal_score > bundle.deal_score
+
+
 def test_live_auction_never_beats_fixed_price_on_score():
     item = make_item()
     product = make_product(typical_new_price=200, typical_used_price=100)

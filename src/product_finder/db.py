@@ -1358,9 +1358,13 @@ def project_summaries(conn: sqlite3.Connection) -> list[sqlite3.Row]:
 
 
 def project_top_picks(conn: sqlite3.Connection) -> dict[int, sqlite3.Row]:
-    """Each active project's single best match, keyed by project id — the
-    "here's what stands out" preview shown on the dashboard's project cards.
-    Excludes non-primary sightings (see resolve_identity())."""
+    """Each active project's single best *clean* match, keyed by project id —
+    the "here's what stands out" preview shown on the dashboard's project
+    cards. Excludes non-primary sightings (see resolve_identity()) and, like
+    the dashboard hero, anything flagged or graded spares/repair (same
+    predicate as query_matches(flagged=False)): a preview card is a "grab
+    this" surface, so the best clean deal beats a higher-scoring warned one.
+    A project whose matches are all flagged shows the idle state instead."""
     rows = conn.execute(
         """
         SELECT * FROM (
@@ -1373,6 +1377,7 @@ def project_top_picks(conn: sqlite3.Connection) -> dict[int, sqlite3.Row]:
             JOIN items i ON i.id = m.item_id
             JOIN projects p ON p.id = i.project_id
             WHERE p.archived = 0 AND l.is_primary_sighting = 1
+              AND m.flags = '[]' AND m.grade != 'spares/repair'
         )
         WHERE rn = 1
         """
