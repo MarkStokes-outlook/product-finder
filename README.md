@@ -496,6 +496,20 @@ that project's manual search links. Both update themselves automatically as
   so this only works for whatever retailer pages plain web search can find
   and a human confirms.
 - Deal scores are heuristic; a vague title or missing description skews them.
+- The deal score deliberately distrusts extreme discounts on listings that
+  haven't resolved to a catalogue product: past ~70% below the reference
+  price the margin reward decays instead of growing, and below ~12% of the
+  reference price the listing is flagged `price implausible for item` (on
+  real data these are almost always accessories or spare parts caught by an
+  item's search terms — hose adaptors matching "Dust Extractor" — not real
+  bargains). A genuine once-in-a-blue-moon 90%-off listing for an item with
+  no catalogue product will therefore be under-scored until the catalogue
+  covers it. Thresholds are named constants at the top of `scoring.py`. This
+  is an interim calibration: the long-term fix is catalogue coverage plus
+  distinguishing complete products from accessories/spares/bundles.
+- The deal score is priority-blind by design: item priority is "how much do
+  I want this", not "how good is this deal", and is intended for ranking or
+  spotlight selection downstream rather than being baked into the score.
 - Cross-source de-duplication (`identity.py`/`db.resolve_identity()`) only
   resolves the case where a platform's own native ID is recoverable straight
   from the URL — v1 ships eBay only, e.g. an RSS feed entry that happens to

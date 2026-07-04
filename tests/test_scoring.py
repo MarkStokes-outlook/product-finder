@@ -323,10 +323,83 @@ def test_evaluate_with_no_product_applies_no_trend_adjustment():
     item = make_item()
     ev = scoring.evaluate(make_listing("Track saw good condition", 290), item)
     expected = scoring.deal_score(
-        290, item.normal_price, item.target_deal_price, ev.grade, ev.flags, item.priority,
-        "Track saw good condition",
+        290, item.normal_price, item.target_deal_price, ev.grade, ev.flags,
+        title="Track saw good condition",
     )
     assert ev.deal_score == expected
+
+
+# --- 2026-07-04 recalibration: inverted-U margin + implausible-price gate -------
+
+
+def test_margin_term_rises_to_plateau():
+    assert scoring.margin_term(25, verified=False) == 25 * scoring.MARGIN_PER_PCT
+    assert (
+        scoring.margin_term(scoring.MARGIN_PLATEAU_START_PCT, verified=False)
+        == scoring.MARGIN_PLATEAU_SCORE
+    )
+
+
+def test_margin_term_verified_deep_discount_keeps_plateau():
+    # A trusted reference price (catalogue product) means a deep discount is
+    # a deep discount, not evidence of a wrong-product match.
+    assert scoring.margin_term(90, verified=True) == scoring.MARGIN_PLATEAU_SCORE
+
+
+def test_margin_term_decays_for_unverified_deep_discounts():
+    plateau = scoring.margin_term(60, verified=False)
+    decayed = scoring.margin_term(80, verified=False)
+    deep = scoring.margin_term(95, verified=False)
+    assert plateau == scoring.MARGIN_PLATEAU_SCORE
+    assert deep < decayed < plateau
+    assert scoring.margin_term(100, verified=False) == scoring.MARGIN_MIN_SCORE
+
+
+def test_unverified_extreme_discount_scores_below_moderate_discount():
+    # The inverted U end-to-end: a plausible half-price listing must outrank
+    # an "88% off" one — at that depth it's almost never really the item.
+    item = make_item()  # normal_price=500
+    moderate = scoring.evaluate(make_listing("Track saw, good condition", 225), item)
+    extreme = scoring.evaluate(make_listing("Track saw rail cover, good condition", 62), item)
+    assert moderate.deal_score > extreme.deal_score
+
+
+def test_implausible_price_flagged_and_never_under_target():
+    # £4 against a £500 normal price is an accessory, not the item — flag it
+    # (which keeps it out of the spotlight via the existing flagged filter)
+    # and never treat its price as meeting the item's target.
+    item = make_item()  # normal_price=500, target_deal_price=300
+    ev = scoring.evaluate(make_listing("Track saw blade screw M8", 4.0), item)
+    assert scoring.FLAG_IMPLAUSIBLE_PRICE in ev.flags
+    assert ev.under_target is False
+
+
+def test_implausible_price_never_fires_for_product_matched_listing():
+    item = make_item()
+    product = make_product(typical_new_price=500)
+    ev = scoring.evaluate(make_listing("Makita SP6000 track saw, boxed", 40.0), item, product)
+    assert scoring.FLAG_IMPLAUSIBLE_PRICE not in ev.flags
+
+
+def test_deal_score_cannot_saturate_at_100():
+    # Regression guard for the old saturation: a perfect-storm listing (clean,
+    # grade A, under target, plateau margin, max favourable trend) must still
+    # land below 100 so the top of the range keeps discriminating.
+    score = scoring.deal_score(
+        200, 500, 300, grading.GRADE_A, [],
+        title="Makita SP6000 track saw excellent condition",
+        price_trend_pct=100.0, price_trend_confidence=1.0, verified=True,
+    )
+    assert score < 100
+
+
+def test_deal_score_is_priority_blind():
+    # Priority is how much the operator wants the item, not how good the deal
+    # is — identical listings under high- and low-priority items score alike.
+    listing_title = "Track saw, good condition"
+    high = scoring.evaluate(make_listing(listing_title, 250), make_item(priority="high"))
+    low = scoring.evaluate(make_listing(listing_title, 250), make_item(priority="low"))
+    assert high.deal_score == low.deal_score
 
 
 def test_live_auction_never_beats_fixed_price_on_score():

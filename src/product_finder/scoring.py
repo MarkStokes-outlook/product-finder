@@ -23,14 +23,39 @@ _WARNING_TERMS = {
 }
 
 _GRADE_ADJUST = {
-    grading.GRADE_A: 10.0,
-    grading.GRADE_B: 5.0,
+    grading.GRADE_A: 5.0,
+    grading.GRADE_B: 2.0,
     grading.GRADE_C: -10.0,
     grading.SPARES: -40.0,
     grading.UNKNOWN: -5.0,
 }
 
-_PRIORITY_ADJUST = {"high": 10.0, "normal": 0.0, "low": -5.0}
+# --- Score calibration (2026-07-04 recalibration) -------------------------------
+# Interim fix for score saturation: on real data 2 in 3 clean matches maxed the
+# old formula out (additive max 111 vs the 100 clamp), and the cheap "100-score
+# deals" were overwhelmingly accessories/spares matched by an item's search
+# terms and scored against the *real* product's normal price (a £4 hose adaptor
+# vs a £600 extractor). The margin term is now an inverted U for unverified
+# matches: a discount deeper than any real market discount is treated as
+# evidence of a wrong-product match, not a better bargain. The long-term fix is
+# catalogue coverage + accessory/bundle classification, not further tuning here.
+# All thresholds live below so they can be re-tuned against real data.
+BASELINE_SCORE = 35.0
+MARGIN_PER_PCT = 0.6                # slope of the margin term, both directions
+MARGIN_OVERPRICE_FLOOR_PCT = -20.0  # above-normal penalty bottoms out here
+MARGIN_PLATEAU_START_PCT = 50.0     # discount where the reward tops out...
+MARGIN_PLATEAU_SCORE = MARGIN_PLATEAU_START_PCT * MARGIN_PER_PCT  # ...at +30
+MARGIN_DECAY_START_PCT = 70.0       # unverified: deeper starts to look wrong
+MARGIN_SUSPECT_PCT = 85.0           # unverified: reward is back down to...
+MARGIN_SUSPECT_SCORE = 10.0         # ...+10 here...
+MARGIN_SUSPECT_DECAY_PER_PCT = 2.0  # ...then falls steeply...
+MARGIN_MIN_SCORE = -10.0            # ...to this floor.
+TARGET_BONUS = 10.0
+# Unverified and priced below this fraction of the reference price: almost
+# certainly an accessory/spare part for the item, not the item itself.
+IMPLAUSIBLE_PRICE_RATIO = 0.12
+
+FLAG_IMPLAUSIBLE_PRICE = "price implausible for item"
 
 
 def warning_flags(text: str) -> list[str]:
@@ -105,26 +130,75 @@ def is_live_auction(listing: Listing) -> bool:
     return "AUCTION" in listing.buying_options
 
 
+def margin_term(pct_below: float, verified: bool) -> float:
+    """Score contribution of the discount vs. the reference price.
+
+    Overpriced side is linear with a floor. The reward side rises to a plateau
+    at MARGIN_PLATEAU_START_PCT and, for *verified* matches (listing resolved
+    to a catalogue product, so the reference price genuinely describes this
+    product), stays there — a trusted deep discount isn't punished. For
+    unverified matches the reward decays again past MARGIN_DECAY_START_PCT:
+    at that depth "90% off" is far more likely an accessory or spare part
+    matched by the item's search terms than a real bargain on the item.
+    """
+    if pct_below <= 0:
+        return max(MARGIN_OVERPRICE_FLOOR_PCT, pct_below) * MARGIN_PER_PCT
+    if pct_below <= MARGIN_PLATEAU_START_PCT:
+        return pct_below * MARGIN_PER_PCT
+    if verified or pct_below <= MARGIN_DECAY_START_PCT:
+        return MARGIN_PLATEAU_SCORE
+    if pct_below <= MARGIN_SUSPECT_PCT:
+        slope = (MARGIN_PLATEAU_SCORE - MARGIN_SUSPECT_SCORE) / (
+            MARGIN_SUSPECT_PCT - MARGIN_DECAY_START_PCT
+        )
+        return MARGIN_PLATEAU_SCORE - (pct_below - MARGIN_DECAY_START_PCT) * slope
+    return max(
+        MARGIN_SUSPECT_SCORE
+        - (pct_below - MARGIN_SUSPECT_PCT) * MARGIN_SUSPECT_DECAY_PER_PCT,
+        MARGIN_MIN_SCORE,
+    )
+
+
+def is_price_implausible(price: float, normal_price: float | None, verified: bool) -> bool:
+    """True when an unverified listing is priced so far below the reference
+    price that it's almost certainly not the item at all (an accessory, spare
+    part or consumable caught by the item's search terms). Never fires for
+    verified matches — their reference price describes the actual product."""
+    if verified or not normal_price or normal_price <= 0:
+        return False
+    return price < normal_price * IMPLAUSIBLE_PRICE_RATIO
+
+
 def deal_score(
     price: float,
     normal_price: float | None,
     target_deal_price: float | None,
     grade: str,
     flags: list[str],
-    priority: str = "normal",
     title: str = "",
     typical_used_price: float | None = None,
     price_trend_pct: float | None = None,
     price_trend_confidence: float = 0.0,
+    verified: bool = False,
 ) -> float:
-    """Score 0-100. Higher = better deal."""
+    """Score 0-100. Higher = better deal. `verified` means the listing
+    resolved to a catalogue product, so the reference prices describe this
+    exact product rather than the item's blended estimate.
+
+    Deliberately objective: item priority is NOT part of the score — how much
+    the operator wants an item belongs to ranking/spotlight selection, not to
+    how good the deal itself is.
+    """
     _, pct_below = margins(price, normal_price)
-    score = 40.0  # neutral baseline for a fairly priced listing
-    score += max(-20.0, min(pct_below, 60.0)) * 0.6
-    if target_deal_price and price <= target_deal_price:
-        score += 15.0
+    score = BASELINE_SCORE  # neutral baseline for a fairly priced listing
+    score += margin_term(pct_below, verified)
+    if (
+        target_deal_price
+        and price <= target_deal_price
+        and not is_price_implausible(price, normal_price, verified)
+    ):
+        score += TARGET_BONUS
     score += _GRADE_ADJUST.get(grade, 0.0)
-    score += _PRIORITY_ADJUST.get(priority, 0.0)
     score -= min(len(flags) * 8.0, 30.0)
     if title and len(title.split()) < 3:
         score -= 5.0  # vague title
@@ -174,6 +248,7 @@ def evaluate(listing: Listing, item: ItemConfig, product: Product | None = None)
     "normal" price just because they share a search term.
     """
     normal_price, target_deal_price, typical_used_price = effective_prices(item, product)
+    verified = product is not None
     grade = grading.classify(listing.text)
     flags = warning_flags(listing.text)
     if is_live_auction(listing):
@@ -181,6 +256,9 @@ def evaluate(listing: Listing, item: ItemConfig, product: Product | None = None)
     elif typical_used_price and typical_used_price > 0 and listing.price > typical_used_price * 1.1:
         # >10% above the typical used price — not just noise around the median.
         flags = flags + ["above typical used price"]
+    implausible = is_price_implausible(listing.price, normal_price, verified)
+    if implausible:
+        flags = flags + [FLAG_IMPLAUSIBLE_PRICE]
     multi_item = is_multi_item_or_price_range(listing)
     if multi_item:
         flags = flags + ["multiple items / price range"]
@@ -189,8 +267,13 @@ def evaluate(listing: Listing, item: ItemConfig, product: Product | None = None)
     # same reasoning as never treating a live auction's current bid as a
     # committed price (see is_live_auction): we don't know which item in
     # the bundle, or which end of the range, the price actually applies to.
+    # An implausibly cheap unverified price is the same story again: it's
+    # almost certainly not this item's price, so it can't meet its target.
     under_target = bool(
-        target_deal_price and listing.price <= target_deal_price and not multi_item
+        target_deal_price
+        and listing.price <= target_deal_price
+        and not multi_item
+        and not implausible
     )
     score = deal_score(
         price=listing.price,
@@ -198,11 +281,11 @@ def evaluate(listing: Listing, item: ItemConfig, product: Product | None = None)
         target_deal_price=target_deal_price,
         grade=grade,
         flags=flags,
-        priority=item.priority,
         title=listing.title,
         typical_used_price=typical_used_price,
         price_trend_pct=product.price_trend_pct if product else None,
         price_trend_confidence=product.price_trend_confidence if product else 0.0,
+        verified=verified,
     )
     return Evaluation(
         grade=grade,
