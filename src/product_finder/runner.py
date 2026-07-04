@@ -10,7 +10,6 @@ from .alerts import console as console_alerts
 from .alerts import webhook as webhook_alerts
 from .config import AppConfig, ItemConfig, OllamaConfig, ProjectConfig
 from .models import ManualLink, MatchAlert
-from .sources.ebay import EbaySource
 
 log = logging.getLogger(__name__)
 
@@ -57,6 +56,10 @@ def run_once(cfg: AppConfig, conn: sqlite3.Connection) -> list[MatchAlert]:
     projects = load_projects(cfg, conn)
     registry = sources.build_registry(cfg)
     new_alerts: list[MatchAlert] = []
+    # Per-connector outcome for this cycle, recorded via record_source_run()
+    # at the end — feeds the Sources page's health column and the coverage
+    # metrics the roadmap wants ("active and failing sources").
+    health: dict[str, dict] = {}
 
     for project in projects:
         for item in project.items:
@@ -66,13 +69,20 @@ def run_once(cfg: AppConfig, conn: sqlite3.Connection) -> list[MatchAlert]:
                 source = registry.get(name)
                 if source is None or not source.is_automated():
                     continue
+                stats = health.setdefault(
+                    name, {"searches": 0, "listings": 0, "errors": 0, "last_error": None}
+                )
                 for term in item.terms:
+                    stats["searches"] += 1
                     try:
                         listings = source.search(term, item)
                     except Exception as exc:
                         # Source failures must never crash the run.
                         log.warning("%s search failed for %r: %s", name, term, exc)
+                        stats["errors"] += 1
+                        stats["last_error"] = str(exc)
                         continue
+                    stats["listings"] += len(listings)
                     for listing in listings:
                         if scoring.excluded(listing, item):
                             continue
@@ -97,7 +107,11 @@ def run_once(cfg: AppConfig, conn: sqlite3.Connection) -> list[MatchAlert]:
                             # sighting only — a long-unsold listing rescanned
                             # every cycle shouldn't dominate the average.
                             db.record_price_observation(conn, product.id, listing.price, listing.source)
-                        if product is None and item_id and isinstance(source, EbaySource):
+                        if (
+                            product is None
+                            and item_id
+                            and source.capabilities().supports_enrichment
+                        ):
                             _maybe_suggest_product(conn, source, listing_id, item_id, cfg.ollama)
                         if is_new and is_primary:
                             normal_price, target_deal_price, _ = scoring.effective_prices(item, product)
@@ -112,6 +126,8 @@ def run_once(cfg: AppConfig, conn: sqlite3.Connection) -> list[MatchAlert]:
                                     extras={"match_id": match_id},
                                 )
                             )
+    for name, stats in health.items():
+        db.record_source_run(conn, name, **stats)
     retailer_price.run_discovery_and_refresh(conn, cfg)
     conn.commit()
 
@@ -122,7 +138,7 @@ def run_once(cfg: AppConfig, conn: sqlite3.Connection) -> list[MatchAlert]:
 
 def _maybe_suggest_product(
     conn: sqlite3.Connection,
-    source: EbaySource,
+    source: sources.Source,
     listing_id: int,
     item_id: int,
     ollama_cfg: OllamaConfig,
@@ -131,7 +147,9 @@ def _maybe_suggest_product(
     chance to discover a new one — but only worth an extra API call once
     per listing ever, not on every rescan of the same still-unmatched one.
 
-    Structured eBay brand/mpn fields are tried first (a much more reliable
+    Offered to any connector declaring supports_enrichment (not "to eBay" —
+    connectors are capabilities, not special cases). Structured brand/model
+    fields from get_item_details() are tried first (a much more reliable
     signal). Only when those are absent — common with private/casual
     sellers — does the optional Ollama free-text fallback get a look, over
     the listing's own title/description, never a second API round-trip."""

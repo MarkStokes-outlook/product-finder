@@ -17,7 +17,7 @@ import requests
 from .. import rate_limit
 from ..config import ItemConfig
 from ..models import AuctionSnapshot, Listing, ManualLink
-from .base import Source
+from .base import Source, SourceCapabilities
 
 log = logging.getLogger(__name__)
 
@@ -63,7 +63,21 @@ class EbaySource(Source):
         self._token_expires: float = 0.0
         self._limiter = rate_limit.RateLimiter(_MIN_DELAY, _MAX_DELAY)
 
+    def capabilities(self) -> SourceCapabilities:
+        return SourceCapabilities(
+            automated=True,
+            compliance="official eBay Browse API (application token)",
+            supports_enrichment=True,
+            provides_images=True,
+            provides_end_time=True,
+            provides_structured_attributes=True,
+            notes="Auction current bids are captured but never treated as "
+                  "committed prices; getItem enrichment supplies brand/MPN.",
+        )
+
     def is_automated(self) -> bool:
+        # Declared automated, but only operable once API credentials exist —
+        # readiness is config-dependent, the capability class is not.
         ebay = self.cfg.sources.ebay
         return bool(ebay.app_id and ebay.cert_id)
 

@@ -323,6 +323,20 @@ def test_sources_page_lists_builtin_and_extra(cfg, client):
     assert b"Facebook Marketplace" in resp.data
 
 
+def test_sources_page_shows_compliance_and_health(cfg, client):
+    conn = db.connect(cfg.db_path)
+    db.record_source_run(conn, "ebay", searches=4, listings=120)
+    conn.commit()
+    conn.close()
+    resp = client.get("/sources")
+    # Compliance basis is rendered for every connector class.
+    assert b"official eBay Browse API" in resp.data
+    assert b"terms prohibit scraping" in resp.data  # Gumtree
+    # Health column: recorded run shows volume; automated-but-unrun would
+    # show "not yet run"; manual-assisted connectors show none at all.
+    assert b"120 listings / 24h" in resp.data
+
+
 def test_sources_page_shows_new_extra_source_no_import_needed(tmp_path, client):
     from product_finder.config import ExtraSourceConfig, SourcesConfig
     from product_finder.web.app import create_app

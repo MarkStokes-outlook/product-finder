@@ -3,7 +3,7 @@ from unittest import mock
 from product_finder import auction_watch, db, runner, sources  # noqa: F401 (auction_watch unused, kept for parity)
 from product_finder.config import AppConfig, EbayConfig, ItemConfig, SourcesConfig
 from product_finder.models import Listing
-from product_finder.sources.base import Source
+from product_finder.sources.base import Source, SourceCapabilities
 
 
 def _setup(tmp_path):
@@ -230,8 +230,10 @@ class FakeEbaySource(Source):
         self._listings = listings
         self._details = details or {}
 
-    def is_automated(self):
-        return True
+    def capabilities(self):
+        return SourceCapabilities(
+            automated=True, compliance="test fake", supports_enrichment=True
+        )
 
     def search(self, term, item):
         return self._listings
@@ -257,10 +259,7 @@ def test_unmatched_listing_with_structured_brand_creates_suggestion(tmp_path):
     cfg, conn, item_id = _setup(tmp_path)
     listing = Listing(source="ebay", external_id="e1", title="Makita LS0816F/2 mitre saw",
                        price=250.0, url="https://x/e1")
-    with mock.patch(
-        "product_finder.runner.EbaySource", FakeEbaySource
-    ):
-        _run_with_fake_ebay(cfg, conn, [listing], details={"e1": {"brand": "Makita", "model": "LS0816F/2"}})
+    _run_with_fake_ebay(cfg, conn, [listing], details={"e1": {"brand": "Makita", "model": "LS0816F/2"}})
 
     suggestions = db.list_product_suggestions(conn, item_id)
     assert len(suggestions) == 1
@@ -273,9 +272,8 @@ def test_listing_only_brand_checked_once(tmp_path):
     listing = Listing(source="ebay", external_id="e1", title="Makita LS0816F/2 mitre saw",
                        price=250.0, url="https://x/e1")
     details = {"e1": {"brand": "Makita", "model": "LS0816F/2"}}
-    with mock.patch("product_finder.runner.EbaySource", FakeEbaySource):
-        _run_with_fake_ebay(cfg, conn, [listing], details=details)
-        _run_with_fake_ebay(cfg, conn, [listing], details=details)  # rescan
+    _run_with_fake_ebay(cfg, conn, [listing], details=details)
+    _run_with_fake_ebay(cfg, conn, [listing], details=details)  # rescan
 
     suggestions = db.list_product_suggestions(conn, item_id)
     assert len(suggestions) == 1
@@ -286,8 +284,7 @@ def test_no_suggestion_when_no_structured_brand(tmp_path):
     cfg, conn, item_id = _setup(tmp_path)
     listing = Listing(source="ebay", external_id="e1", title="Mitre saw, no brand info",
                        price=90.0, url="https://x/e1")
-    with mock.patch("product_finder.runner.EbaySource", FakeEbaySource):
-        _run_with_fake_ebay(cfg, conn, [listing], details={})
+    _run_with_fake_ebay(cfg, conn, [listing], details={})
 
     assert db.list_product_suggestions(conn, item_id) == []
     listing_row = conn.execute("SELECT brand_checked FROM listings WHERE external_id = 'e1'").fetchone()
@@ -299,7 +296,7 @@ def test_ollama_fallback_creates_suggestion_when_no_structured_brand(tmp_path):
     cfg.ollama.enabled = True
     listing = Listing(source="ebay", external_id="e1", title="mitre saw, barely used",
                        price=90.0, url="https://x/e1")
-    with mock.patch("product_finder.runner.EbaySource", FakeEbaySource), mock.patch(
+    with mock.patch(
         "product_finder.runner.extraction.extract_brand_model",
         return_value={"brand": "Makita", "model": "LS0816F/2"},
     ) as extract:
@@ -317,7 +314,7 @@ def test_ollama_fallback_not_used_when_structured_brand_present(tmp_path):
     cfg.ollama.enabled = True
     listing = Listing(source="ebay", external_id="e1", title="Makita LS0816F/2 mitre saw",
                        price=250.0, url="https://x/e1")
-    with mock.patch("product_finder.runner.EbaySource", FakeEbaySource), mock.patch(
+    with mock.patch(
         "product_finder.runner.extraction.extract_brand_model"
     ) as extract:
         _run_with_fake_ebay(cfg, conn, [listing], details={"e1": {"brand": "Makita", "model": "LS0816F/2"}})
@@ -333,7 +330,7 @@ def test_no_suggestion_when_ollama_extraction_finds_nothing(tmp_path):
     cfg.ollama.enabled = True
     listing = Listing(source="ebay", external_id="e1", title="mystery tool, no branding",
                        price=40.0, url="https://x/e1")
-    with mock.patch("product_finder.runner.EbaySource", FakeEbaySource), mock.patch(
+    with mock.patch(
         "product_finder.runner.extraction.extract_brand_model", return_value=None
     ):
         _run_with_fake_ebay(cfg, conn, [listing], details={})
@@ -346,8 +343,7 @@ def test_no_suggestion_check_when_listing_already_matches_a_product(tmp_path):
     db.create_product(conn, item_id, "Makita", "LS0816F/2", ["makita ls0816f/2"], None, None, None)
     listing = Listing(source="ebay", external_id="e1", title="Makita LS0816F/2 mitre saw",
                        price=250.0, url="https://x/e1")
-    with mock.patch("product_finder.runner.EbaySource", FakeEbaySource):
-        _run_with_fake_ebay(cfg, conn, [listing], details={"e1": {"brand": "Makita", "model": "LS0816F/2"}})
+    _run_with_fake_ebay(cfg, conn, [listing], details={"e1": {"brand": "Makita", "model": "LS0816F/2"}})
 
     # Already resolved via catalogue.match() — no wasted get_item_details call,
     # no duplicate/competing suggestion for a product we already have.

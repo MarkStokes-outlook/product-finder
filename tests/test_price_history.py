@@ -3,7 +3,7 @@ from datetime import datetime, timedelta, timezone
 from product_finder import db, runner, sources
 from product_finder.config import AppConfig, ItemConfig
 from product_finder.models import Listing
-from product_finder.sources.base import Source
+from product_finder.sources.base import Source, SourceCapabilities
 
 
 def _setup(tmp_path):
@@ -124,8 +124,8 @@ class FakeSource(Source):
         super().__init__(cfg)
         self._listings = listings
 
-    def is_automated(self):
-        return True
+    def capabilities(self):
+        return SourceCapabilities(automated=True, compliance="test fake")
 
     def search(self, term, item):
         return self._listings

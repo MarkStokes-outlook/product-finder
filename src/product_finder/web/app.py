@@ -286,6 +286,8 @@ def create_app(cfg: AppConfig) -> Flask:
         eff_cfg = _effective_cfg(cfg)
         sc = eff_cfg.sources
         registry = sources.build_registry(eff_cfg)
+        connectors = sources.build_all(eff_cfg)
+        health = db.source_health(_get_conn(cfg))
         rows = [
             {"name": "ebay", "kind": "builtin", "label": "eBay",
              "enabled": sc.ebay.enabled,
@@ -305,6 +307,9 @@ def create_app(cfg: AppConfig) -> Flask:
                 "automated": registry[e.name].is_automated() if e.name in registry else e.type == "rss",
                 "url": e.url, "max_age_days": e.max_age_days,
             })
+        for row in rows:
+            row["caps"] = connectors[row["name"]].capabilities()
+            row["health"] = health.get(row["name"])
         return render_template("sources.html", rows=rows, ebay=sc.ebay)
 
     @app.route("/sources/<name>/toggle", methods=["POST"])

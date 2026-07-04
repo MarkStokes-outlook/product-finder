@@ -1,7 +1,7 @@
 from product_finder import db, identity, runner, sources
 from product_finder.config import AppConfig, ExtraSourceConfig, ItemConfig
 from product_finder.models import Listing
-from product_finder.sources.base import Source
+from product_finder.sources.base import Source, SourceCapabilities
 
 
 # --- identity.derive_canonical_key -------------------------------------------
@@ -160,8 +160,8 @@ class FakeSource(Source):
         self.name = name
         self._listings = listings
 
-    def is_automated(self):
-        return True
+    def capabilities(self):
+        return SourceCapabilities(automated=True, compliance="test fake")
 
     def search(self, term, item):
         return self._listings

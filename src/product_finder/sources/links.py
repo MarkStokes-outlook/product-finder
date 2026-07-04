@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from ..config import ExtraSourceConfig, ItemConfig
 from ..models import ManualLink
-from .base import Source
+from .base import Source, SourceCapabilities
 from .rss import format_url
 
 
@@ -21,8 +21,11 @@ class UrlTemplateSource(Source):
         self.name = spec.name
         self.spec = spec
 
-    def is_automated(self) -> bool:
-        return False
+    def capabilities(self) -> SourceCapabilities:
+        return SourceCapabilities(
+            automated=False,
+            compliance="manual-assisted search links only",
+        )
 
     def manual_links(self, item: ItemConfig) -> list[ManualLink]:
         label = self.spec.label or self.spec.name.replace("-", " ").title()

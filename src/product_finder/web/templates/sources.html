@@ -6,7 +6,7 @@
 </div>
 <div class="card table-card">
 <table>
-<thead><tr><th>Source</th><th>Type</th><th>Automated</th><th>Status</th><th>Actions</th></tr></thead>
+<thead><tr><th>Source</th><th>Type</th><th>Class</th><th>Status</th><th>Health</th><th>Actions</th></tr></thead>
 <tbody>
 {% for s in rows %}
   <tr>
@@ -16,8 +16,23 @@
       {% if s.url %}<div class="meta">{{ s.url }}{% if s.max_age_days %} &middot; max age {{ s.max_age_days }}d{% endif %}</div>{% endif %}
     </td>
     <td class="meta">{{ s.kind }}</td>
-    <td>{% if s.automated %}<span class="badge target">automated</span>{% else %}<span class="badge grade-unknown">manual links</span>{% endif %}</td>
+    <td>
+      {% if s.automated %}<span class="badge target" {% if s.caps.notes %}title="{{ s.caps.notes }}"{% endif %}>automated</span>
+      {% elif s.caps.automated %}<span class="badge grade-unknown" title="Automated once credentials are configured">needs credentials</span>
+      {% else %}<span class="badge grade-unknown">manual links</span>{% endif %}
+      <div class="meta">{{ s.caps.compliance }}</div>
+    </td>
     <td>{% if s.enabled %}<span class="badge target">enabled</span>{% else %}<span class="badge flag">disabled</span>{% endif %}</td>
+    <td>
+      {% if not s.caps.automated %}<span class="meta">&mdash;</span>
+      {% elif not s.health %}<span class="meta">not yet run</span>
+      {% else %}
+        {% if s.health.consecutive_failures %}<span class="badge flag">failing &times;{{ s.health.consecutive_failures }}</span>
+        {% else %}<span class="badge target">ok</span>{% endif %}
+        <div class="meta">{{ s.health.listings_24h }} listings / 24h</div>
+        {% if s.health.consecutive_failures and s.health.last_error %}<div class="meta">{{ s.health.last_error[:90] }}</div>{% endif %}
+      {% endif %}
+    </td>
     <td>
       <form class="inline" method="post" action="{{ url_for('source_toggle', name=s.name) }}">
         <button class="small" type="submit">{{ 'Disable' if s.enabled else 'Enable' }}</button>

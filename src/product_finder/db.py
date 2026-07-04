@@ -158,6 +158,17 @@ CREATE TABLE IF NOT EXISTS listing_identity_members (
     created_at TEXT NOT NULL,
     UNIQUE(identity_id, listing_id)
 );
+CREATE TABLE IF NOT EXISTS source_runs (
+    id INTEGER PRIMARY KEY,
+    source TEXT NOT NULL,
+    run_at TEXT NOT NULL,
+    ok INTEGER NOT NULL,            -- 1 = cycle completed with zero errors
+    searches INTEGER NOT NULL DEFAULT 0,
+    listings INTEGER NOT NULL DEFAULT 0,
+    errors INTEGER NOT NULL DEFAULT 0,
+    last_error TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_source_runs_source ON source_runs(source, run_at);
 """
 
 # Columns added since the first release; applied to pre-existing databases.
@@ -1397,6 +1408,75 @@ def project_top_picks(conn: sqlite3.Connection) -> dict[int, sqlite3.Row]:
         """
     ).fetchall()
     return {row["project_id"]: row for row in rows}
+
+
+_SOURCE_RUN_RETENTION_DAYS = 30
+
+
+def record_source_run(
+    conn: sqlite3.Connection,
+    source: str,
+    searches: int = 0,
+    listings: int = 0,
+    errors: int = 0,
+    last_error: str | None = None,
+) -> None:
+    """One connector's outcome for one search cycle (see runner.run_once) —
+    the raw material for the Sources page health column and the roadmap's
+    coverage metrics. Rows older than the retention window are pruned on
+    write so the table can't grow unboundedly (roadmap: "Keeping the system
+    healthy" — retention handled opportunistically where data is created)."""
+    conn.execute(
+        "INSERT INTO source_runs (source, run_at, ok, searches, listings, errors, last_error) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (source, _now(), 1 if errors == 0 else 0, searches, listings, errors, last_error),
+    )
+    cutoff = (
+        datetime.now(timezone.utc) - timedelta(days=_SOURCE_RUN_RETENTION_DAYS)
+    ).isoformat(timespec="seconds")
+    conn.execute("DELETE FROM source_runs WHERE run_at < ?", (cutoff,))
+
+
+def source_health(conn: sqlite3.Connection) -> dict[str, dict]:
+    """Per-connector health, keyed by source name: last run and whether it
+    was clean, last successful run, consecutive failing runs (0 for a
+    healthy source), and 24-hour ingest volume. Sources with no recorded
+    runs simply aren't present — the UI shows them as "not yet run"."""
+    rows = conn.execute(
+        "SELECT source, run_at, ok, listings, errors, last_error "
+        "FROM source_runs ORDER BY source, run_at DESC, id DESC"
+    ).fetchall()
+    cutoff_24h = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat(
+        timespec="seconds"
+    )
+    health: dict[str, dict] = {}
+    for row in rows:
+        h = health.setdefault(
+            row["source"],
+            {
+                "last_run_at": row["run_at"],
+                "last_ok": bool(row["ok"]),
+                "last_error": row["last_error"],
+                "last_success_at": None,
+                "consecutive_failures": 0,
+                "listings_24h": 0,
+                "errors_24h": 0,
+                "_streak_open": True,
+            },
+        )
+        if row["ok"] and h["last_success_at"] is None:
+            h["last_success_at"] = row["run_at"]
+        if h["_streak_open"]:
+            if row["ok"]:
+                h["_streak_open"] = False
+            else:
+                h["consecutive_failures"] += 1
+        if row["run_at"] >= cutoff_24h:
+            h["listings_24h"] += row["listings"]
+            h["errors_24h"] += row["errors"]
+    for h in health.values():
+        del h["_streak_open"]
+    return health
 
 
 def latest_activity(conn: sqlite3.Connection) -> str | None:

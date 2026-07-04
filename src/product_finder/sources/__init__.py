@@ -32,3 +32,17 @@ def build_registry(cfg: AppConfig) -> dict[str, Source]:
         if spec.enabled:
             registry[spec.name] = _EXTRA_TYPES[spec.type](cfg, spec)
     return registry
+
+
+def build_all(cfg: AppConfig) -> dict[str, Source]:
+    """Every known connector, enabled or not — for the Sources page's
+    capability/compliance/health display. build_registry() stays the
+    operational set the runner actually searches."""
+    connectors: dict[str, Source] = {
+        "ebay": EbaySource(cfg),
+        "gumtree": GumtreeSource(cfg),
+        "facebook": FacebookSource(cfg),
+    }
+    for spec in cfg.sources.extra:
+        connectors[spec.name] = _EXTRA_TYPES[spec.type](cfg, spec)
+    return connectors

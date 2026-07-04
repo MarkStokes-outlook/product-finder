@@ -11,14 +11,18 @@ from urllib.parse import urlencode
 
 from ..config import ItemConfig
 from ..models import ManualLink
-from .base import Source
+from .base import Source, SourceCapabilities
 
 
 class GumtreeSource(Source):
     name = "gumtree"
 
-    def is_automated(self) -> bool:
-        return False
+    def capabilities(self) -> SourceCapabilities:
+        return SourceCapabilities(
+            automated=False,
+            compliance="manual-assisted links only (terms prohibit scraping; "
+                       "no official public API)",
+        )
 
     def manual_links(self, item: ItemConfig) -> list[ManualLink]:
         links = []

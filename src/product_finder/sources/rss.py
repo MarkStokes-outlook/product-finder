@@ -22,7 +22,7 @@ import requests
 from .. import rate_limit
 from ..config import ExtraSourceConfig, ItemConfig
 from ..models import Listing
-from .base import Source
+from .base import Source, SourceCapabilities
 
 log = logging.getLogger(__name__)
 
@@ -140,8 +140,15 @@ class RssSource(Source):
         # own pace rather than fighting over one global clock.
         self._limiter = rate_limit.RateLimiter(_MIN_DELAY, _MAX_DELAY)
 
-    def is_automated(self) -> bool:
-        return True
+    def capabilities(self) -> SourceCapabilities:
+        return SourceCapabilities(
+            automated=True,
+            compliance="open RSS/Atom feed intended for syndication",
+            provides_images=True,
+            notes="Prices parsed from entry text (entries without a £ amount "
+                  "are skipped); images best-effort from media:thumbnail or "
+                  "image enclosures.",
+        )
 
     def search(self, term: str, item: ItemConfig) -> list[Listing]:
         url = format_url(self.spec.url, term, item, self.cfg)

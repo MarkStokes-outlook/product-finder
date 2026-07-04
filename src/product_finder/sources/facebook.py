@@ -10,14 +10,18 @@ from urllib.parse import urlencode
 
 from ..config import ItemConfig
 from ..models import ManualLink
-from .base import Source
+from .base import Source, SourceCapabilities
 
 
 class FacebookSource(Source):
     name = "facebook"
 
-    def is_automated(self) -> bool:
-        return False
+    def capabilities(self) -> SourceCapabilities:
+        return SourceCapabilities(
+            automated=False,
+            compliance="manual-assisted links only (login-walled; no "
+                       "compliant automation route)",
+        )
 
     def manual_links(self, item: ItemConfig) -> list[ManualLink]:
         links = []
