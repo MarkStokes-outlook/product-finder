@@ -65,6 +65,9 @@ questions:
 
 - Product catalogue and human-reviewed product suggestions.
 - Structured eBay brand/model discovery.
+- Local-model (Ollama) brand/model extraction from unstructured listing text,
+  feeding the same human-reviewed suggestion queue — never writing to the
+  catalogue directly. Off by default until the confidence signal earns trust.
 - Product-aware deal scoring.
 - Used-price observations and trend-aware scoring.
 - Auction capture for end-of-auction price observations.
@@ -94,6 +97,22 @@ source-specific shortcuts. A connector owns the messy details of one market or
 feed type and emits the same normalised listing shape to the rest of the
 system.
 
+Connectors come in two classes, and both are first-class citizens of the model:
+
+- **Automated connectors** — official APIs, authorised feeds, or genuinely
+  open RSS/Atom endpoints that permit programmatic search. These feed the
+  engine directly.
+- **Manual-assisted connectors** — marketplaces whose terms of service do not
+  permit automated access (Facebook Marketplace and Gumtree today). These
+  generate pre-filled search links for a human to follow; they never scrape,
+  bypass logins, or evade bot protection.
+
+Compliance is a hard constraint, not a preference. An integration that can
+only exist by violating a marketplace's terms does not get built, however
+valuable its listings would be. A marketplace moves from manual-assisted to
+automated only when a legitimate route appears — an official API, an
+authorised feed, or an explicit licence — never because scraping got easier.
+
 Every connector should declare, where possible:
 
 - Search capability and supported query shape.
@@ -107,13 +126,14 @@ Every connector should declare, where possible:
 - Health/status reporting.
 - Provenance and confidence notes.
 
-Near-term connector candidates:
+Near-term connector candidates (class depends on what each marketplace's
+terms legitimately allow, verified before building):
 
-- Facebook Marketplace.
-- Gumtree.
+- Facebook Marketplace (manual-assisted — no compliant automated route today).
+- Gumtree (manual-assisted — same).
 - Vinted.
 - Craigslist or local classifieds where relevant.
-- Reverb for music gear.
+- Reverb for music gear (has an official API).
 - Cash Converters / CEX / BackMarket-style used retailers.
 - Retail clearance and warehouse/outlet feeds.
 - Local auction houses, liquidation feeds, and estate-sale sources.
@@ -161,10 +181,17 @@ unstructured text, and giving it a way to merge what it eventually gets wrong,
 both under the same human-review discipline the structured-data path already
 uses.
 
-The next high-leverage catalogue work is an Ollama/local-model fallback that
-extracts likely manufacturer/model pairs from listing title and description
-when structured marketplace fields are missing, then feeds the existing product
-suggestion queue rather than writing directly to the catalogue.
+The free-text extraction fallback now exists (local-model, feeding the
+suggestion queue under the same review discipline as structured discovery).
+The next catalogue objective is quality rather than existence: measure and
+improve extraction yield and precision against real listings, and teach
+extraction to carry **richer product understanding** — variant/size/capacity
+distinctions, accessory and spare-part signals, bundle awareness — so that
+what reaches the suggestion queue describes what a listing actually is, not
+just the first brand and model string found in it. That same understanding
+should eventually power reconciliation: recognising that a newly extracted
+product is a different spelling of one already known, and proposing the merge
+for review instead of accumulating near-duplicates.
 
 ## Listing understanding
 
