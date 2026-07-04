@@ -121,6 +121,27 @@ def cmd_list_items(cfg: AppConfig) -> int:
     return 0
 
 
+def cmd_catalogue_tidy(cfg: AppConfig) -> int:
+    """One-shot catalogue maintenance, safe to re-run: replay pending
+    suggestions through the current normalisation rules (casing variants
+    merge, junk placeholders drop out), then fold exact-duplicate products
+    into their oldest copy. Decided suggestions and distinct products are
+    never touched."""
+    conn = db.connect(cfg.db_path)
+    try:
+        result = db.renormalize_pending_suggestions(conn)
+        merged = db.dedupe_products(conn)
+    finally:
+        conn.close()
+    print(
+        f"Suggestions: {result['before']} pending -> {result['after']} "
+        f"({result['rejected_outright']} rejected as junk, "
+        f"{result['before'] - result['after'] - result['rejected_outright']} merged)."
+    )
+    print(f"Products: {merged} exact duplicate(s) folded away.")
+    return 0
+
+
 def cmd_web(cfg: AppConfig, port: int) -> int:
     from .web.app import create_app
 
@@ -143,6 +164,10 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("import-config", help="Import/merge YAML projects and items into the database")
     sub.add_parser("list-projects", help="List projects")
     sub.add_parser("list-items", help="List items per project")
+    sub.add_parser(
+        "catalogue-tidy",
+        help="Re-normalise pending suggestions and merge exact-duplicate products (idempotent)",
+    )
     web = sub.add_parser("web", help="Run the local web UI (localhost only)")
     web.add_argument("-p", "--port", type=int, default=8765, help="Port (default 8765)")
     args = parser.parse_args(argv)
@@ -167,6 +192,7 @@ def main(argv: list[str] | None = None) -> int:
         "import-config": cmd_import_config,
         "list-projects": cmd_list_projects,
         "list-items": cmd_list_items,
+        "catalogue-tidy": cmd_catalogue_tidy,
     }
     return commands[args.command](cfg)
 

@@ -635,6 +635,19 @@ def create_product(
     typical_new_price: float | None,
     target_deal_price: float | None,
 ) -> int:
+    """Create a catalogue product — or return the existing one if this
+    (item, manufacturer, model) already exists case-insensitively. products
+    has no UNIQUE constraint (casing variants and double-submits created
+    real duplicates before this guard), so uniqueness is enforced here at
+    the only insert path rather than by a migration that would fail on
+    databases already containing duplicates."""
+    existing = conn.execute(
+        "SELECT id FROM products WHERE item_id = ? "
+        "AND manufacturer = ? COLLATE NOCASE AND model = ? COLLATE NOCASE",
+        (item_id, manufacturer, model),
+    ).fetchone()
+    if existing:
+        return existing["id"]
     cur = conn.execute(
         "INSERT INTO products (item_id, manufacturer, model, match_terms, "
         "msrp, typical_new_price, target_deal_price) VALUES (?, ?, ?, ?, ?, ?, ?)",
@@ -667,6 +680,75 @@ def set_product_archived(conn: sqlite3.Connection, product_id: int, archived: bo
     conn.commit()
 
 
+def merge_products(conn: sqlite3.Connection, keep_id: int, dup_id: int) -> None:
+    """Fold a duplicate product into the one being kept. Everything the
+    duplicate accumulated changes owner — listing matches, price
+    observations, new-price history, price candidates — then match_terms
+    are unioned (case-insensitively), the kept product's NULL reference
+    prices are filled from the duplicate's, the used-price cache is
+    recomputed over the combined observations, and the duplicate row is
+    deleted. Nothing else is lost."""
+    keep = get_product(conn, keep_id)
+    dup = get_product(conn, dup_id)
+    if keep is None or dup is None or keep_id == dup_id:
+        raise ValueError("merge_products needs two distinct existing products")
+
+    for table in ("listing_matches", "product_price_observations",
+                  "product_new_price_history", "product_price_candidates"):
+        conn.execute(
+            f"UPDATE {table} SET product_id = ? WHERE product_id = ?",  # noqa: S608 — fixed table names
+            (keep_id, dup_id),
+        )
+
+    terms = json.loads(keep["match_terms"])
+    seen = {t.strip().lower() for t in terms}
+    for term in json.loads(dup["match_terms"]):
+        if term.strip().lower() not in seen:
+            terms.append(term)
+            seen.add(term.strip().lower())
+
+    conn.execute(
+        "UPDATE products SET match_terms = ?, "
+        "msrp = COALESCE(msrp, ?), "
+        "typical_new_price = COALESCE(typical_new_price, ?), "
+        "target_deal_price = COALESCE(target_deal_price, ?), "
+        "canonical_price_url = COALESCE(canonical_price_url, ?) "
+        "WHERE id = ?",
+        (json.dumps(terms), dup["msrp"], dup["typical_new_price"],
+         dup["target_deal_price"], dup["canonical_price_url"], keep_id),
+    )
+    conn.execute("DELETE FROM products WHERE id = ?", (dup_id,))
+    _recompute_used_price(conn, keep_id)
+    conn.commit()
+
+
+def find_duplicate_products(conn: sqlite3.Connection) -> list[list[sqlite3.Row]]:
+    """Groups of products that are the same (item, manufacturer, model)
+    case-insensitively — the exact duplicates create_product now prevents,
+    found so pre-guard databases can be swept (see cli catalogue-tidy).
+    Each group is ordered oldest first (the natural keeper)."""
+    rows = conn.execute(
+        "SELECT * FROM products ORDER BY item_id, LOWER(manufacturer), LOWER(model), id"
+    ).fetchall()
+    groups: dict[tuple, list[sqlite3.Row]] = {}
+    for row in rows:
+        key = (row["item_id"], row["manufacturer"].lower(), row["model"].lower())
+        groups.setdefault(key, []).append(row)
+    return [group for group in groups.values() if len(group) > 1]
+
+
+def dedupe_products(conn: sqlite3.Connection) -> int:
+    """Merge every exact-duplicate product group into its oldest member.
+    Returns how many duplicate rows were folded away. Idempotent."""
+    merged = 0
+    for group in find_duplicate_products(conn):
+        keep, *dups = group
+        for dup in dups:
+            merge_products(conn, keep["id"], dup["id"])
+            merged += 1
+    return merged
+
+
 def delete_product(conn: sqlite3.Connection, product_id: int) -> None:
     conn.execute(
         "UPDATE listing_matches SET product_id = NULL WHERE product_id = ?", (product_id,)
@@ -695,6 +777,14 @@ def record_price_observation(conn: sqlite3.Connection, product_id: int, price: f
         "VALUES (?, ?, ?, ?)",
         (product_id, price, source, _now()),
     )
+    _recompute_used_price(conn, product_id)
+    conn.commit()
+
+
+def _recompute_used_price(conn: sqlite3.Connection, product_id: int) -> None:
+    """Recompute the cached typical_used_price + trend from the observation
+    window. Shared by record_price_observation (every new sighting) and
+    merge_products (observations just changed owner). Caller commits."""
     cutoff = (datetime.now(timezone.utc) - timedelta(days=_PRICE_HISTORY_WINDOW_DAYS)).isoformat(
         timespec="seconds"
     )
@@ -716,7 +806,6 @@ def record_price_observation(conn: sqlite3.Connection, product_id: int, price: f
         "price_trend_confidence = ? WHERE id = ?",
         (typical, trend.pct, trend.confidence, product_id),
     )
-    conn.commit()
 
 
 def list_price_observations(conn: sqlite3.Connection, product_id: int) -> list[sqlite3.Row]:
@@ -924,6 +1013,25 @@ def list_product_suggestions(
     ).fetchall()
 
 
+def list_all_pending_suggestions(conn: sqlite3.Connection) -> list[sqlite3.Row]:
+    """Every pending suggestion across all active items, with item/project
+    names for grouping — the global catalogue review queue. Ordered so the
+    template can groupby item: busiest items first (most pending), then
+    strongest suggestions first within an item."""
+    return conn.execute(
+        """
+        SELECT s.*, i.name AS item_name, p.name AS project_name,
+               COUNT(*) OVER (PARTITION BY s.item_id) AS item_pending
+        FROM product_suggestions s
+        JOIN items i ON i.id = s.item_id AND i.archived = 0
+        JOIN projects p ON p.id = i.project_id AND p.archived = 0
+        WHERE s.status = 'pending'
+        ORDER BY item_pending DESC, s.item_id,
+                 (s.model != '') DESC, s.confidence DESC, s.manufacturer
+        """
+    ).fetchall()
+
+
 _MAX_RAW_SAMPLES = 10
 
 
@@ -951,10 +1059,17 @@ def record_suggestion_sighting(
         return None
     manufacturer, model = normalized
     now = _now()
+    # Case-insensitive: "DEWALT"/"DeWalt"/"Dewalt" corroborate one suggestion
+    # instead of splitting into three, without BRAND_ALIASES having to know
+    # every brand in advance. First-recorded casing wins and is adopted here,
+    # so the UNIQUE(item_id, manufacturer, model) row is reused.
     existing = conn.execute(
-        "SELECT * FROM product_suggestions WHERE item_id = ? AND manufacturer = ? AND model = ?",
+        "SELECT * FROM product_suggestions WHERE item_id = ? "
+        "AND manufacturer = ? COLLATE NOCASE AND model = ? COLLATE NOCASE",
         (item_id, manufacturer, model),
     ).fetchone()
+    if existing:
+        manufacturer, model = existing["manufacturer"], existing["model"]
     if existing and existing["status"] != "pending":
         return existing
 

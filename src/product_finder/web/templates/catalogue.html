@@ -1,0 +1,100 @@
+{% extends "base.html" %}
+{% block title %}Catalogue review — Product Finder{% endblock %}
+{% block content %}
+<div class="page-head">
+  <h1>Catalogue review</h1>
+  <span class="meta">{{ suggestions | length }} pending suggestion(s)</span>
+</div>
+<p class="hint">
+  Every pending product suggestion, across all items — spotted from listings'
+  own structured manufacturer/model data, never guessed. Approve to create
+  catalogue products (model-level pricing); dismiss what doesn't fit — a
+  dismissal is remembered and never re-asked. Brand-only rows (no model) are
+  excluded from bulk approval: a bare brand makes a poor product.
+</p>
+
+{% if not suggestions %}
+<div class="card"><p class="meta" style="margin:0;">Nothing waiting for review — the watcher will queue new suggestions as listings are scanned.</p></div>
+{% else %}
+<form id="catalogue-bulk-form" method="post">
+  <input type="hidden" name="next" value="{{ url_for('catalogue_review') }}">
+</form>
+
+{% for s in suggestions %}
+  {% if loop.changed(s['item_id']) %}
+    {% if not loop.first %}</tbody></table></div>{% endif %}
+    <div class="page-head" style="margin-top: 1.6rem;">
+      <h2 style="margin: 0;">{{ s['item_name'] }}</h2>
+      <span class="meta">{{ s['project_name'] }} &middot; {{ s['item_pending'] }} pending &middot;
+        <a href="{{ url_for('item_edit', item_id=s['item_id']) }}">edit item</a></span>
+    </div>
+    <div class="card table-card">
+    <table>
+    <thead><tr>
+      <th><input type="checkbox" class="pf-select-item" data-item="{{ s['item_id'] }}"
+                 title="Select all for this item"></th>
+      <th>Manufacturer</th><th>Model</th><th>Confidence</th><th>Sightings</th><th>Example</th><th></th>
+    </tr></thead>
+    <tbody>
+  {% endif %}
+  <tr>
+    <td><input type="checkbox" name="suggestion_ids" value="{{ s['id'] }}"
+               form="catalogue-bulk-form" data-item-group="{{ s['item_id'] }}"></td>
+    <td>{{ s['manufacturer'] }}</td>
+    <td>{% if s['model'] %}{{ s['model'] }}{% else %}<span class="badge grade-unknown" title="Bulk approve skips these — a bare brand matches too much">brand only</span>{% endif %}</td>
+    <td class="num">{{ '%.0f' | format(s['confidence']) }}%</td>
+    <td class="num">{{ s['sighting_count'] }}</td>
+    <td class="meta">{% if s['example_url'] %}<a href="{{ s['example_url'] }}" target="_blank" rel="noopener">example</a>{% else %}&mdash;{% endif %}</td>
+    <td class="meta">
+      <form class="inline" method="post" action="{{ url_for('suggestion_approve', suggestion_id=s['id']) }}">
+        <input type="hidden" name="next" value="{{ url_for('catalogue_review') }}">
+        <button class="small" type="submit">Approve</button>
+      </form>
+      &middot;
+      <form class="inline" method="post" action="{{ url_for('suggestion_dismiss', suggestion_id=s['id']) }}">
+        <input type="hidden" name="next" value="{{ url_for('catalogue_review') }}">
+        <button class="small" type="submit">Dismiss</button>
+      </form>
+    </td>
+  </tr>
+  {% if loop.last %}</tbody></table></div>{% endif %}
+{% endfor %}
+
+<div class="card" style="position: sticky; bottom: .8rem; margin-top: 1.2rem; display: flex; gap: .6rem; align-items: center;">
+  <button class="small primary" type="submit" form="catalogue-bulk-form"
+          formaction="{{ url_for('suggestion_bulk_approve') }}">Approve selected</button>
+  <button class="small" type="submit" form="catalogue-bulk-form"
+          formaction="{{ url_for('suggestion_bulk_dismiss') }}">Dismiss selected</button>
+  <span class="meta" id="pf-selected-count">0 selected</span>
+</div>
+
+<script>
+// Per-item "select all" + a running selected-count in the sticky action bar.
+document.querySelectorAll(".pf-select-item").forEach(function (head) {
+  head.addEventListener("change", function () {
+    document.querySelectorAll('input[data-item-group="' + head.dataset.item + '"]')
+      .forEach(function (box) { box.checked = head.checked; });
+    pfSelectedCount();
+  });
+});
+function pfSelectedCount() {
+  var n = document.querySelectorAll('input[name="suggestion_ids"]:checked').length;
+  document.getElementById("pf-selected-count").textContent = n + " selected";
+}
+document.addEventListener("change", function (e) {
+  if (e.target.name === "suggestion_ids") pfSelectedCount();
+});
+</script>
+{% endif %}
+
+<form method="post" action="{{ url_for('catalogue_settings') }}" class="filters card" style="margin-top: 1.2rem;">
+  <span>
+    <label for="auto_approve_threshold">Auto-approve at or above</label>
+    <input type="number" id="auto_approve_threshold" name="auto_approve_threshold" min="0" max="100" step="1"
+           style="width: 5rem;"
+           value="{{ auto_approve_threshold if auto_approve_threshold is not none else '' }}">
+  </span>
+  <span class="meta">% confidence — blank means everything waits for your review</span>
+  <button class="small" type="submit">Save</button>
+</form>
+{% endblock %}

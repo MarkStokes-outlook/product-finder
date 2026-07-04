@@ -337,6 +337,7 @@ details.warnings[open] > summary::before { content: "▾ "; }
 <nav>
   <span class="brand">Product<em>Finder</em></span>
   {% for endpoint, label in [('dashboard', 'Dashboard'), ('projects', 'Projects'),
+                             ('catalogue_review', 'Catalogue'),
                              ('manual', 'Manual searches'), ('source_list', 'Sources')] %}
   <a href="{{ url_for(endpoint) }}"{% if request.endpoint == endpoint %} class="active"{% endif %}>{{ label }}</a>
   {% endfor %}

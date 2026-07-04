@@ -135,7 +135,14 @@ _SELLER_NAME_KEYWORDS = (
     "supplies", "retail", "seller", "official", "ltd", "limited", "llc", "inc",
 )
 
-_MODEL_NULL_VALUES = {"", "-", "does not apply", "dose not apply", "n/a", "unknown"}
+_MODEL_NULL_VALUES = {
+    "", "-", "does not apply", "dose not apply", "n/a", "unknown",
+    # Extraction/seller placeholders seen in real suggestion data ("Herman
+    # Miller NOT FOUND" had 45 sightings) — a placeholder model must merge
+    # into the brand-only suggestion, not stand as a distinct "product".
+    "not found", "none", "null", "0", "no model", "various",
+    "see description", "see title", "see photos", "see pictures",
+}
 
 
 def normalize_manufacturer(raw: str) -> str:

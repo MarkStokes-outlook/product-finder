@@ -624,6 +624,24 @@ def create_app(cfg: AppConfig) -> Flask:
 
     # --- Product suggestions (spotted automatically, awaiting review) -------------
 
+    def _suggestion_redirect(item_id):
+        # Same actions are posted from both the per-item form and the global
+        # /catalogue review page — a relative `next` field says where to
+        # return to (relative-only, so it can't redirect off-host).
+        next_url = request.form.get("next", "")
+        if next_url.startswith("/") and not next_url.startswith("//"):
+            return redirect(next_url)
+        return redirect(url_for("item_edit", item_id=item_id) if item_id else url_for("projects"))
+
+    @app.route("/catalogue")
+    def catalogue_review():
+        conn = _get_conn(cfg)
+        return render_template(
+            "catalogue.html",
+            suggestions=db.list_all_pending_suggestions(conn),
+            auto_approve_threshold=db.get_auto_approve_threshold(conn),
+        )
+
     @app.route("/suggestions/<int:suggestion_id>/approve", methods=["POST"])
     def suggestion_approve(suggestion_id):
         conn = _get_conn(cfg)
@@ -633,7 +651,7 @@ def create_app(cfg: AppConfig) -> Flask:
         db.approve_suggestion(conn, suggestion_id)
         label = f"{suggestion['manufacturer']} {suggestion['model']}".strip()
         flash(f"Added '{label}' to the catalogue.")
-        return redirect(url_for("item_edit", item_id=suggestion["item_id"]))
+        return _suggestion_redirect(suggestion["item_id"])
 
     @app.route("/suggestions/<int:suggestion_id>/dismiss", methods=["POST"])
     def suggestion_dismiss(suggestion_id):
@@ -643,20 +661,35 @@ def create_app(cfg: AppConfig) -> Flask:
             abort(404)
         db.dismiss_suggestion(conn, suggestion_id)
         flash("Suggestion dismissed.")
-        return redirect(url_for("item_edit", item_id=suggestion["item_id"]))
+        return _suggestion_redirect(suggestion["item_id"])
 
     @app.route("/suggestions/bulk-approve", methods=["POST"])
     def suggestion_bulk_approve():
         conn = _get_conn(cfg)
         item_id = request.form.get("item_id", type=int)
-        count = 0
+        count = skipped = 0
         for suggestion_id in request.form.getlist("suggestion_ids", type=int):
             suggestion = db.get_product_suggestion(conn, suggestion_id)
-            if suggestion is not None and suggestion["status"] == "pending":
-                db.approve_suggestion(conn, suggestion_id)
-                count += 1
-        flash(f"Approved {count} suggestion(s)." if count else "No suggestions selected.")
-        return redirect(url_for("item_edit", item_id=item_id) if item_id else url_for("projects"))
+            if suggestion is None or suggestion["status"] != "pending":
+                continue
+            # A brand with no model would become a product whose match term
+            # is the bare brand name — matching every listing of that brand
+            # against one reference price, which defeats the catalogue's
+            # model-level pricing. Approving one is still allowed, but only
+            # as a deliberate individual click, never as part of a sweep.
+            if not suggestion["model"]:
+                skipped += 1
+                continue
+            db.approve_suggestion(conn, suggestion_id)
+            count += 1
+        message = f"Approved {count} suggestion(s)." if count else "No suggestions selected."
+        if skipped:
+            message += (
+                f" Skipped {skipped} brand-only suggestion(s) — a bare brand makes a"
+                " poor product; approve individually if you really want it."
+            )
+        flash(message)
+        return _suggestion_redirect(item_id)
 
     @app.route("/suggestions/bulk-dismiss", methods=["POST"])
     def suggestion_bulk_dismiss():
@@ -669,7 +702,7 @@ def create_app(cfg: AppConfig) -> Flask:
                 db.dismiss_suggestion(conn, suggestion_id)
                 count += 1
         flash(f"Dismissed {count} suggestion(s)." if count else "No suggestions selected.")
-        return redirect(url_for("item_edit", item_id=item_id) if item_id else url_for("projects"))
+        return _suggestion_redirect(item_id)
 
     @app.route("/catalogue-settings", methods=["POST"])
     def catalogue_settings():
