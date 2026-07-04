@@ -169,7 +169,12 @@ td.num { text-align: right; font-variant-numeric: tabular-nums; white-space: now
              box-shadow: var(--shadow); color: var(--text);
              transition: transform .18s, border-color .18s; }
 a.spotlight:hover { text-decoration: none; border-color: var(--green); transform: translateY(-2px); }
-.spotlight .thumb { min-height: 15rem; }
+/* The text column defines the card's height; the photo crops to fill its
+   own column (absolute + cover). Without this, a tall portrait eBay photo
+   in normal flow stretches the whole card and leaves a dead gap under the
+   text. */
+.spotlight .thumb { min-height: 14rem; }
+.spotlight .thumb img { position: absolute; inset: 0; }
 .spotlight .spotlight-body { padding: 1.2rem 1.5rem 1.1rem; display: flex;
                              flex-direction: column; gap: .45rem; min-width: 0; }
 .spotlight .kicker { font-size: .74rem; font-weight: 700; color: var(--green-bright); }
