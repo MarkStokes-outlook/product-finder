@@ -1725,6 +1725,96 @@ def source_health(conn: sqlite3.Connection) -> dict[str, dict]:
     return health
 
 
+# A listing with no end_time can't expire on its own — if the source stops
+# returning it (sold, delisted, filtered out) it just lingers. Not rescanned
+# for this long = probably gone; the roadmap's "source freshness /
+# stale-listing rate" metric counts exactly these.
+_STALE_AFTER_HOURS = 48
+
+
+def source_coverage(conn: sqlite3.Connection) -> dict[str, dict]:
+    """Per-source data coverage, keyed by source name — the roadmap's
+    "coverage should become measurable" metrics, computed from what each
+    source has actually contributed over time. Complements source_health(),
+    which only says whether recent runs succeeded, not whether they were
+    worth anything.
+
+    Per source: total/live listing counts, ingest rate (new in 24h / 7d),
+    stale count (no end_time and not seen for _STALE_AFTER_HOURS — likely
+    sold/delisted but impossible to know), hidden duplicate count (sightings
+    suppressed by identity v1/v2 — a high share means the source mostly
+    re-shows things already seen elsewhere), catalogue match counts/rate,
+    and price observations contributed in the last 30 days.
+
+    Not measurable yet (data isn't attributed per marketplace): product
+    suggestion yield (product_suggestions.source records the *discovery
+    mechanism*, e.g. 'ebay-structured'/'ollama') and enrichment success
+    rate (only the attempt is recorded, via listings.brand_checked)."""
+    now = datetime.now(timezone.utc)
+    cutoff_24h = (now - timedelta(hours=24)).isoformat(timespec="seconds")
+    cutoff_7d = (now - timedelta(days=7)).isoformat(timespec="seconds")
+    cutoff_stale = (now - timedelta(hours=_STALE_AFTER_HOURS)).isoformat(timespec="seconds")
+    cutoff_30d = (now - timedelta(days=30)).isoformat(timespec="seconds")
+
+    coverage: dict[str, dict] = {}
+
+    def entry(source: str) -> dict:
+        return coverage.setdefault(source, {
+            "listings_total": 0, "listings_live": 0,
+            "new_24h": 0, "new_7d": 0, "stale": 0,
+            "hidden_duplicates": 0,
+            "matches_total": 0, "matches_catalogued": 0,
+            "catalogue_match_pct": None,
+            "price_observations_30d": 0,
+        })
+
+    for row in conn.execute(
+        f"""
+        SELECT l.source,
+               COUNT(*) AS listings_total,
+               SUM(CASE WHEN {_NOT_ENDED} THEN 1 ELSE 0 END) AS listings_live,
+               SUM(CASE WHEN l.first_seen >= ? THEN 1 ELSE 0 END) AS new_24h,
+               SUM(CASE WHEN l.first_seen >= ? THEN 1 ELSE 0 END) AS new_7d,
+               SUM(CASE WHEN l.end_time IS NULL AND l.last_seen < ? THEN 1 ELSE 0 END) AS stale,
+               SUM(CASE WHEN l.is_primary_sighting = 0 THEN 1 ELSE 0 END) AS hidden_duplicates
+        FROM listings l
+        GROUP BY l.source
+        """,
+        (cutoff_24h, cutoff_7d, cutoff_stale),
+    ):
+        e = entry(row["source"])
+        for key in ("listings_total", "listings_live", "new_24h", "new_7d",
+                    "stale", "hidden_duplicates"):
+            e[key] = row[key]
+
+    for row in conn.execute(
+        """
+        SELECT l.source,
+               COUNT(*) AS matches_total,
+               COUNT(m.product_id) AS matches_catalogued
+        FROM listing_matches m
+        JOIN listings l ON l.id = m.listing_id
+        GROUP BY l.source
+        """
+    ):
+        e = entry(row["source"])
+        e["matches_total"] = row["matches_total"]
+        e["matches_catalogued"] = row["matches_catalogued"]
+        if row["matches_total"]:
+            e["catalogue_match_pct"] = round(
+                100 * row["matches_catalogued"] / row["matches_total"]
+            )
+
+    for row in conn.execute(
+        "SELECT source, COUNT(*) AS n FROM product_price_observations "
+        "WHERE observed_at >= ? GROUP BY source",
+        (cutoff_30d,),
+    ):
+        entry(row["source"])["price_observations_30d"] = row["n"]
+
+    return coverage
+
+
 def latest_activity(conn: sqlite3.Connection) -> str | None:
     """Latest listing timestamp seen by `watch`/`run-once` — a cheap "did a
     search just run" signal for the dashboard's live-polling JS. Every

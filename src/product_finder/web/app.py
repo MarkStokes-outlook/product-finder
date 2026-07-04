@@ -299,7 +299,9 @@ def create_app(cfg: AppConfig) -> Flask:
         sc = eff_cfg.sources
         registry = sources.build_registry(eff_cfg)
         connectors = sources.build_all(eff_cfg)
-        health = db.source_health(_get_conn(cfg))
+        conn = _get_conn(cfg)
+        health = db.source_health(conn)
+        coverage = db.source_coverage(conn)
         rows = [
             {"name": "ebay", "kind": "builtin", "label": "eBay",
              "enabled": sc.ebay.enabled,
@@ -322,6 +324,7 @@ def create_app(cfg: AppConfig) -> Flask:
         for row in rows:
             row["caps"] = connectors[row["name"]].capabilities()
             row["health"] = health.get(row["name"])
+            row["coverage"] = coverage.get(row["name"])
         return render_template("sources.html", rows=rows, ebay=sc.ebay)
 
     @app.route("/sources/<name>/toggle", methods=["POST"])

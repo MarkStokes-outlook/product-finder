@@ -44,6 +44,44 @@
 </table>
 </div>
 
+<h2>Coverage</h2>
+<p class="hint">
+  What each source has actually contributed — this is what decides which connector
+  deserves attention next. Stale = no end time and not seen in results for 48h
+  (likely sold or delisted). Duplicates hidden = sightings suppressed because the
+  same item was already seen elsewhere.
+</p>
+<div class="card table-card">
+<table>
+<thead><tr>
+  <th>Source</th><th>Live listings</th><th>New (24h / 7d)</th><th>Stale</th>
+  <th>Catalogue match</th><th>Duplicates hidden</th><th>Price history (30d)</th>
+</tr></thead>
+<tbody>
+{% for s in rows %}{% if s.caps.automated or s.coverage %}
+  <tr>
+    <td><strong>{{ s.label }}</strong></td>
+    {% if s.coverage %}
+    <td>{{ s.coverage.listings_live }} <span class="meta">of {{ s.coverage.listings_total }} ever</span></td>
+    <td>{{ s.coverage.new_24h }} / {{ s.coverage.new_7d }}</td>
+    <td>{{ s.coverage.stale }}</td>
+    <td>
+      {% if s.coverage.matches_total %}
+        {{ s.coverage.matches_catalogued }} of {{ s.coverage.matches_total }}
+        <span class="meta">({{ s.coverage.catalogue_match_pct }}%)</span>
+      {% else %}<span class="meta">no matches yet</span>{% endif %}
+    </td>
+    <td>{{ s.coverage.hidden_duplicates }}</td>
+    <td>{{ s.coverage.price_observations_30d }}</td>
+    {% else %}
+    <td colspan="6"><span class="meta">no listings yet</span></td>
+    {% endif %}
+  </tr>
+{% endif %}{% endfor %}
+</tbody>
+</table>
+</div>
+
 <h2>eBay API credentials</h2>
 <p class="hint">
   Free developer keys from <a href="https://developer.ebay.com" target="_blank" rel="noopener">developer.ebay.com</a>
