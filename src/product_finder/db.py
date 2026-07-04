@@ -186,6 +186,7 @@ _MIGRATIONS = [
     ("products", "price_trend_pct", "REAL"),
     ("products", "price_trend_confidence", "REAL NOT NULL DEFAULT 0"),
     ("listings", "is_primary_sighting", "INTEGER NOT NULL DEFAULT 1"),
+    ("listings", "image_url", "TEXT"),
 ]
 
 
@@ -1063,10 +1064,12 @@ def mark_sold_captured(conn: sqlite3.Connection, listing_id: int) -> None:
 def upsert_listing(conn: sqlite3.Connection, listing: Listing) -> tuple[int, bool]:
     """Insert a listing or touch last_seen. Returns (listing_id, is_new).
 
-    buying_options/bid_count/end_time are refreshed on every rescan too (a
-    Buy It Now can disappear once bidding starts, bid count/price move) —
-    this is what the auction-close poller (auction_watch.py) later reads to
-    know which listings are auctions and when they end."""
+    buying_options/bid_count/end_time/image_url are refreshed on every rescan
+    too (a Buy It Now can disappear once bidding starts, bid count/price move,
+    sellers swap photos) — this is what the auction-close poller
+    (auction_watch.py) later reads to know which listings are auctions and
+    when they end. image_url only ever overwrites with a real value, so a
+    source that stops sending one doesn't blank an image we already have."""
     now = _now()
     buying_options = json.dumps(listing.buying_options)
     row = conn.execute(
@@ -1076,16 +1079,17 @@ def upsert_listing(conn: sqlite3.Connection, listing: Listing) -> tuple[int, boo
     if row:
         conn.execute(
             "UPDATE listings SET last_seen = ?, price = ?, title = ?, "
-            "buying_options = ?, bid_count = ?, end_time = ? WHERE id = ?",
+            "buying_options = ?, bid_count = ?, end_time = ?, "
+            "image_url = COALESCE(?, image_url) WHERE id = ?",
             (now, listing.price, listing.title, buying_options, listing.bid_count,
-             listing.end_time, row["id"]),
+             listing.end_time, listing.image_url, row["id"]),
         )
         return row["id"], False
     cur = conn.execute(
         "INSERT INTO listings (source, external_id, title, price, currency, url, "
         "location, description, condition, first_seen, last_seen, "
-        "buying_options, bid_count, end_time) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "buying_options, bid_count, end_time, image_url) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (
             listing.source,
             listing.external_id,
@@ -1101,6 +1105,7 @@ def upsert_listing(conn: sqlite3.Connection, listing: Listing) -> tuple[int, boo
             buying_options,
             listing.bid_count,
             listing.end_time,
+            listing.image_url,
         ),
     )
     return cur.lastrowid, True
@@ -1269,7 +1274,9 @@ SELECT p.name AS project_name, p.slug AS project_slug, p.id AS project_id,
        COALESCE(pr.target_deal_price, i.target_deal_price) AS target_deal_price,
        pr.typical_used_price, i.priority,
        pr.manufacturer AS product_manufacturer, pr.model AS product_model,
+       pr.price_trend_pct, pr.price_trend_confidence,
        l.title, l.price, l.currency, l.url, l.source, l.location, l.first_seen,
+       l.last_seen, l.end_time, l.bid_count, l.buying_options, l.image_url,
        m.grade, m.deal_score, m.margin_abs, m.margin_pct, m.under_target, m.flags
 FROM listing_matches m
 JOIN listings l ON l.id = m.listing_id
@@ -1358,7 +1365,7 @@ def project_top_picks(conn: sqlite3.Connection) -> dict[int, sqlite3.Row]:
         """
         SELECT * FROM (
             SELECT p.id AS project_id, i.name AS item_name,
-                   l.title, l.price, l.currency, l.url, l.source,
+                   l.title, l.price, l.currency, l.url, l.source, l.image_url,
                    m.grade, m.deal_score, m.margin_pct, m.under_target,
                    ROW_NUMBER() OVER (PARTITION BY p.id ORDER BY m.deal_score DESC) AS rn
             FROM listing_matches m
@@ -1380,3 +1387,41 @@ def latest_activity(conn: sqlite3.Connection) -> str | None:
     not, so this changes on any cycle that fetched at least one listing."""
     row = conn.execute("SELECT MAX(last_seen) AS ts FROM listings").fetchone()
     return row["ts"] if row else None
+
+
+def dashboard_stats(conn: sqlite3.Connection) -> dict:
+    """Headline counts for the dashboard stat strip. Same visibility rules as
+    query_matches: primary sightings only, "clean" means no warning flags and
+    not graded spares/repair, "hot" matches the score >= 70 band used for the
+    green "hi" badge throughout the UI."""
+    new_cutoff = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat(
+        timespec="seconds"
+    )
+    row = conn.execute(
+        """
+        SELECT
+          COUNT(CASE WHEN m.flags = '[]' AND m.grade != 'spares/repair'
+                     THEN m.id END) AS clean_matches,
+          COUNT(CASE WHEN m.flags = '[]' AND m.grade != 'spares/repair'
+                          AND m.deal_score >= 70
+                     THEN m.id END) AS hot_deals,
+          COUNT(CASE WHEN m.flags = '[]' AND m.grade != 'spares/repair'
+                          AND l.first_seen >= ?
+                     THEN m.id END) AS new_today
+        FROM listing_matches m
+        JOIN listings l ON l.id = m.listing_id
+        JOIN items i ON i.id = m.item_id AND i.archived = 0
+        JOIN projects p ON p.id = i.project_id AND p.archived = 0
+        WHERE l.is_primary_sighting = 1
+        """,
+        (new_cutoff,),
+    ).fetchone()
+    projects = conn.execute(
+        "SELECT COUNT(*) AS n FROM projects WHERE archived = 0"
+    ).fetchone()
+    return {
+        "clean_matches": row["clean_matches"],
+        "hot_deals": row["hot_deals"],
+        "new_today": row["new_today"],
+        "projects": projects["n"],
+    }

@@ -1,24 +1,15 @@
 {% from "_match_table.html" import match_table %}
+{% from "_ui.html" import spotlight, deal_card %}
 
 <h2>🔥 {{ 'Hot deals in this project' if hero_deals | length > 1 else 'Best deal in this project' }}</h2>
 {% if hero_deals %}
+{{ spotlight(hero_deals[0], show_project=False) }}
+{% set runners = hero_deals[1:] %}
+{% if runners %}
 <div class="hero-grid">
-  {% for deal in hero_deals %}
-  {% set score = deal['deal_score'] or 0 %}
-  <a class="deal-card" href="{{ deal['url'] }}" target="_blank" rel="noopener">
-    <div class="deal-card-top">
-      <span class="score {{ 'hi' if score >= 70 else ('mid' if score >= 40 else 'lo') }}">{{ '%.0f' | format(score) }}</span>
-      <span class="badge grade-{{ 'spares' if deal['grade'] == 'spares/repair' else deal['grade'] }}">{{ deal['grade'] }}</span>
-    </div>
-    <h3>{{ deal['title'] }}</h3>
-    <div class="deal-price">£{{ '%.2f' | format(deal['price']) }}</div>
-    {% if deal['margin_pct'] %}
-    <div class="deal-saving">Save {{ '%.0f' | format(deal['margin_pct']) }}%{% if deal['under_target'] %} · under target{% endif %}</div>
-    {% endif %}
-    <p class="meta">{{ deal['item_name'] }} &middot; {{ deal['source'] }}</p>
-  </a>
-  {% endfor %}
+  {% for deal in runners %}{{ deal_card(deal, show_project=False) }}{% endfor %}
 </div>
+{% endif %}
 {% else %}
 <div class="hero-empty">No matches yet — still watching.</div>
 {% endif %}

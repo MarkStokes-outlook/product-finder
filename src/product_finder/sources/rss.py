@@ -31,6 +31,20 @@ USER_AGENT = "product-finder/0.1 (personal local deal tracker)"
 _PRICE_RE = re.compile(r"£\s*([0-9][0-9,]*(?:\.[0-9]{1,2})?)")
 _TAG_RE = re.compile(r"<[^>]+>")
 _ATOM_NS = "{http://www.w3.org/2005/Atom}"
+_MEDIA_NS = "{http://search.yahoo.com/mrss/}"
+
+
+def _entry_image(node) -> str:
+    """Best-effort image from a feed entry: media:thumbnail (Reddit link
+    posts, many RSS 2.0 feeds) or an image-typed enclosure. Empty string
+    when the entry simply has none — most text posts won't."""
+    thumb = node.find(f"{_MEDIA_NS}thumbnail")
+    if thumb is not None and thumb.get("url"):
+        return thumb.get("url").strip()
+    enclosure = node.find("enclosure")
+    if enclosure is not None and (enclosure.get("type") or "").startswith("image/"):
+        return (enclosure.get("url") or "").strip()
+    return ""
 
 
 def format_url(template: str, term: str, item: ItemConfig, cfg) -> str:
@@ -83,6 +97,7 @@ def parse_feed(xml_text: str) -> list[dict]:
                 "url": (node.findtext("link") or "").strip(),
                 "description": _strip_html(node.findtext("description") or ""),
                 "published": _parse_date(node.findtext("pubDate")),
+                "image_url": _entry_image(node),
             }
         )
     # Atom: <feed><entry>
@@ -102,6 +117,7 @@ def parse_feed(xml_text: str) -> list[dict]:
                     or ""
                 ),
                 "published": _parse_date(published_text),
+                "image_url": _entry_image(node),
             }
         )
     return entries
@@ -159,6 +175,7 @@ class RssSource(Source):
                     price=price,
                     url=entry["url"],
                     description=entry["description"][:500],
+                    image_url=entry["image_url"] or None,
                 )
             )
         return listings

@@ -4,27 +4,32 @@
 <thead><tr>
   <th>Score</th><th>Title</th>{% if show_item %}<th>Project / Item</th>{% endif %}
   <th>Price</th><th>Normal</th><th>Saving</th><th>Grade</th><th>Flags</th>
-  <th>Source</th><th>First seen</th>
+  <th>Source</th><th>Seen</th>
 </tr></thead>
 <tbody>
 {% for row in rows %}
   {% set flags = row['flags'] | parse_flags %}
   {% set score = row['deal_score'] or 0 %}
+  {% set buying = row['buying_options'] | parse_flags %}
   {% set cls = 'warning' if (flags or row['grade'] == 'spares/repair')
      else ('excellent' if score >= 70 else '') %}
   <tr{% if paginate %} data-row{% endif %}{% if cls %} class="{{ cls }}"{% endif %}>
     <td class="num"><span class="score {{ 'hi' if score >= 70 else ('mid' if score >= 40 else 'lo') }}">{{ '%.0f' | format(score) }}</span></td>
-    <td><a href="{{ row['url'] }}" target="_blank" rel="noopener">{{ row['title'] }}</a>
+    <td>{% if row['image_url'] %}<img class="row-thumb" src="{{ row['image_url'] }}" alt=""
+          loading="lazy" referrerpolicy="no-referrer" onerror="this.remove()">{% endif %}
+      <a href="{{ row['url'] }}" target="_blank" rel="noopener">{{ row['title'] }}</a>
+      {% if row['first_seen'] | is_new %} <span class="chip-new">New</span>{% endif %}
       {% if row['product_manufacturer'] %}<br><span class="meta">{{ row['product_manufacturer'] }}{% if row['product_model'] %} {{ row['product_model'] }}{% endif %}</span>{% endif %}</td>
     {% if show_item %}<td class="meta">{{ row['project_name'] }} / {{ row['item_name'] }}</td>{% endif %}
-    <td class="num"><strong>£{{ '%.2f' | format(row['price']) }}</strong><br>
-      {% if row['under_target'] %}<span class="badge target">under target</span>{% endif %}</td>
+    <td class="num"><strong>£{{ '%.2f' | format(row['price']) }}</strong>
+      {% if 'AUCTION' in buying %}<br><span class="badge auction">auction{% if row['bid_count'] %} · {{ row['bid_count'] }} bids{% endif %}{% if row['end_time'] %} · <span data-ends="{{ row['end_time'] }}">…</span>{% endif %}</span>{% endif %}
+      {% if row['under_target'] %}<br><span class="badge target">under target</span>{% endif %}</td>
     <td class="num">{% if row['normal_price'] %}£{{ '%.0f' | format(row['normal_price']) }}{% else %}&mdash;{% endif %}</td>
     <td class="num">{% if row['margin_pct'] %}{{ '%.0f' | format(row['margin_pct']) }}%{% else %}&mdash;{% endif %}</td>
     <td><span class="badge grade-{{ 'spares' if row['grade'] == 'spares/repair' else row['grade'] }}">{{ row['grade'] }}</span></td>
     <td>{% for flag in flags %}<span class="badge flag">{{ flag }}</span>{% else %}&mdash;{% endfor %}</td>
     <td class="meta">{{ row['source'] }}</td>
-    <td class="meta">{{ (row['first_seen'] or '')[:10] }}</td>
+    <td class="meta" title="{{ (row['first_seen'] or '')[:10] }}">{{ row['first_seen'] | timeago }}</td>
   </tr>
 {% else %}
   <tr><td colspan="{{ 10 if show_item else 9 }}" class="empty">Nothing here yet.</td></tr>

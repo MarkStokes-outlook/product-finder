@@ -78,6 +78,108 @@ def test_dashboard_hero_shows_best_deal(cfg, client):
     assert b"Makita SP6000 saw" in resp.data
 
 
+def test_dashboard_stat_strip_counts(cfg, client):
+    seed_match(cfg, score=90.0)
+    resp = client.get("/")
+    assert b"stat-strip" in resp.data
+    assert b"hot deals" in resp.data
+    conn = db.connect(cfg.db_path)
+    stats = db.dashboard_stats(conn)
+    assert stats == {"clean_matches": 1, "hot_deals": 1, "new_today": 1, "projects": 1}
+
+
+def test_dashboard_stats_exclude_flagged_from_hot(cfg, client):
+    seed_match(cfg, flags=["faulty"], grade="spares/repair", score=90.0)
+    conn = db.connect(cfg.db_path)
+    stats = db.dashboard_stats(conn)
+    assert stats["hot_deals"] == 0
+    assert stats["clean_matches"] == 0
+    assert stats["projects"] == 1
+
+
+def test_dashboard_spotlight_headlines_best_deal(cfg, client):
+    project_id, item_id = seed_match(cfg, score=90.0)
+    # A second, weaker match: the spotlight must pick the 90-score one and
+    # the weaker one falls through to the runner-up cards.
+    conn = db.connect(cfg.db_path)
+    listing_id, _ = db.upsert_listing(
+        conn,
+        Listing(source="ebay", external_id="E2", title="Bosch GKT 55 rail saw",
+                price=310.0, url="https://example.com/2"),
+    )
+    db.record_match(
+        conn, listing_id, item_id,
+        Evaluation(grade="B", flags=[], margin_abs=190.0, margin_pct=38.0,
+                   under_target=False, deal_score=60.0),
+    )
+    conn.commit()
+    resp = client.get("/")
+    assert b'class="spotlight"' in resp.data
+    assert b"Today's best deal" in resp.data
+    spotlight_part = resp.data.split(b'class="spotlight"')[1].split(b"hero-grid")[0]
+    assert b"Makita SP6000 saw" in spotlight_part
+    assert b"Bosch GKT 55 rail saw" not in spotlight_part
+
+
+def test_spotlight_shows_product_image_and_source_cta(cfg, client):
+    project_id, item_id = seed_match(cfg)
+    conn = db.connect(cfg.db_path)
+    conn.execute(
+        "UPDATE listings SET image_url = 'https://i.ebayimg.com/images/g/abc/s-l1600.jpg'"
+    )
+    conn.commit()
+    resp = client.get("/")
+    spotlight_part = resp.data.split(b'class="spotlight"')[1].split(b"</a>")[0]
+    assert b'src="https://i.ebayimg.com/images/g/abc/s-l1600.jpg"' in spotlight_part
+    assert b'referrerpolicy="no-referrer"' in spotlight_part
+    assert b"View on eBay" in spotlight_part  # source-aware primary action
+
+
+def test_spotlight_placeholder_when_no_image(cfg, client):
+    seed_match(cfg)  # seed listing has no image_url
+    resp = client.get("/")
+    spotlight_part = resp.data.split(b'class="spotlight"')[1].split(b"</a>")[0]
+    assert b"<img" not in spotlight_part  # CSS placeholder shows instead
+    assert b'class="thumb"' in spotlight_part
+
+
+def test_dashboard_new_chip_on_fresh_listing(cfg, client):
+    seed_match(cfg)  # first_seen is "now", well within the 24h NEW window
+    resp = client.get("/")
+    assert b'class="chip-new"' in resp.data
+
+
+def test_dashboard_warnings_behind_fold(cfg, client):
+    seed_match(cfg, flags=["faulty"], grade="spares/repair", score=20.0)
+    resp = client.get("/")
+    # Present (still findable/searchable) but inside a collapsible details
+    # element so bad news never competes with the hero deals for attention.
+    assert b'<details class="warnings"' in resp.data
+    assert b"faulty" in resp.data
+
+
+def test_project_page_shows_auction_countdown(cfg, client):
+    project_id, item_id = seed_match(cfg)
+    conn = db.connect(cfg.db_path)
+    listing_id, _ = db.upsert_listing(
+        conn,
+        Listing(source="ebay", external_id="E3", title="DeWalt plunge saw auction",
+                price=120.0, url="https://example.com/3",
+                buying_options=["AUCTION"], bid_count=7,
+                end_time="2099-01-01T12:00:00Z"),
+    )
+    db.record_match(
+        conn, listing_id, item_id,
+        Evaluation(grade="B", flags=["live auction"], margin_abs=380.0,
+                   margin_pct=76.0, under_target=True, deal_score=55.0),
+    )
+    conn.commit()
+    resp = client.get(f"/projects/{project_id}")
+    assert b"badge auction" in resp.data
+    assert b'data-ends="2099-01-01T12:00:00Z"' in resp.data
+    assert b"7 bids" in resp.data
+
+
 def test_dashboard_project_card_shows_top_pick_preview(cfg, client):
     seed_match(cfg, score=90.0)
     resp = client.get("/")

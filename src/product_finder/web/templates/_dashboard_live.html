@@ -1,24 +1,34 @@
 {% from "_match_table.html" import match_table %}
-<h2>🔥 Best deals right now</h2>
-{% set hero = best[:3] %}
-{% if hero %}
-<div class="hero-grid">
-  {% for row in hero %}
-  {% set score = row['deal_score'] or 0 %}
-  <a class="deal-card" href="{{ row['url'] }}" target="_blank" rel="noopener">
-    <div class="deal-card-top">
-      <span class="score {{ 'hi' if score >= 70 else ('mid' if score >= 40 else 'lo') }}">{{ '%.0f' | format(score) }}</span>
-      <span class="badge grade-{{ 'spares' if row['grade'] == 'spares/repair' else row['grade'] }}">{{ row['grade'] }}</span>
-    </div>
-    <h3>{{ row['title'] }}</h3>
-    <div class="deal-price">£{{ '%.2f' | format(row['price']) }}</div>
-    {% if row['margin_pct'] %}
-    <div class="deal-saving">Save {{ '%.0f' | format(row['margin_pct']) }}%{% if row['under_target'] %} · under target{% endif %}</div>
-    {% endif %}
-    <p class="meta">{{ row['project_name'] }} / {{ row['item_name'] }} &middot; {{ row['source'] }}</p>
-  </a>
-  {% endfor %}
+{% from "_ui.html" import spotlight, deal_card %}
+
+<div class="stat-strip">
+  <div class="stat-tile hot">
+    <span class="num" data-count="{{ stats.hot_deals }}">{{ stats.hot_deals }}</span>
+    <span class="lbl">🔥 hot deals</span>
+  </div>
+  <div class="stat-tile fresh-tile">
+    <span class="num" data-count="{{ stats.new_today }}">{{ stats.new_today }}</span>
+    <span class="lbl">new in 24h</span>
+  </div>
+  <div class="stat-tile">
+    <span class="num" data-count="{{ stats.clean_matches }}">{{ stats.clean_matches }}</span>
+    <span class="lbl">live matches</span>
+  </div>
+  <div class="stat-tile">
+    <span class="num" data-count="{{ stats.projects }}">{{ stats.projects }}</span>
+    <span class="lbl">projects watched</span>
+  </div>
 </div>
+
+<h2>🔥 Best deals right now</h2>
+{% if best %}
+{{ spotlight(best[0]) }}
+{% set runners = best[1:5] %}
+{% if runners %}
+<div class="hero-grid">
+  {% for row in runners %}{{ deal_card(row) }}{% endfor %}
+</div>
+{% endif %}
 {% else %}
 <div class="hero-empty">Nothing standing out yet — still watching for deals across your projects.</div>
 {% endif %}
@@ -32,13 +42,20 @@
     <div class="stat-nums">
       <div><span class="num">{{ p['item_count'] }}</span><span class="lbl">items</span></div>
       <div><span class="num">{{ p['match_count'] }}</span><span class="lbl">matches</span></div>
+      {% if p['best_score'] %}
+      <div><span class="num">{{ '%.0f' | format(p['best_score']) }}</span><span class="lbl">best score</span></div>
+      {% endif %}
     </div>
     {% set pick = top_picks.get(p['id']) %}
     {% if pick %}
     <div class="project-pick">
-      <span class="pick-title">{{ pick['title'] }}</span>
-      <span class="pick-price">£{{ '%.2f' | format(pick['price']) }}</span>
-      {% if pick['margin_pct'] %}<span class="pick-saving"> &middot; save {{ '%.0f' | format(pick['margin_pct']) }}%</span>{% endif %}
+      {% if pick['image_url'] %}<img class="pick-thumb" src="{{ pick['image_url'] }}" alt=""
+        loading="lazy" referrerpolicy="no-referrer" onerror="this.remove()">{% endif %}
+      <div class="pick-text">
+        <span class="pick-title">{{ pick['title'] }}</span>
+        <span class="pick-price">£{{ '%.2f' | format(pick['price']) }}</span>
+        {% if pick['margin_pct'] %}<span class="pick-saving"> &middot; save {{ '%.0f' | format(pick['margin_pct']) }}%</span>{% endif %}
+      </div>
     </div>
     {% else %}
     <div class="project-pick idle">Still watching — no matches yet.</div>
@@ -51,11 +68,13 @@
 <div class="card empty">No projects yet — <a href="{{ url_for('project_new') }}">create one</a>.</div>
 {% endif %}
 
-{% set rest = best[3:] %}
+{% set rest = best[5:] %}
 {% if rest %}
 <h2>More matches</h2>
 <div class="card table-card">{{ match_table(rest) }}</div>
 {% endif %}
 
-<h2>Warnings &amp; likely false bargains</h2>
-<div class="card table-card">{{ match_table(warnings) }}</div>
+<details class="warnings"{% if not best %} open{% endif %}>
+  <summary>Warnings &amp; likely false bargains{% if warnings %} ({{ warnings | length }}){% endif %}</summary>
+  <div class="card table-card">{{ match_table(warnings) }}</div>
+</details>

@@ -124,6 +124,29 @@ def test_parse_feed_rss_and_atom():
     assert atom[0]["url"] == "https://x/3"
 
 
+def test_parse_feed_extracts_images():
+    rss = """<?xml version="1.0"?>
+<rss version="2.0" xmlns:media="http://search.yahoo.com/mrss/"><channel>
+<item><title>A £10</title><link>https://x/1</link>
+  <media:thumbnail url="https://img.example/a.jpg"/></item>
+<item><title>B £10</title><link>https://x/2</link>
+  <enclosure url="https://img.example/b.jpg" type="image/jpeg"/></item>
+<item><title>C £10</title><link>https://x/3</link>
+  <enclosure url="https://files.example/c.pdf" type="application/pdf"/></item>
+</channel></rss>"""
+    entries = parse_feed(rss)
+    assert entries[0]["image_url"] == "https://img.example/a.jpg"
+    assert entries[1]["image_url"] == "https://img.example/b.jpg"
+    assert entries[2]["image_url"] == ""  # non-image enclosure ignored
+
+    atom = """<?xml version="1.0"?>
+<feed xmlns="http://www.w3.org/2005/Atom" xmlns:media="http://search.yahoo.com/mrss/">
+<entry><id>a1</id><title>D £10</title><link href="https://x/4"/>
+  <media:thumbnail url="https://img.example/d.jpg"/></entry>
+</feed>"""
+    assert parse_feed(atom)[0]["image_url"] == "https://img.example/d.jpg"
+
+
 def test_rss_search_skips_priceless_entries():
     cfg = AppConfig()
     spec = ExtraSourceConfig(name="hukd", type="rss", url="https://h.example/rss?q={term}")

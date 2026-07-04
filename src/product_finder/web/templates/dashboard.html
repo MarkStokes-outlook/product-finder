@@ -5,10 +5,8 @@
   <div>
     <h1>Dashboard</h1>
     <p class="meta">
-      Postcode: {{ cfg.postcode or '—' }} · Radius: {{ cfg.radius_miles }} miles ·
-      Sources: <a href="{{ url_for('source_list') }}">{{ known_sources | join(', ') }}</a> ·
-      Search runs automatically in the background (<code>watch</code>) — this page
-      updates itself when new results land.
+      {{ cfg.postcode or '—' }} · {{ cfg.radius_miles }}-mile radius ·
+      watching <a href="{{ url_for('source_list') }}">{{ known_sources | join(', ') }}</a>
     </p>
   </div>
 </div>
@@ -34,7 +32,11 @@
           .then(function (html) {
             container.innerHTML = html;
             container.dataset.activity = lastActivity;
-            pfPaginate(container);
+            container.classList.remove("swap-in");
+            void container.offsetWidth;  // restart the fade-up animation
+            container.classList.add("swap-in");
+            pfEnhance(container);
+            pfFreshPulse();
           });
       })
       .catch(function () { /* offline or transient — just try again next tick */ });

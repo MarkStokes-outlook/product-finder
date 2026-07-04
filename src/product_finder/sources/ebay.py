@@ -116,6 +116,13 @@ class EbaySource(Source):
                 continue
             price, currency = priced
             location = summary.get("itemLocation") or {}
+            # Counterintuitively, thumbnailImages[0] is the LARGE render
+            # (~1200-1600px) and `image` the 225px one — verified live against
+            # the production Browse API. Prefer the big one; cards scale down.
+            thumbs = summary.get("thumbnailImages") or []
+            image_url = (thumbs[0].get("imageUrl") if thumbs else None) or (
+                summary.get("image") or {}
+            ).get("imageUrl")
             listings.append(
                 Listing(
                     source=self.name,
@@ -132,6 +139,7 @@ class EbaySource(Source):
                     buying_options=list(summary.get("buyingOptions") or []),
                     bid_count=summary.get("bidCount"),
                     end_time=summary.get("itemEndDate"),
+                    image_url=image_url,
                 )
             )
         return listings

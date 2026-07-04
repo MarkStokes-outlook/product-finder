@@ -5,47 +5,69 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{% block title %}Product Finder{% endblock %}</title>
 <style>
+/* Dark, but a shopping feed rather than a trading terminal: product images
+   carry the page, savings are shown shop-style (was-price + discount pill),
+   and scores/trends stay visible but secondary. */
 :root {
-  --bg: #f4f6fa; --surface: #ffffff; --surface-2: #f8fafc;
-  --border: #e2e8f0; --text: #0f172a; --muted: #64748b;
-  --accent: #4f46e5; --accent-soft: #eef2ff;
-  --green: #15803d; --green-soft: #ecfdf3;
-  --red: #b91c1c; --red-soft: #fef2f2;
-  --amber: #b45309; --amber-soft: #fffbeb;
-  --radius: 12px;
-  --shadow: 0 1px 2px rgb(15 23 42 / .05), 0 6px 20px rgb(15 23 42 / .06);
-}
-@media (prefers-color-scheme: dark) {
-  :root {
-    --bg: #0b1120; --surface: #131c2e; --surface-2: #1b2740;
-    --border: #263450; --text: #e6eaf2; --muted: #8fa0bd;
-    --accent: #8b93f8; --accent-soft: #23264d;
-    --green: #57d98a; --green-soft: #10301e;
-    --red: #f38b8b; --red-soft: #3a1414;
-    --amber: #f0b45c; --amber-soft: #38260c;
-    --shadow: none;
-  }
+  --bg: #0e1116;
+  --surface: #161a22;
+  --surface-2: #1e242e;
+  --border: #262d39;
+  --border-bright: #333d4d;
+  --text: #e9ecf1;
+  --muted: #94a0b0;
+  --accent: #8b93f8;
+  --accent-2: #6366f1;
+  --accent-soft: rgb(99 102 241 / .16);
+  --green: #34d399;
+  --green-bright: #6ee7b7;
+  --green-soft: rgb(52 211 153 / .13);
+  --red: #f87171;
+  --red-soft: rgb(248 113 113 / .12);
+  --amber: #fbbf24;
+  --amber-soft: rgb(251 191 36 / .13);
+  --radius: 14px;
+  --shadow: 0 1px 2px rgb(0 0 0 / .35), 0 8px 24px rgb(0 0 0 / .25);
 }
 * { box-sizing: border-box; }
-body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-       margin: 0; background: var(--bg); color: var(--text); line-height: 1.45; }
+html { color-scheme: dark; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  margin: 0; color: var(--text); line-height: 1.45;
+  background-color: var(--bg);
+  min-height: 100vh;
+}
 a { color: var(--accent); text-decoration: none; }
 a:hover { text-decoration: underline; }
+code { background: var(--surface-2); padding: .1rem .35rem; border-radius: 6px; font-size: .85em; }
 
 nav { position: sticky; top: 0; z-index: 10; display: flex; gap: .25rem; align-items: center;
-      padding: .55rem 1.4rem; border-bottom: 1px solid var(--border);
-      background: color-mix(in srgb, var(--surface) 82%, transparent);
-      backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px); }
-nav .brand { font-weight: 700; font-size: 1.02rem; margin-right: 1rem; color: var(--text); }
-nav .brand em { font-style: normal; color: var(--accent); }
+      padding: .6rem 1.4rem; border-bottom: 1px solid var(--border);
+      background: rgb(14 17 22 / .85);
+      backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px); }
+nav .brand { font-weight: 800; font-size: 1.05rem; margin-right: 1.1rem; color: var(--text);
+             letter-spacing: -.02em; }
+nav .brand em { font-style: normal; color: var(--green); }
 nav a:not(.brand) { color: var(--muted); font-weight: 500; font-size: .9rem;
                     padding: .35rem .8rem; border-radius: 8px; }
 nav a:not(.brand):hover { background: var(--surface-2); color: var(--text); text-decoration: none; }
 nav a.active { background: var(--accent-soft); color: var(--accent); }
+/* "The watcher is alive" heartbeat in the nav. Turns green and ripples for a
+   few seconds when a background run just delivered fresh results. */
+.live-dot { margin-left: auto; display: inline-flex; align-items: center; gap: .45rem;
+            color: var(--muted); font-size: .76rem; }
+.live-dot::before { content: ""; width: .55rem; height: .55rem; border-radius: 999px;
+                    background: var(--muted); }
+.live-dot.fresh { color: var(--green); }
+.live-dot.fresh::before { background: var(--green); animation: ripple 1.2s ease-out 3; }
+@keyframes ripple {
+  0% { box-shadow: 0 0 0 0 rgb(52 211 153 / .5); }
+  100% { box-shadow: 0 0 0 .55rem rgb(52 211 153 / 0); }
+}
 
 main { max-width: 78rem; margin: 1.6rem auto 3rem; padding: 0 1.4rem; }
-h1 { font-size: 1.45rem; letter-spacing: -.02em; margin: 0 0 .2rem; }
-h2 { font-size: 1.05rem; letter-spacing: -.01em; margin: 2rem 0 .7rem; }
+h1 { font-size: 1.55rem; letter-spacing: -.02em; margin: 0 0 .2rem; }
+h2 { font-size: 1.15rem; font-weight: 700; letter-spacing: -.01em; margin: 2.1rem 0 .8rem; }
 h3 { font-size: .95rem; margin: 0 0 .4rem; }
 .page-head { display: flex; justify-content: space-between; align-items: flex-start;
              gap: 1rem; flex-wrap: wrap; margin-bottom: 1.2rem; }
@@ -55,14 +77,31 @@ h3 { font-size: .95rem; margin: 0 0 .4rem; }
 
 .card { background: var(--surface); border: 1px solid var(--border);
         border-radius: var(--radius); box-shadow: var(--shadow);
-        padding: 1.1rem 1.3rem; margin: .8rem 0; }
+        padding: 1.1rem 1.3rem; margin: .8rem 0;
+        transition: border-color .18s, transform .18s; }
 .card.table-card { padding: .4rem .9rem .6rem; overflow-x: auto; }
 .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(15rem, 1fr));
         gap: .9rem; margin: .8rem 0; }
+.grid .card { margin: 0; }
+.grid .card:hover { border-color: var(--border-bright); transform: translateY(-2px); }
 .stat-nums { display: flex; gap: 1.4rem; margin: .6rem 0 .4rem; }
-.stat-nums .num { display: block; font-size: 1.35rem; font-weight: 700; letter-spacing: -.02em; }
+.stat-nums .num { display: block; font-size: 1.35rem; font-weight: 800; letter-spacing: -.02em;
+                  font-variant-numeric: tabular-nums; }
 .stat-nums .lbl { color: var(--muted); font-size: .72rem; text-transform: uppercase;
                   letter-spacing: .07em; }
+
+/* Headline counters — quieter than the deals themselves. */
+.stat-strip { display: grid; grid-template-columns: repeat(auto-fit, minmax(9.5rem, 1fr));
+              gap: .8rem; margin: .4rem 0 1.4rem; }
+.stat-tile { background: var(--surface); border: 1px solid var(--border);
+             border-radius: var(--radius); padding: .7rem 1rem .65rem; }
+.stat-tile .num { display: block; font-size: 1.55rem; font-weight: 800; letter-spacing: -.02em;
+                  line-height: 1.15; font-variant-numeric: tabular-nums; }
+.stat-tile .lbl { color: var(--muted); font-size: .72rem; text-transform: uppercase;
+                  letter-spacing: .09em; font-weight: 600; }
+.stat-tile.hot { border-color: rgb(52 211 153 / .35); }
+.stat-tile.hot .num { color: var(--green-bright); }
+.stat-tile.fresh-tile .num { color: var(--accent); }
 
 table { width: 100%; border-collapse: collapse; font-size: .87rem; }
 th { text-align: left; color: var(--muted); font-size: .7rem; font-weight: 600;
@@ -76,50 +115,143 @@ tr.warning, tr.warning:hover { background: var(--red-soft); }
 tr.archived td { color: var(--muted); }
 tr.group-header td { background: var(--surface-2); padding-top: .35rem; padding-bottom: .35rem; }
 td.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+/* Little product thumbnail beside a listing title in tables. */
+.row-thumb { float: left; width: 3rem; height: 3rem; margin: 0 .6rem .2rem 0;
+             border-radius: 8px; object-fit: cover; background: var(--surface-2); }
 
 .badge { display: inline-block; padding: .1rem .58rem; border-radius: 999px;
          font-size: .72rem; font-weight: 600; white-space: nowrap; }
-.badge.target { background: var(--green-soft); color: var(--green);
-                border: 1px solid color-mix(in srgb, var(--green) 35%, transparent); }
+.badge.target { background: var(--green-soft); color: var(--green-bright);
+                border: 1px solid rgb(52 211 153 / .4); }
 .badge.flag { background: var(--red-soft); color: var(--red);
-              border: 1px solid color-mix(in srgb, var(--red) 30%, transparent); margin: 0 .15rem .15rem 0; }
-.badge.grade-A { background: var(--green-soft); color: var(--green); }
+              border: 1px solid rgb(248 113 113 / .35); margin: 0 .15rem .15rem 0; }
+.badge.grade-A { background: var(--green-soft); color: var(--green-bright); }
 .badge.grade-B { background: var(--accent-soft); color: var(--accent); }
 .badge.grade-C { background: var(--amber-soft); color: var(--amber); }
 .badge.grade-spares { background: var(--red-soft); color: var(--red); }
 .badge.grade-unknown { background: var(--surface-2); color: var(--muted); }
+.badge.auction { background: var(--amber-soft); color: var(--amber);
+                 border: 1px solid rgb(251 191 36 / .35); }
+.badge.auction.ending-soon { background: var(--red-soft); color: var(--red);
+                             border-color: rgb(248 113 113 / .45);
+                             animation: blink 1.4s ease-in-out infinite; }
+@keyframes blink { 50% { opacity: .55; } }
+.chip-new { display: inline-block; padding: .08rem .5rem; border-radius: 999px;
+            font-size: .68rem; font-weight: 800; letter-spacing: .08em;
+            color: #0b1120; background: linear-gradient(120deg, var(--green-bright), var(--green));
+            text-transform: uppercase; }
+.trend { font-size: .76rem; font-weight: 600; white-space: nowrap; }
+.trend.down { color: var(--green); }
+.trend.up { color: var(--amber); }
+
 .score { display: inline-block; min-width: 2.4rem; text-align: center; padding: .12rem .45rem;
          border-radius: 8px; font-weight: 700; font-variant-numeric: tabular-nums; }
-.score.hi { background: var(--green-soft); color: var(--green); }
+.score.hi { background: var(--green-soft); color: var(--green-bright); }
 .score.mid { background: var(--amber-soft); color: var(--amber); }
 .score.lo { background: var(--red-soft); color: var(--red); }
 
-/* Hero deal callouts — the "grab this now" strip at the top of a dashboard. */
-.hero-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(17rem, 1fr));
-             gap: .9rem; margin: .8rem 0 1.6rem; }
-.deal-card { display: block; background: var(--surface); border: 1px solid var(--border);
-             border-radius: var(--radius); box-shadow: var(--shadow); padding: 1rem 1.2rem;
-             color: var(--text); position: relative; overflow: hidden; }
-.deal-card:hover { border-color: var(--green); text-decoration: none; }
-.deal-card::before { content: ""; position: absolute; inset: 0 auto 0 0; width: 4px;
-                      background: var(--green); }
-.deal-card-top { display: flex; justify-content: space-between; align-items: center;
-                  margin-bottom: .5rem; }
-.deal-card h3 { font-size: .95rem; font-weight: 600; margin: 0 0 .5rem;
+/* SVG score ring — secondary signal in the corner of product cards. */
+.ring { display: inline-grid; place-items: center; position: relative; }
+.ring svg { transform: rotate(-90deg); display: block; }
+.ring .track { stroke: var(--surface-2); }
+.ring.hi .val { stroke: var(--green); }
+.ring.mid .val { stroke: var(--amber); }
+.ring.lo .val { stroke: var(--red); }
+.ring .ring-num { position: absolute; font-weight: 800; font-variant-numeric: tabular-nums;
+                  letter-spacing: -.02em; }
+.ring.hi .ring-num { color: var(--green-bright); }
+.ring.mid .ring-num { color: var(--amber); }
+.ring.lo .ring-num { color: var(--red); }
+
+/* Product imagery. .thumb is the framed image area; when the img is missing
+   or fails to load, the 📦 placeholder underneath shows through. */
+.thumb { position: relative; background: var(--surface-2); overflow: hidden; }
+.thumb::before { content: "📦"; position: absolute; inset: 0; display: grid;
+                 place-items: center; font-size: 2.2rem; opacity: .35; }
+.thumb img { position: relative; width: 100%; height: 100%; object-fit: cover; display: block; }
+
+/* Shop-style price presentation: big price, struck-through "was", and a
+   Steam-ish discount block. */
+.price-row { display: flex; align-items: baseline; gap: .6rem; flex-wrap: wrap; }
+.price-now { font-weight: 800; letter-spacing: -.03em; font-variant-numeric: tabular-nums; }
+.price-was { color: var(--muted); text-decoration: line-through; font-variant-numeric: tabular-nums; }
+.pct-off { display: inline-block; padding: .12rem .5rem; border-radius: 7px;
+           background: #22432f; color: var(--green-bright);
+           font-weight: 800; font-variant-numeric: tabular-nums; }
+
+/* Spotlight — the best deal as a big product card: image left, product
+   identity right, one obvious action. */
+.spotlight { position: relative; display: grid; grid-template-columns: minmax(14rem, 22rem) 1fr;
+             background: var(--surface); border: 1px solid rgb(52 211 153 / .4);
+             border-radius: var(--radius); overflow: hidden; margin: .8rem 0 1rem;
+             box-shadow: var(--shadow); color: var(--text);
+             transition: transform .18s, border-color .18s; }
+a.spotlight:hover { text-decoration: none; border-color: var(--green); transform: translateY(-2px); }
+.spotlight .thumb { min-height: 15rem; }
+.spotlight .spotlight-body { padding: 1.2rem 1.5rem 1.1rem; display: flex;
+                             flex-direction: column; gap: .45rem; min-width: 0; }
+.spotlight .kicker { font-size: .74rem; font-weight: 700; color: var(--green-bright); }
+.spotlight h3 { font-size: 1.35rem; font-weight: 700; letter-spacing: -.01em; margin: 0;
                 display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
                 overflow: hidden; }
-.deal-price { font-size: 1.5rem; font-weight: 700; letter-spacing: -.02em; }
-.deal-saving { color: var(--green); font-weight: 600; font-size: .82rem; margin: .1rem 0 .4rem; }
-.deal-card .meta { margin: 0; }
+.spotlight .price-now { font-size: 2.3rem; line-height: 1.1; }
+.spotlight .price-was { font-size: 1.05rem; }
+.spotlight .pct-off { font-size: 1rem; }
+.badges { display: flex; gap: .4rem; align-items: center; flex-wrap: wrap; }
+.spotlight .spotlight-foot { margin-top: auto; padding-top: .6rem; display: flex;
+                             justify-content: space-between; align-items: flex-end; gap: 1rem; }
+.spotlight .ring { position: absolute; top: .8rem; right: .9rem;
+                   background: rgb(14 17 22 / .72); border-radius: 999px; padding: .25rem; }
+.cta { display: inline-block; white-space: nowrap;
+       background: var(--green); color: #06231a; font-weight: 700; font-size: .92rem;
+       padding: .6rem 1.15rem; border-radius: 10px; }
+a:hover .cta { filter: brightness(1.08); }
+@media (max-width: 44rem) {
+  .spotlight { grid-template-columns: 1fr; }
+  .spotlight .thumb { min-height: 11rem; aspect-ratio: 16 / 9; }
+}
+
+/* Runner-up product cards. */
+.hero-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(15.5rem, 1fr));
+             gap: .9rem; margin: .8rem 0 1.6rem; }
+.deal-card { display: flex; flex-direction: column; background: var(--surface);
+             border: 1px solid var(--border); border-radius: var(--radius);
+             box-shadow: var(--shadow); overflow: hidden; color: var(--text);
+             transition: transform .18s, border-color .18s; }
+.deal-card:hover { border-color: var(--green); text-decoration: none; transform: translateY(-3px); }
+.deal-card .thumb { aspect-ratio: 16 / 10; }
+.deal-card .thumb .chip-new { position: absolute; top: .55rem; left: .55rem; z-index: 1; }
+.deal-card .thumb .ring { position: absolute; top: .5rem; right: .5rem; z-index: 1;
+                          background: rgb(14 17 22 / .72); border-radius: 999px; padding: .2rem; }
+.deal-card .deal-body { padding: .8rem 1rem .9rem; display: flex; flex-direction: column;
+                        gap: .35rem; flex: 1; }
+.deal-card h3 { font-size: .92rem; font-weight: 600; margin: 0;
+                display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+                overflow: hidden; min-height: 2.6em; }
+.deal-card .price-now { font-size: 1.35rem; }
+.deal-card .meta { margin-top: auto; }
 .hero-empty { color: var(--muted); padding: 1.1rem 1.3rem; background: var(--surface);
               border: 1px dashed var(--border); border-radius: var(--radius); font-size: .88rem; }
 
+/* Distance-to-target bar: how far below "normal" this price is, with the
+   marker showing the target-deal threshold. Full green = at/under target. */
+.target-bar { position: relative; height: .35rem; border-radius: 999px;
+              background: var(--surface-2); margin: .5rem 0 .2rem; overflow: hidden; }
+.target-bar .fill { position: absolute; inset: 0 auto 0 0; border-radius: 999px;
+                    background: linear-gradient(90deg, var(--accent-2), var(--green)); }
+.target-bar-labels { display: flex; justify-content: space-between;
+                     font-size: .68rem; color: var(--muted); }
+
 /* Project card "here's what's happening" preview. */
-.project-pick { margin: .5rem 0 .2rem; padding-top: .55rem; border-top: 1px solid var(--border); }
+.project-pick { display: flex; gap: .6rem; align-items: center;
+                margin: .5rem 0 .2rem; padding-top: .55rem; border-top: 1px solid var(--border); }
+.project-pick .pick-thumb { width: 3.2rem; height: 3.2rem; flex: none;
+                            border-radius: 8px; object-fit: cover; background: var(--surface-2); }
+.project-pick .pick-text { min-width: 0; }
 .project-pick .pick-title { font-size: .85rem; font-weight: 600; display: block;
                              overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.project-pick .pick-price { font-weight: 700; }
-.project-pick .pick-saving { color: var(--green); font-size: .78rem; font-weight: 600; }
+.project-pick .pick-price { font-weight: 800; font-variant-numeric: tabular-nums; }
+.project-pick .pick-saving { color: var(--green-bright); font-size: .78rem; font-weight: 700; }
 .project-pick.idle { color: var(--muted); font-size: .82rem; font-style: italic; }
 
 button, .button { display: inline-block; font: inherit; font-size: .84rem; font-weight: 500;
@@ -128,8 +260,8 @@ button, .button { display: inline-block; font: inherit; font-size: .84rem; font-
   transition: border-color .15s, background .15s, color .15s; }
 button:hover, .button:hover { border-color: var(--accent); color: var(--accent);
                               text-decoration: none; }
-button.primary, .button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
-button.primary:hover, .button.primary:hover { filter: brightness(1.08); color: #fff; }
+button.primary, .button.primary { background: var(--accent-2); border-color: var(--accent-2); color: #fff; }
+button.primary:hover, .button.primary:hover { filter: brightness(1.12); color: #fff; }
 button.danger { color: var(--red); }
 button.danger:hover { border-color: var(--red); background: var(--red-soft); }
 button.small, .button.small { padding: .22rem .6rem; font-size: .78rem; }
@@ -153,7 +285,7 @@ input:focus-visible, textarea:focus-visible, select:focus-visible, button:focus-
                  letter-spacing: .06em; color: var(--muted); }
 .filters select { width: auto; }
 
-.flash { background: var(--accent-soft); border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent);
+.flash { background: var(--accent-soft); border: 1px solid rgb(139 147 248 / .35);
          color: var(--text); border-left: 3px solid var(--accent);
          padding: .55rem .9rem; margin: .8rem 0; border-radius: 8px; font-size: .9rem; }
 .empty { color: var(--muted); padding: 1.2rem 0; text-align: center; }
@@ -170,11 +302,31 @@ details.listings[open] > summary::before { content: "▾  "; }
 details.listings > summary strong { color: var(--text); }
 details.listings .table-card { margin-top: .5rem; }
 
+/* Warnings live behind a fold: useful when you want them, never competing
+   with the good news for attention. */
+details.warnings > summary { cursor: pointer; list-style: none; user-select: none;
+  font-size: 1.15rem; font-weight: 700; letter-spacing: -.01em;
+  color: var(--muted); margin: 2.1rem 0 .8rem; }
+details.warnings > summary::-webkit-details-marker { display: none; }
+details.warnings > summary::before { content: "▸ "; }
+details.warnings[open] > summary::before { content: "▾ "; }
+
 /* Client-side pagination controls for long per-item listing tables. */
 .pagination { display: flex; align-items: center; justify-content: center; gap: .8rem;
               padding: .6rem 0 .2rem; }
 .pagination .pg-label { min-width: 6rem; text-align: center; }
 .pagination button:disabled { opacity: .4; cursor: default; }
+
+/* Content swapped in by the live poll fades up so a refresh is felt, not jarring. */
+.swap-in { animation: swap-in .45s ease-out; }
+@keyframes swap-in {
+  from { opacity: 0; transform: translateY(.5rem); }
+  to { opacity: 1; transform: none; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation: none !important; transition: none !important; }
+}
 </style>
 </head>
 <body>
@@ -184,6 +336,7 @@ details.listings .table-card { margin-top: .5rem; }
                              ('manual', 'Manual searches'), ('source_list', 'Sources')] %}
   <a href="{{ url_for(endpoint) }}"{% if request.endpoint == endpoint %} class="active"{% endif %}>{{ label }}</a>
   {% endfor %}
+  <span class="live-dot" id="live-dot" title="Search runs in the background; this page updates itself">watching</span>
 </nav>
 <main>
 {% with messages = get_flashed_messages() %}
@@ -221,7 +374,67 @@ function pfPaginate(root) {
     render();
   });
 }
-document.addEventListener("DOMContentLoaded", function () { pfPaginate(document); });
+
+// Live auction countdowns: any [data-ends] element ticks down once a second.
+// One shared interval for the whole page; elements swapped out by a live
+// refresh simply stop being found, so nothing leaks.
+function pfCountdownTick() {
+  var now = Date.now();
+  document.querySelectorAll("[data-ends]").forEach(function (el) {
+    var end = Date.parse(el.dataset.ends);
+    if (isNaN(end)) return;
+    var left = end - now;
+    var badge = el.closest(".badge") || el;
+    if (left <= 0) { el.textContent = "ended"; badge.classList.remove("ending-soon"); return; }
+    var mins = Math.floor(left / 60000);
+    var text;
+    if (mins >= 1440) { text = Math.floor(mins / 1440) + "d " + Math.floor((mins % 1440) / 60) + "h"; }
+    else if (mins >= 60) { text = Math.floor(mins / 60) + "h " + (mins % 60) + "m"; }
+    else if (mins >= 1) { text = mins + "m " + Math.floor((left % 60000) / 1000) + "s"; }
+    else { text = Math.floor(left / 1000) + "s"; }
+    el.textContent = "ends in " + text;
+    badge.classList.toggle("ending-soon", left < 3600000);
+  });
+}
+setInterval(pfCountdownTick, 1000);
+
+// Count-up for the dashboard stat tiles — small dopamine hit on load.
+function pfCountUp(root) {
+  if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+  (root || document).querySelectorAll("[data-count]").forEach(function (el) {
+    var target = parseInt(el.dataset.count, 10);
+    if (isNaN(target) || target === 0) return;
+    var start = performance.now(), dur = 600;
+    function step(t) {
+      var p = Math.min((t - start) / dur, 1);
+      el.textContent = Math.round(target * (1 - Math.pow(1 - p, 3)));
+      if (p < 1) requestAnimationFrame(step);
+    }
+    requestAnimationFrame(step);
+  });
+}
+
+// Everything a freshly-inserted fragment needs. Called on first load and by
+// the live-poll JS after each innerHTML swap.
+function pfEnhance(root) {
+  pfPaginate(root);
+  pfCountUp(root);
+  pfCountdownTick();
+}
+
+// Flash the nav heartbeat green when a live refresh just landed.
+function pfFreshPulse() {
+  var dot = document.getElementById("live-dot");
+  if (!dot) return;
+  dot.classList.add("fresh");
+  dot.textContent = "fresh results";
+  setTimeout(function () {
+    dot.classList.remove("fresh");
+    dot.textContent = "watching";
+  }, 8000);
+}
+
+document.addEventListener("DOMContentLoaded", function () { pfEnhance(document); });
 </script>
 </body>
 </html>

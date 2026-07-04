@@ -31,6 +31,25 @@ def test_listing_dedup(tmp_path):
     assert row["price"] == 240.0
 
 
+def test_image_url_stored_refreshed_and_never_blanked(tmp_path):
+    conn = db.connect(tmp_path / "test.db")
+    first = make_listing()
+    first.image_url = "https://i.ebayimg.com/images/g/abc/s-l1600.jpg"
+    listing_id, _ = db.upsert_listing(conn, first)
+    row = db.get_listing(conn, listing_id)
+    assert row["image_url"] == "https://i.ebayimg.com/images/g/abc/s-l1600.jpg"
+
+    # Re-sight without an image (e.g. a proxy source): keeps the existing one.
+    db.upsert_listing(conn, make_listing())
+    assert db.get_listing(conn, listing_id)["image_url"].endswith("s-l1600.jpg")
+
+    # Re-sight with a different image: refreshed.
+    updated = make_listing()
+    updated.image_url = "https://i.ebayimg.com/images/g/xyz/s-l1600.jpg"
+    db.upsert_listing(conn, updated)
+    assert db.get_listing(conn, listing_id)["image_url"].endswith("g/xyz/s-l1600.jpg")
+
+
 def test_different_sources_not_deduped(tmp_path):
     conn = db.connect(tmp_path / "test.db")
     _, new1 = db.upsert_listing(conn, make_listing())

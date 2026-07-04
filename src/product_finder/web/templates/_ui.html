@@ -1,0 +1,122 @@
+{# Shared deal-presentation macros. Every macro here expects a row from
+   db._MATCH_SELECT (query_matches) — don't feed it project_top_picks rows,
+   which carry fewer columns. #}
+
+{% macro score_ring(score, size=44) %}
+{% set s = (score or 0) | round | int %}
+{% set band = 'hi' if s >= 70 else ('mid' if s >= 40 else 'lo') %}
+<span class="ring {{ band }}" style="width:{{ size }}px;height:{{ size }}px"
+      title="Deal score {{ s }}/100">
+  {# r=15.9155 makes the circumference exactly 100, so the score doubles as
+     the dasharray percentage with no maths in the template. #}
+  <svg width="{{ size }}" height="{{ size }}" viewBox="0 0 36 36" aria-hidden="true">
+    <circle class="track" cx="18" cy="18" r="15.9155" fill="none" stroke-width="3.6"/>
+    <circle class="val" cx="18" cy="18" r="15.9155" fill="none" stroke-width="3.6"
+            stroke-linecap="round" stroke-dasharray="{{ s }}, 100"/>
+  </svg>
+  <span class="ring-num" style="font-size:{{ (size * 0.3) | round | int }}px">{{ s }}</span>
+</span>
+{% endmacro %}
+
+{% macro thumb_img(row) %}
+{# The 📦 placeholder behind the img shows through when there's no image or
+   it fails to load (onerror removes the broken img). no-referrer + lazy:
+   these are third-party marketplace CDNs. #}
+{% if row['image_url'] %}
+<img src="{{ row['image_url'] }}" alt="" loading="lazy"
+     referrerpolicy="no-referrer" onerror="this.remove()">
+{% endif %}
+{% endmacro %}
+
+{% macro price_block(row) %}
+<div class="price-row">
+  <span class="price-now">£{{ '%.2f' | format(row['price']) }}</span>
+  {% if row['normal_price'] and row['normal_price'] > row['price'] %}
+  <span class="price-was">£{{ '%.0f' | format(row['normal_price']) }}</span>
+  {% endif %}
+  {% if row['margin_pct'] and row['margin_pct'] > 0 %}
+  <span class="pct-off">-{{ '%.0f' | format(row['margin_pct']) }}%</span>
+  {% endif %}
+</div>
+{% endmacro %}
+
+{% macro target_bar(row) %}
+{% set normal = row['normal_price'] %}
+{% set target = row['target_deal_price'] %}
+{% if normal and target and normal > target %}
+  {% set progress = ((normal - row['price']) / (normal - target) * 100) %}
+  {% set progress = 100 if progress > 100 else (0 if progress < 0 else progress) %}
+  <div class="target-bar" title="How far below the £{{ '%.0f' | format(normal) }} normal price this sits — full bar = at/under your £{{ '%.0f' | format(target) }} target">
+    <span class="fill" style="width: {{ '%.0f' | format(progress) }}%"></span>
+  </div>
+  <div class="target-bar-labels">
+    <span>normal £{{ '%.0f' | format(normal) }}</span>
+    <span>target £{{ '%.0f' | format(target) }}</span>
+  </div>
+{% endif %}
+{% endmacro %}
+
+{% macro trend_chip(row) %}
+{% if row['price_trend_confidence'] and row['price_trend_pct'] is not none %}
+  {% set pct = row['price_trend_pct'] %}
+  {% if pct <= -1 %}
+  <span class="trend down" title="Typical used price over the last 30 days vs the 30 before">used prices ↓{{ '%.0f' | format(-pct) }}%</span>
+  {% elif pct >= 1 %}
+  <span class="trend up" title="Typical used price over the last 30 days vs the 30 before">used prices ↑{{ '%.0f' | format(pct) }}%</span>
+  {% endif %}
+{% endif %}
+{% endmacro %}
+
+{% macro cta_label(row) %}{{ 'View on eBay ↗' if row['source'] == 'ebay' else 'Open listing ↗' }}{% endmacro %}
+
+{% macro spotlight(row, show_project=True) %}
+<a class="spotlight" href="{{ row['url'] }}" target="_blank" rel="noopener">
+  <div class="thumb">{{ thumb_img(row) }}</div>
+  {{ score_ring(row['deal_score'], size=46) }}
+  <div class="spotlight-body">
+    <div class="kicker">★ Today's best deal{% if row['first_seen'] | is_new %} · <span class="chip-new">New</span>{% endif %}</div>
+    <h3>{{ row['title'] }}</h3>
+    {{ price_block(row) }}
+    <div class="badges">
+      {% if row['under_target'] %}<span class="badge target">under your £{{ '%.0f' | format(row['target_deal_price']) }} target</span>{% endif %}
+      <span class="badge grade-{{ 'spares' if row['grade'] == 'spares/repair' else row['grade'] }}">condition {{ row['grade'] }}</span>
+      {{ trend_chip(row) }}
+    </div>
+    {{ target_bar(row) }}
+    <div class="spotlight-foot">
+      <span class="meta">
+        {% if show_project %}{{ row['project_name'] }} / {% endif %}{{ row['item_name'] }}
+        {% if row['product_manufacturer'] %}&middot; {{ row['product_manufacturer'] }}{% if row['product_model'] %} {{ row['product_model'] }}{% endif %}{% endif %}
+        &middot; {{ row['source'] }}
+        {% if row['location'] %}&middot; {{ row['location'] }}{% endif %}
+        {% if row['first_seen'] %}&middot; spotted {{ row['first_seen'] | timeago }}{% endif %}
+      </span>
+      <span class="cta">{{ cta_label(row) }}</span>
+    </div>
+  </div>
+</a>
+{% endmacro %}
+
+{% macro deal_card(row, show_project=True) %}
+<a class="deal-card" href="{{ row['url'] }}" target="_blank" rel="noopener">
+  <div class="thumb">
+    {{ thumb_img(row) }}
+    {% if row['first_seen'] | is_new %}<span class="chip-new">New</span>{% endif %}
+    {{ score_ring(row['deal_score'], size=36) }}
+  </div>
+  <div class="deal-body">
+    <h3>{{ row['title'] }}</h3>
+    {{ price_block(row) }}
+    <div class="badges">
+      {% if row['under_target'] %}<span class="badge target">under target</span>{% endif %}
+      <span class="badge grade-{{ 'spares' if row['grade'] == 'spares/repair' else row['grade'] }}">{{ row['grade'] }}</span>
+      {{ trend_chip(row) }}
+    </div>
+    <span class="meta">
+      {% if show_project %}{{ row['project_name'] }} / {% endif %}{{ row['item_name'] }}
+      &middot; {{ row['source'] }}
+      {% if row['first_seen'] %}&middot; {{ row['first_seen'] | timeago }}{% endif %}
+    </span>
+  </div>
+</a>
+{% endmacro %}

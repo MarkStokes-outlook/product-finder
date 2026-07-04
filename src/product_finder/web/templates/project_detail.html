@@ -36,7 +36,11 @@
           .then(function (html) {
             container.innerHTML = html;
             container.dataset.activity = lastActivity;
-            pfPaginate(container);
+            container.classList.remove("swap-in");
+            void container.offsetWidth;  // restart the fade-up animation
+            container.classList.add("swap-in");
+            pfEnhance(container);
+            pfFreshPulse();
           });
       })
       .catch(function () { /* offline or transient — just try again next tick */ });

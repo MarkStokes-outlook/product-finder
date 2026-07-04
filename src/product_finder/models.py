@@ -25,6 +25,10 @@ class Listing:
     buying_options: list[str] = field(default_factory=list)
     bid_count: int | None = None
     end_time: str | None = None  # ISO 8601, auction/listing end — if known
+    # Best single product image, if the source provides one. eBay's Browse
+    # API always does (thumbnailImages[0] is the large render, ~1200-1600px;
+    # `image` is the 225px one); RSS feeds sometimes carry media:thumbnail.
+    image_url: str | None = None
 
     @property
     def text(self) -> str:

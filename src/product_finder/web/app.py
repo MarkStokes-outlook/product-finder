@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timedelta, timezone
 
 from flask import (
     Flask,
@@ -127,8 +128,9 @@ def _dashboard_data(conn, cfg: AppConfig) -> dict:
     return {
         "summaries": db.project_summaries(conn),
         "top_picks": db.project_top_picks(conn),
-        "best": db.query_matches(conn, flagged=False, sort="score", limit=10),
+        "best": db.query_matches(conn, flagged=False, sort="score", limit=11),
         "warnings": db.query_matches(conn, flagged=True, sort="score", limit=10),
+        "stats": db.dashboard_stats(conn),
     }
 
 
@@ -219,6 +221,41 @@ def create_app(cfg: AppConfig) -> Flask:
     @app.template_filter("parse_flags")
     def _parse_flags(raw):
         return json.loads(raw or "[]")
+
+    @app.template_filter("timeago")
+    def _timeago(raw):
+        """ISO timestamp -> compact 'how long ago' ('just now', '3h ago',
+        '2d ago'). Empty string when unknown/unparseable."""
+        if not raw:
+            return ""
+        try:
+            then = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+        except ValueError:
+            return ""
+        if then.tzinfo is None:
+            then = then.replace(tzinfo=timezone.utc)
+        seconds = (datetime.now(timezone.utc) - then).total_seconds()
+        if seconds < 90:
+            return "just now"
+        if seconds < 5400:
+            return f"{round(seconds / 60)}m ago"
+        if seconds < 129600:
+            return f"{round(seconds / 3600)}h ago"
+        return f"{round(seconds / 86400)}d ago"
+
+    @app.template_filter("is_new")
+    def _is_new(raw):
+        """True when an ISO timestamp is within the last 24 hours — drives the
+        NEW badge on deal cards and listing rows."""
+        if not raw:
+            return False
+        try:
+            then = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+        except ValueError:
+            return False
+        if then.tzinfo is None:
+            then = then.replace(tzinfo=timezone.utc)
+        return (datetime.now(timezone.utc) - then) <= timedelta(hours=24)
 
     # --- Dashboard -----------------------------------------------------------
 
