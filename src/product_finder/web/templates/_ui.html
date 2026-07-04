@@ -2,22 +2,6 @@
    db._MATCH_SELECT (query_matches) — don't feed it project_top_picks rows,
    which carry fewer columns. #}
 
-{% macro score_ring(score, size=44) %}
-{% set s = (score or 0) | round | int %}
-{% set band = 'hi' if s >= 70 else ('mid' if s >= 40 else 'lo') %}
-<span class="ring {{ band }}" style="width:{{ size }}px;height:{{ size }}px"
-      title="Deal score {{ s }}/100">
-  {# r=15.9155 makes the circumference exactly 100, so the score doubles as
-     the dasharray percentage with no maths in the template. #}
-  <svg width="{{ size }}" height="{{ size }}" viewBox="0 0 36 36" aria-hidden="true">
-    <circle class="track" cx="18" cy="18" r="15.9155" fill="none" stroke-width="3.6"/>
-    <circle class="val" cx="18" cy="18" r="15.9155" fill="none" stroke-width="3.6"
-            stroke-linecap="round" stroke-dasharray="{{ s }}, 100"/>
-  </svg>
-  <span class="ring-num" style="font-size:{{ (size * 0.3) | round | int }}px">{{ s }}</span>
-</span>
-{% endmacro %}
-
 {% macro thumb_img(row) %}
 {# The 📦 placeholder behind the img shows through when there's no image or
    it fails to load (onerror removes the broken img). no-referrer + lazy:
@@ -70,22 +54,23 @@
 {% macro cta_label(row) %}{{ 'View on eBay ↗' if row['source'] == 'ebay' else 'Open listing ↗' }}{% endmacro %}
 
 {% macro spotlight(row, show_project=True) %}
+{# The one deliberately special element on the page. Everything else stays
+   calm so this can actually stand out. #}
 <a class="spotlight" href="{{ row['url'] }}" target="_blank" rel="noopener">
   <div class="thumb">{{ thumb_img(row) }}</div>
-  {{ score_ring(row['deal_score'], size=46) }}
   <div class="spotlight-body">
-    <div class="kicker">★ Today's best deal{% if row['first_seen'] | is_new %} · <span class="chip-new">New</span>{% endif %}</div>
+    <div class="kicker">★ Today's best deal{% if row['first_seen'] | is_new %} · <span class="chip-new">new</span>{% endif %}</div>
     <h3>{{ row['title'] }}</h3>
     {{ price_block(row) }}
     <div class="badges">
       {% if row['under_target'] %}<span class="badge target">under your £{{ '%.0f' | format(row['target_deal_price']) }} target</span>{% endif %}
-      <span class="badge grade-{{ 'spares' if row['grade'] == 'spares/repair' else row['grade'] }}">condition {{ row['grade'] }}</span>
       {{ trend_chip(row) }}
     </div>
     {{ target_bar(row) }}
     <div class="spotlight-foot">
       <span class="meta">
-        {% if show_project %}{{ row['project_name'] }} / {% endif %}{{ row['item_name'] }}
+        condition {{ row['grade'] }}
+        &middot; {% if show_project %}{{ row['project_name'] }} / {% endif %}{{ row['item_name'] }}
         {% if row['product_manufacturer'] %}&middot; {{ row['product_manufacturer'] }}{% if row['product_model'] %} {{ row['product_model'] }}{% endif %}{% endif %}
         &middot; {{ row['source'] }}
         {% if row['location'] %}&middot; {{ row['location'] }}{% endif %}
@@ -98,21 +83,19 @@
 {% endmacro %}
 
 {% macro deal_card(row, show_project=True) %}
+{# Runner-up card: image, title, price. Condition only surfaces when it's
+   below A — an "A" chip on every card is just noise. Score/trend live in
+   the tables and spotlight, not here. #}
 <a class="deal-card" href="{{ row['url'] }}" target="_blank" rel="noopener">
   <div class="thumb">
     {{ thumb_img(row) }}
-    {% if row['first_seen'] | is_new %}<span class="chip-new">New</span>{% endif %}
-    {{ score_ring(row['deal_score'], size=36) }}
+    {% if row['first_seen'] | is_new %}<span class="chip-new">new</span>{% endif %}
   </div>
   <div class="deal-body">
     <h3>{{ row['title'] }}</h3>
     {{ price_block(row) }}
-    <div class="badges">
-      {% if row['under_target'] %}<span class="badge target">under target</span>{% endif %}
-      <span class="badge grade-{{ 'spares' if row['grade'] == 'spares/repair' else row['grade'] }}">{{ row['grade'] }}</span>
-      {{ trend_chip(row) }}
-    </div>
     <span class="meta">
+      {% if row['grade'] not in ('A', 'unknown') %}condition {{ row['grade'] }} &middot; {% endif %}
       {% if show_project %}{{ row['project_name'] }} / {% endif %}{{ row['item_name'] }}
       &middot; {{ row['source'] }}
       {% if row['first_seen'] %}&middot; {{ row['first_seen'] | timeago }}{% endif %}

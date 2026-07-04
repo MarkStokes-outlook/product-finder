@@ -90,18 +90,14 @@ h3 { font-size: .95rem; margin: 0 0 .4rem; }
 .stat-nums .lbl { color: var(--muted); font-size: .72rem; text-transform: uppercase;
                   letter-spacing: .07em; }
 
-/* Headline counters — quieter than the deals themselves. */
-.stat-strip { display: grid; grid-template-columns: repeat(auto-fit, minmax(9.5rem, 1fr));
-              gap: .8rem; margin: .4rem 0 1.4rem; }
-.stat-tile { background: var(--surface); border: 1px solid var(--border);
-             border-radius: var(--radius); padding: .7rem 1rem .65rem; }
-.stat-tile .num { display: block; font-size: 1.55rem; font-weight: 800; letter-spacing: -.02em;
-                  line-height: 1.15; font-variant-numeric: tabular-nums; }
-.stat-tile .lbl { color: var(--muted); font-size: .72rem; text-transform: uppercase;
-                  letter-spacing: .09em; font-weight: 600; }
-.stat-tile.hot { border-color: rgb(52 211 153 / .35); }
-.stat-tile.hot .num { color: var(--green-bright); }
-.stat-tile.fresh-tile .num { color: var(--accent); }
+/* Headline counters — one quiet line of context, not a bank of KPI tiles. */
+.stat-strip { display: flex; gap: 1.6rem; flex-wrap: wrap; align-items: baseline;
+              margin: .4rem 0 1.2rem; padding: .55rem .9rem;
+              background: var(--surface); border: 1px solid var(--border);
+              border-radius: var(--radius); }
+.stat-tile { display: flex; gap: .4rem; align-items: baseline; }
+.stat-tile .num { font-size: 1rem; font-weight: 700; font-variant-numeric: tabular-nums; }
+.stat-tile .lbl { color: var(--muted); font-size: .78rem; }
 
 table { width: 100%; border-collapse: collapse; font-size: .87rem; }
 th { text-align: left; color: var(--muted); font-size: .7rem; font-weight: 600;
@@ -110,7 +106,6 @@ th { text-align: left; color: var(--muted); font-size: .7rem; font-weight: 600;
 td { padding: .55rem .6rem; border-bottom: 1px solid var(--border); vertical-align: top; }
 tbody tr:last-child td { border-bottom: none; }
 tbody tr:hover { background: var(--surface-2); }
-tr.excellent, tr.excellent:hover { background: var(--green-soft); }
 tr.warning, tr.warning:hover { background: var(--red-soft); }
 tr.archived td { color: var(--muted); }
 tr.group-header td { background: var(--surface-2); padding-top: .35rem; padding-bottom: .35rem; }
@@ -136,32 +131,19 @@ td.num { text-align: right; font-variant-numeric: tabular-nums; white-space: now
                              border-color: rgb(248 113 113 / .45);
                              animation: blink 1.4s ease-in-out infinite; }
 @keyframes blink { 50% { opacity: .55; } }
-.chip-new { display: inline-block; padding: .08rem .5rem; border-radius: 999px;
-            font-size: .68rem; font-weight: 800; letter-spacing: .08em;
-            color: #0b1120; background: linear-gradient(120deg, var(--green-bright), var(--green));
-            text-transform: uppercase; }
+.chip-new { display: inline-block; padding: .06rem .45rem; border-radius: 999px;
+            font-size: .68rem; font-weight: 600;
+            color: var(--accent); border: 1px solid rgb(139 147 248 / .45);
+            background: rgb(14 17 22 / .6); }
 .trend { font-size: .76rem; font-weight: 600; white-space: nowrap; }
 .trend.down { color: var(--green); }
 .trend.up { color: var(--amber); }
 
-.score { display: inline-block; min-width: 2.4rem; text-align: center; padding: .12rem .45rem;
-         border-radius: 8px; font-weight: 700; font-variant-numeric: tabular-nums; }
-.score.hi { background: var(--green-soft); color: var(--green-bright); }
-.score.mid { background: var(--amber-soft); color: var(--amber); }
-.score.lo { background: var(--red-soft); color: var(--red); }
-
-/* SVG score ring — secondary signal in the corner of product cards. */
-.ring { display: inline-grid; place-items: center; position: relative; }
-.ring svg { transform: rotate(-90deg); display: block; }
-.ring .track { stroke: var(--surface-2); }
-.ring.hi .val { stroke: var(--green); }
-.ring.mid .val { stroke: var(--amber); }
-.ring.lo .val { stroke: var(--red); }
-.ring .ring-num { position: absolute; font-weight: 800; font-variant-numeric: tabular-nums;
-                  letter-spacing: -.02em; }
-.ring.hi .ring-num { color: var(--green-bright); }
-.ring.mid .ring-num { color: var(--amber); }
-.ring.lo .ring-num { color: var(--red); }
+/* Deal score in tables: a plain, quiet number. With scores currently
+   saturating at 100 (see roadmap: scoring recalibration), colour-coding
+   every row just paints the whole table green. */
+.score { display: inline-block; min-width: 2.4rem; text-align: center;
+         color: var(--muted); font-weight: 600; font-variant-numeric: tabular-nums; }
 
 /* Product imagery. .thumb is the framed image area; when the img is missing
    or fails to load, the 📦 placeholder underneath shows through. */
@@ -200,8 +182,6 @@ a.spotlight:hover { text-decoration: none; border-color: var(--green); transform
 .badges { display: flex; gap: .4rem; align-items: center; flex-wrap: wrap; }
 .spotlight .spotlight-foot { margin-top: auto; padding-top: .6rem; display: flex;
                              justify-content: space-between; align-items: flex-end; gap: 1rem; }
-.spotlight .ring { position: absolute; top: .8rem; right: .9rem;
-                   background: rgb(14 17 22 / .72); border-radius: 999px; padding: .25rem; }
 .cta { display: inline-block; white-space: nowrap;
        background: var(--green); color: #06231a; font-weight: 700; font-size: .92rem;
        padding: .6rem 1.15rem; border-radius: 10px; }
@@ -218,11 +198,10 @@ a:hover .cta { filter: brightness(1.08); }
              border: 1px solid var(--border); border-radius: var(--radius);
              box-shadow: var(--shadow); overflow: hidden; color: var(--text);
              transition: transform .18s, border-color .18s; }
-.deal-card:hover { border-color: var(--green); text-decoration: none; transform: translateY(-3px); }
+.deal-card:hover { border-color: var(--border-bright); text-decoration: none;
+                   transform: translateY(-2px); }
 .deal-card .thumb { aspect-ratio: 16 / 10; }
 .deal-card .thumb .chip-new { position: absolute; top: .55rem; left: .55rem; z-index: 1; }
-.deal-card .thumb .ring { position: absolute; top: .5rem; right: .5rem; z-index: 1;
-                          background: rgb(14 17 22 / .72); border-radius: 999px; padding: .2rem; }
 .deal-card .deal-body { padding: .8rem 1rem .9rem; display: flex; flex-direction: column;
                         gap: .35rem; flex: 1; }
 .deal-card h3 { font-size: .92rem; font-weight: 600; margin: 0;
@@ -398,27 +377,10 @@ function pfCountdownTick() {
 }
 setInterval(pfCountdownTick, 1000);
 
-// Count-up for the dashboard stat tiles — small dopamine hit on load.
-function pfCountUp(root) {
-  if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
-  (root || document).querySelectorAll("[data-count]").forEach(function (el) {
-    var target = parseInt(el.dataset.count, 10);
-    if (isNaN(target) || target === 0) return;
-    var start = performance.now(), dur = 600;
-    function step(t) {
-      var p = Math.min((t - start) / dur, 1);
-      el.textContent = Math.round(target * (1 - Math.pow(1 - p, 3)));
-      if (p < 1) requestAnimationFrame(step);
-    }
-    requestAnimationFrame(step);
-  });
-}
-
 // Everything a freshly-inserted fragment needs. Called on first load and by
 // the live-poll JS after each innerHTML swap.
 function pfEnhance(root) {
   pfPaginate(root);
-  pfCountUp(root);
   pfCountdownTick();
 }
 

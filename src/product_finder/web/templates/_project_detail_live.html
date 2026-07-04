@@ -1,7 +1,7 @@
 {% from "_match_table.html" import match_table %}
 {% from "_ui.html" import spotlight, deal_card %}
 
-<h2>🔥 {{ 'Hot deals in this project' if hero_deals | length > 1 else 'Best deal in this project' }}</h2>
+<h2>{{ 'Hot deals in this project' if hero_deals | length > 1 else 'Best deal in this project' }}</h2>
 {% if hero_deals %}
 {{ spotlight(hero_deals[0], show_project=False) }}
 {% set runners = hero_deals[1:] %}

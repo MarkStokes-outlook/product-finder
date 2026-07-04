@@ -2,25 +2,13 @@
 {% from "_ui.html" import spotlight, deal_card %}
 
 <div class="stat-strip">
-  <div class="stat-tile hot">
-    <span class="num" data-count="{{ stats.hot_deals }}">{{ stats.hot_deals }}</span>
-    <span class="lbl">🔥 hot deals</span>
-  </div>
-  <div class="stat-tile fresh-tile">
-    <span class="num" data-count="{{ stats.new_today }}">{{ stats.new_today }}</span>
-    <span class="lbl">new in 24h</span>
-  </div>
-  <div class="stat-tile">
-    <span class="num" data-count="{{ stats.clean_matches }}">{{ stats.clean_matches }}</span>
-    <span class="lbl">live matches</span>
-  </div>
-  <div class="stat-tile">
-    <span class="num" data-count="{{ stats.projects }}">{{ stats.projects }}</span>
-    <span class="lbl">projects watched</span>
-  </div>
+  <span class="stat-tile"><span class="num">{{ stats.hot_deals }}</span><span class="lbl">hot deals</span></span>
+  <span class="stat-tile"><span class="num">{{ stats.new_today }}</span><span class="lbl">new in 24h</span></span>
+  <span class="stat-tile"><span class="num">{{ stats.clean_matches }}</span><span class="lbl">live matches</span></span>
+  <span class="stat-tile"><span class="num">{{ stats.projects }}</span><span class="lbl">projects watched</span></span>
 </div>
 
-<h2>🔥 Best deals right now</h2>
+<h2>Best deals right now</h2>
 {% if best %}
 {{ spotlight(best[0]) }}
 {% set runners = best[1:5] %}
@@ -42,9 +30,6 @@
     <div class="stat-nums">
       <div><span class="num">{{ p['item_count'] }}</span><span class="lbl">items</span></div>
       <div><span class="num">{{ p['match_count'] }}</span><span class="lbl">matches</span></div>
-      {% if p['best_score'] %}
-      <div><span class="num">{{ '%.0f' | format(p['best_score']) }}</span><span class="lbl">best score</span></div>
-      {% endif %}
     </div>
     {% set pick = top_picks.get(p['id']) %}
     {% if pick %}

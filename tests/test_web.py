@@ -61,7 +61,10 @@ def test_dashboard_with_data(cfg, client):
     assert resp.status_code == 200
     assert b"Coachhouse Tools" in resp.data
     assert b"Makita SP6000 saw" in resp.data
-    assert b"under target" in resp.data
+    # The under-target signal renders as the spotlight badge ("under your
+    # £300 target") — a bare "under target" check would also match a CSS
+    # comment in base.html, which is how an earlier regression slipped by.
+    assert b"under your \xc2\xa3300 target" in resp.data
 
 
 def test_dashboard_warning_section(cfg, client):
