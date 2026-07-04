@@ -4,7 +4,7 @@
 **Scope:** `src/product_finder/scoring.py`, `src/product_finder/db.py`,
 `tests/test_scoring.py`, `tests/test_web.py`
 **Status:** shipped, 322 tests passing (6 new). Follows directly from the same-day
-deal_score recalibration (see `2026-07-04-deal-score-recalibration.md`).
+deal_score recalibration (see `2026-07-04-1434-deal-score-recalibration.md`).
 
 ## What changed and why
 
