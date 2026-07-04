@@ -54,6 +54,12 @@ class Product:
     archived: bool = False
     price_trend_pct: float | None = None
     price_trend_confidence: float = 0.0
+    # wanted=False = "knowledge only": still matched, so identification and
+    # price history keep working, but never alerted or shown as a deal —
+    # for products that are real but not what the item is after (e.g. old
+    # CPU generations under a current-gen item). Archived stops matching
+    # entirely; wanted only stops surfacing.
+    wanted: bool = True
 
     @property
     def label(self) -> str:

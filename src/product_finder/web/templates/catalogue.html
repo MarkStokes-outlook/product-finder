@@ -47,7 +47,11 @@
 </tbody>
 </table>
 <p style="padding: .6rem .2rem;">
-  <button class="small primary" type="submit" form="suspects-form">Archive selected</button>
+  <button class="small primary" type="submit" form="suspects-form"
+          formaction="{{ url_for('product_bulk_archive') }}">Archive selected</button>
+  <button class="small" type="submit" form="suspects-form"
+          formaction="{{ url_for('product_bulk_knowledge_only') }}"
+          title="Keep in the catalogue (identification + price history) but never surface as a deal — for real products this item just isn't after">Keep as knowledge-only</button>
 </p>
 </div>
 <script>

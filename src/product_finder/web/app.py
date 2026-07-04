@@ -658,6 +658,36 @@ def create_app(cfg: AppConfig) -> Flask:
         )
         return _suggestion_redirect(None)
 
+    @app.route("/products/bulk-knowledge-only", methods=["POST"])
+    def product_bulk_knowledge_only():
+        conn = _get_conn(cfg)
+        count = 0
+        for product_id in request.form.getlist("product_ids", type=int):
+            if db.get_product(conn, product_id) is not None:
+                db.set_product_wanted(conn, product_id, False)
+                count += 1
+        flash(
+            f"Marked {count} product(s) knowledge-only — still tracked and priced, "
+            "no longer surfaced as deals."
+            if count else "No products selected."
+        )
+        return _suggestion_redirect(None)
+
+    @app.route("/products/<int:product_id>/toggle-wanted", methods=["POST"])
+    def product_toggle_wanted(product_id):
+        conn = _get_conn(cfg)
+        row = db.get_product(conn, product_id)
+        if row is None:
+            abort(404)
+        db.set_product_wanted(conn, product_id, not row["wanted"])
+        flash(
+            f"'{row['manufacturer']} {row['model']}'".strip()
+            + (" back on deal surfaces." if not row["wanted"] else " is now knowledge-only.")
+        )
+        return _suggestion_redirect(None) if request.form.get("next") else redirect(
+            url_for("item_edit", item_id=row["item_id"])
+        )
+
     @app.route("/suggestions/<int:suggestion_id>/approve", methods=["POST"])
     def suggestion_approve(suggestion_id):
         conn = _get_conn(cfg)

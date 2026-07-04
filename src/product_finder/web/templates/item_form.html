@@ -169,7 +169,10 @@
 <tbody>
 {% for pr in products %}
   <tr{% if pr['archived'] %} class="archived"{% endif %}>
-    <td>{{ pr['manufacturer'] }}</td>
+    <td>
+      {{ pr['manufacturer'] }}
+      {% if not pr['wanted'] %}<span class="badge grade-unknown" title="Tracked and priced, never surfaced as a deal">knowledge only</span>{% endif %}
+    </td>
     <td>{{ pr['model'] or '—' }}</td>
     <td class="meta">{{ (pr['match_terms'] | parse_flags) | join(', ') }}</td>
     <td class="num">{% if pr['msrp'] %}£{{ '%.0f' | format(pr['msrp']) }}{% else %}&mdash;{% endif %}</td>
@@ -178,6 +181,12 @@
     <td class="num">{% if pr['target_deal_price'] %}£{{ '%.0f' | format(pr['target_deal_price']) }}{% else %}&mdash;{% endif %}</td>
     <td class="meta">
       <a href="{{ url_for('product_edit', product_id=pr['id']) }}">Edit</a>
+      &middot;
+      <form class="inline" method="post" action="{{ url_for('product_toggle_wanted', product_id=pr['id']) }}">
+        <button class="small" type="submit"
+                title="Knowledge-only products stay tracked and priced but never surface as deals">
+          {{ 'Surface deals' if not pr['wanted'] else 'Knowledge only' }}</button>
+      </form>
       &middot;
       <form class="inline" method="post" action="{{ url_for('product_archive', product_id=pr['id']) }}">
         <button class="small" type="submit">{{ 'Unarchive' if pr['archived'] else 'Archive' }}</button>

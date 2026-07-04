@@ -212,6 +212,10 @@ _MIGRATIONS = [
     ("products", "price_trend_confidence", "REAL NOT NULL DEFAULT 0"),
     ("listings", "is_primary_sighting", "INTEGER NOT NULL DEFAULT 1"),
     ("listings", "image_url", "TEXT"),
+    # wanted=0 -> "knowledge only": still matched (identification, price
+    # history, keeps listings out of suggestion churn) but never alerted or
+    # shown as a deal. Distinct from archived, which stops matching entirely.
+    ("products", "wanted", "INTEGER NOT NULL DEFAULT 1"),
 ]
 
 
@@ -603,6 +607,7 @@ def _product_from_row(row: sqlite3.Row) -> catalogue.Product:
         archived=bool(row["archived"]),
         price_trend_pct=row["price_trend_pct"],
         price_trend_confidence=row["price_trend_confidence"],
+        wanted=bool(row["wanted"]),
     )
 
 
@@ -677,6 +682,17 @@ def update_product(
 
 def set_product_archived(conn: sqlite3.Connection, product_id: int, archived: bool) -> None:
     conn.execute("UPDATE products SET archived = ? WHERE id = ?", (int(archived), product_id))
+    conn.commit()
+
+
+def set_product_wanted(conn: sqlite3.Connection, product_id: int, wanted: bool) -> None:
+    """Toggle deal surfacing for a product. wanted=False = knowledge only:
+    the catalogue keeps identifying its listings and collecting price
+    history, but matches never alert or appear on deal surfaces (read-time
+    gating via _WANTED — effect is immediate, no rescan needed). For
+    products that are real and worth knowing about, just not wanted by
+    this item (old CPU generations under a current-gen item)."""
+    conn.execute("UPDATE products SET wanted = ? WHERE id = ?", (int(wanted), product_id))
     conn.commit()
 
 
@@ -768,7 +784,7 @@ def find_suspect_products(conn: sqlite3.Connection) -> list[dict]:
         JOIN items i ON i.id = p.item_id
         JOIN listing_matches m ON m.product_id = p.id
         JOIN listings l ON l.id = m.listing_id
-        WHERE p.archived = 0
+        WHERE p.archived = 0 AND p.wanted = 1
         GROUP BY p.id
         HAVING match_count >= ?
         ORDER BY avg_price
@@ -1750,6 +1766,12 @@ _SORTS = {
 # closing price (see AuctionSnapshot.ended).
 _NOT_ENDED = "(l.end_time IS NULL OR l.end_time > strftime('%Y-%m-%dT%H:%M:%S', 'now'))"
 
+# A match against a knowledge-only product (products.wanted = 0) is
+# identification, not endorsement: it keeps price history and identity
+# working but never belongs on a deal surface or in an alert. Requires the
+# products table joined as `pr` (all deal-surface queries join it).
+_WANTED = "(m.product_id IS NULL OR pr.wanted = 1)"
+
 
 def query_matches(
     conn: sqlite3.Connection,
@@ -1767,8 +1789,9 @@ def query_matches(
     Always excludes non-primary sightings (see resolve_identity()) — a
     listing that's a confirmed duplicate of another, already-surfaced one
     stays in the database for provenance but never appears in results.
-    Ended listings (see _NOT_ENDED) are likewise always excluded."""
-    clauses, params = ["l.is_primary_sighting = 1", _NOT_ENDED], []
+    Ended listings (see _NOT_ENDED) and matches against knowledge-only
+    products (see _WANTED) are likewise always excluded."""
+    clauses, params = ["l.is_primary_sighting = 1", _NOT_ENDED, _WANTED], []
     if project_id is not None:
         clauses.append("p.id = ?")
         params.append(project_id)
@@ -1806,12 +1829,13 @@ def project_summaries(conn: sqlite3.Connection) -> list[sqlite3.Row]:
         f"""
         SELECT p.id, p.name, p.slug, p.archived,
                COUNT(DISTINCT i.id) AS item_count,
-               COUNT(CASE WHEN l.is_primary_sighting = 1 AND {_NOT_ENDED} THEN m.id END) AS match_count,
-               MAX(CASE WHEN l.is_primary_sighting = 1 AND {_NOT_ENDED} THEN m.deal_score END) AS best_score
+               COUNT(CASE WHEN l.is_primary_sighting = 1 AND {_NOT_ENDED} AND {_WANTED} THEN m.id END) AS match_count,
+               MAX(CASE WHEN l.is_primary_sighting = 1 AND {_NOT_ENDED} AND {_WANTED} THEN m.deal_score END) AS best_score
         FROM projects p
         LEFT JOIN items i ON i.project_id = p.id AND i.archived = 0
         LEFT JOIN listing_matches m ON m.item_id = i.id
         LEFT JOIN listings l ON l.id = m.listing_id
+        LEFT JOIN products pr ON pr.id = m.product_id
         WHERE p.archived = 0
         GROUP BY p.id ORDER BY p.name
         """
@@ -1837,8 +1861,9 @@ def project_top_picks(conn: sqlite3.Connection) -> dict[int, sqlite3.Row]:
             JOIN listings l ON l.id = m.listing_id
             JOIN items i ON i.id = m.item_id
             JOIN projects p ON p.id = i.project_id
+            LEFT JOIN products pr ON pr.id = m.product_id
             WHERE p.archived = 0 AND l.is_primary_sighting = 1
-              AND {_NOT_ENDED}
+              AND {_NOT_ENDED} AND {_WANTED}
               AND m.flags = '[]' AND m.grade != 'spares/repair'
         )
         WHERE rn = 1
@@ -2038,7 +2063,8 @@ def dashboard_stats(conn: sqlite3.Connection) -> dict:
         JOIN listings l ON l.id = m.listing_id
         JOIN items i ON i.id = m.item_id AND i.archived = 0
         JOIN projects p ON p.id = i.project_id AND p.archived = 0
-        WHERE l.is_primary_sighting = 1 AND {_NOT_ENDED}
+        LEFT JOIN products pr ON pr.id = m.product_id
+        WHERE l.is_primary_sighting = 1 AND {_NOT_ENDED} AND {_WANTED}
         """,
         (new_cutoff,),
     ).fetchone()

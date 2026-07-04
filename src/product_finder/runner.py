@@ -113,7 +113,11 @@ def run_once(cfg: AppConfig, conn: sqlite3.Connection) -> list[MatchAlert]:
                             and source.capabilities().supports_enrichment
                         ):
                             _maybe_suggest_product(conn, source, listing_id, item_id, cfg.ollama)
-                        if is_new and is_primary:
+                        # Knowledge-only products (wanted=False) are
+                        # identification, not endorsement: price history above
+                        # still accumulates, but no alert fires and read-time
+                        # gating (db._WANTED) keeps the match off deal surfaces.
+                        if is_new and is_primary and (product is None or product.wanted):
                             normal_price, target_deal_price, _ = scoring.effective_prices(item, product)
                             new_alerts.append(
                                 MatchAlert(

@@ -240,6 +240,83 @@ def test_archived_product_not_listed(tmp_path):
     assert db.find_suspect_products(conn) == []
 
 
+# --- Knowledge-only products (wanted=0: identified, priced, never surfaced) ------
+
+
+def test_unwanted_product_match_hidden_from_all_deal_surfaces(tmp_path):
+    cfg, conn, item_id = _setup(tmp_path)
+    product = db.create_product(conn, item_id, "Intel", "i7-4790K", ["i7-4790k"], None, None, None)
+    _listing_match(conn, item_id, product, "E1", "Intel i7-4790K CPU", 59.0)
+    assert len(db.query_matches(conn)) == 1
+
+    db.set_product_wanted(conn, product, False)
+    # Read-time gating: effect is immediate, no rescan required.
+    assert db.query_matches(conn) == []
+    assert db.project_top_picks(conn) == {}
+    assert db.dashboard_stats(conn)["clean_matches"] == 0
+    assert db.project_summaries(conn)[0]["match_count"] == 0
+
+    db.set_product_wanted(conn, product, True)
+    assert len(db.query_matches(conn)) == 1  # fully reversible
+
+
+def test_unwanted_product_still_matches_and_accumulates_price_history(tmp_path):
+    # The whole point: identification and pricing knowledge continue.
+    cfg, conn, item_id = _setup(tmp_path)
+    product = db.create_product(conn, item_id, "Intel", "i7-4790K", ["i7-4790k"], None, None, None)
+    db.set_product_wanted(conn, product, False)
+
+    products = db.list_products_for_matching(conn, item_id)
+    assert len(products) == 1  # unlike archived, still offered to catalogue.match
+    assert products[0].wanted is False
+    assert catalogue.match("intel i7-4790k for sale", products) is not None
+
+    db.record_price_observation(conn, product, 55.0, "ebay")
+    assert db.get_product(conn, product)["typical_used_price"] == 55.0
+
+
+def test_runner_skips_alert_for_unwanted_product(tmp_path, monkeypatch):
+    from product_finder import runner, sources
+    from product_finder.config import ExtraSourceConfig
+    from product_finder.sources.base import Source, SourceCapabilities
+
+    class Fake(Source):
+        def capabilities(self):
+            return SourceCapabilities(automated=True, compliance="test fake")
+
+        def search(self, term, item):
+            return [Listing(source="fake", external_id="F1", title="Intel i7-4790K CPU",
+                            price=59.0, url="https://x/f1")]
+
+    cfg = AppConfig(db_path=str(tmp_path / "t.db"))
+    cfg.sources.extra = [ExtraSourceConfig(name="fake", type="rss", url="https://x/{term}")]
+    conn = db.connect(cfg.db_path)
+    project_id = db.create_project(conn, "Gaming PC")
+    item_id = db.create_item(conn, project_id, ItemConfig(name="CPU", terms=["cpu"],
+                                                          normal_price=250))
+    product = db.create_product(conn, item_id, "Intel", "i7-4790K", ["i7-4790k"], None, None, None)
+    db.set_product_wanted(conn, product, False)
+    monkeypatch.setattr(sources, "build_registry", lambda eff_cfg: {"fake": Fake(cfg)})
+
+    alerts = runner.run_once(cfg, conn)
+    assert alerts == []  # identified, priced — but never alerted
+    match = conn.execute("SELECT product_id FROM listing_matches").fetchone()
+    assert match["product_id"] == product  # match recorded with identity intact
+    obs = conn.execute("SELECT COUNT(*) n FROM product_price_observations").fetchone()
+    assert obs["n"] == 1  # price history still accumulated
+
+
+def test_unwanted_product_no_longer_accused_as_suspect(tmp_path):
+    cfg, conn, item_id = _setup(tmp_path)
+    conn.execute("UPDATE items SET normal_price = 400 WHERE id = ?", (item_id,))
+    product = db.create_product(conn, item_id, "Intel", "SR00B", [], None, None, None)
+    _listing_match(conn, item_id, product, "E1", "Intel SR00B CPU", 17.0)
+    _listing_match(conn, item_id, product, "E2", "Intel SR00B processor", 18.0)
+    assert len(db.find_suspect_products(conn)) == 1
+    db.set_product_wanted(conn, product, False)
+    assert db.find_suspect_products(conn) == []  # decision made, stop asking
+
+
 # --- Global /catalogue review page ----------------------------------------------
 
 
@@ -315,6 +392,30 @@ def test_catalogue_page_shows_suspects_and_bulk_archive_works(web):
     # Archived: no longer offered to catalogue.match, no longer accused.
     assert db.list_products_for_matching(conn, item_id) == []
     assert b"Suspect products" not in client.get("/catalogue").data
+
+
+def test_bulk_knowledge_only_and_toggle_route(web):
+    cfg, conn, item_id, client = web
+    conn.execute("UPDATE items SET normal_price = 400 WHERE id = ?", (item_id,))
+    product = db.create_product(conn, item_id, "Intel", "SR00B", [], None, None, None)
+    resp = client.post("/products/bulk-knowledge-only", data={
+        "product_ids": [str(product)], "next": "/catalogue",
+    }, follow_redirects=True)
+    assert b"knowledge-only" in resp.data
+    assert db.get_product(conn, product)["wanted"] == 0
+
+    resp = client.post(f"/products/{product}/toggle-wanted", follow_redirects=False)
+    assert db.get_product(conn, product)["wanted"] == 1
+    assert f"/items/{item_id}/edit" in resp.headers["Location"]
+
+
+def test_item_form_shows_knowledge_only_badge(web):
+    cfg, conn, item_id, client = web
+    product = db.create_product(conn, item_id, "Intel", "SR00B", [], None, None, None)
+    db.set_product_wanted(conn, product, False)
+    resp = client.get(f"/items/{item_id}/edit")
+    assert b"knowledge only" in resp.data
+    assert b"Surface deals" in resp.data  # the un-toggle action
 
 
 def test_suggestion_redirect_rejects_offsite_next(web):
