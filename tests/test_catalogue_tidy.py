@@ -52,6 +52,80 @@ def test_placeholder_model_sighting_corroborates_brand_only_suggestion(tmp_path)
     assert row["model"] == ""
 
 
+# --- Spacing/punctuation-insensitive model identity -------------------------------
+
+
+def test_term_matching_tolerates_spacing_variants():
+    p = catalogue.Product(id=1, item_id=1, manufacturer="Metabo", model="KGS 216 M",
+                          match_terms=["KGS 216 M"])
+    assert catalogue.match("metabo kgs216m mitre saw", [p]) is p
+    assert catalogue.match("metabo kgs-216-m boxed", [p]) is p
+    assert catalogue.match("metabo kgs 216 m", [p]) is p
+
+    ct = catalogue.Product(id=2, item_id=1, manufacturer="Festool", model="CT15",
+                           match_terms=["CT15"])
+    assert catalogue.match("festool ct 15 extractor", [ct]) is ct
+    # Word boundaries survive: no theft from lookalike text.
+    assert catalogue.match("connect 15 items today", [ct]) is None
+    assert catalogue.match("festool ct 150 xl", [ct]) is None
+
+
+def test_term_matching_still_handles_unicode_and_part_styles():
+    k = catalogue.Product(id=3, item_id=1, manufacturer="Kärcher", model="WD2",
+                          match_terms=["Kärcher WD2"])
+    assert catalogue.match("kärcher wd2 vacuum", [k]) is k
+    part = catalogue.Product(id=4, item_id=1, manufacturer="Kärcher", model="2.863-314.0",
+                             match_terms=["2.863-314.0"])
+    assert catalogue.match("filter bag 2.863-314.0 genuine", [part]) is part
+
+
+def test_model_key_canonicalises():
+    assert catalogue.model_key("KGS 216 M") == catalogue.model_key("kgs216m")
+    assert catalogue.model_key("CT-15") == catalogue.model_key("CT 15")
+    assert catalogue.model_key("DeWalt") == catalogue.model_key("DEWALT")
+    assert catalogue.model_key("KGS 216 M") != catalogue.model_key("KGS 254 M")
+
+
+def test_spacing_variant_sightings_corroborate_one_suggestion(tmp_path):
+    cfg, conn, item_id = _setup(tmp_path)
+    db.record_suggestion_sighting(conn, item_id, "Metabo", "KGS 216 M", "https://x/1")
+    row = db.record_suggestion_sighting(conn, item_id, "METABO", "KGS216M", "https://x/2")
+    assert row["sighting_count"] == 2
+    assert row["model"] == "KGS 216 M"  # first-recorded form adopted
+    assert len(db.list_product_suggestions(conn, item_id)) == 1
+
+
+def test_create_product_heals_spacing_duplicate(tmp_path):
+    cfg, conn, item_id = _setup(tmp_path)
+    first = db.create_product(conn, item_id, "Festool", "CT15", ["ct15"], None, None, None)
+    second = db.create_product(conn, item_id, "Festool", "CT 15", ["ct 15"], None, None, None)
+    assert second == first
+
+
+def test_dedupe_sweeps_spacing_duplicates(tmp_path):
+    cfg, conn, item_id = _setup(tmp_path)
+    for model in ("CT15", "CT 15", "ct-15"):
+        conn.execute(
+            "INSERT INTO products (item_id, manufacturer, model, match_terms) "
+            "VALUES (?, 'Festool', ?, '[]')", (item_id, model),
+        )
+    conn.commit()
+    assert db.dedupe_products(conn) == 2
+    assert len(db.list_products(conn, item_id)) == 1
+
+
+def test_triage_evidence_finds_spacing_variants(tmp_path):
+    cfg, conn, item_id = _setup(tmp_path)
+    conn.execute("UPDATE items SET normal_price = 450 WHERE id = ?", (item_id,))
+    _listing_match(conn, item_id, None, "E1", "Metabo KGS216M sliding mitre saw", 300.0)
+    _listing_match(conn, item_id, None, "E2", "Metabo KGS 216 M saw", 310.0)
+    _suggest(conn, item_id, "Metabo", "KGS 216 M")
+    triaged = db.triage_pending_suggestions(conn)
+    s = next(x for x in triaged if x["model"] == "KGS 216 M")
+    assert s["verdict"] == db.TRIAGE_STRONG
+    assert s["evidence_count"] == 2  # both spacing variants counted
+
+
 # --- Duplicate products: prevention -------------------------------------------
 
 

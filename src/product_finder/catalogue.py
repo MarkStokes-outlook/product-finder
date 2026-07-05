@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
+from functools import lru_cache
 from typing import Sequence
 
 
@@ -66,10 +67,42 @@ class Product:
         return f"{self.manufacturer} {self.model}".strip()
 
 
+@lru_cache(maxsize=4096)
+def term_pattern(term: str) -> re.Pattern | None:
+    """Compiled word-boundary pattern for a match term, tolerant of
+    spacing/punctuation variance inside model numbers: sellers write
+    "KGS 216 M", "KGS216M" and "KGS-216M" for the same product, and a
+    matcher that treats those as different strings quietly regenerates
+    catalogue noise (unmatched listings re-enter suggestion churn and come
+    back as near-duplicate products).
+
+    The term is split into letter/digit runs and any separators between
+    them become optional: "CT15" matches "CT 15" and vice versa. Outer
+    word boundaries are kept, so "CT15" still takes nothing from
+    "connect 15" or "CT 150"."""
+    tokens = re.findall(r"[^\W\d_]+|\d+", term.lower())
+    if not tokens:
+        return None
+    return re.compile(
+        r"(?<!\w)" + r"[\s\-./]*".join(re.escape(t) for t in tokens) + r"(?!\w)"
+    )
+
+
 def _matches(text: str, term: str) -> bool:
     # Word-boundary match, same style as grading._matches_any /
-    # scoring.excluded, so "saw" doesn't match "sawdust".
-    return re.search(r"(?<!\w)" + re.escape(term.lower()) + r"(?!\w)", text) is not None
+    # scoring.excluded, so "saw" doesn't match "sawdust" — but spacing-
+    # insensitive within model numbers (see term_pattern).
+    pattern = term_pattern(term.lower())
+    return pattern is not None and pattern.search(text) is not None
+
+
+def model_key(value: str) -> str:
+    """Canonical identity key for a manufacturer/model string: lowercase,
+    alphanumerics only. "KGS 216 M", "KGS216M" and "kgs-216-m" share one
+    key — used for suggestion dedup, the product-create guard, and the
+    duplicate-product sweep, so spacing variants can never accumulate as
+    separate suggestions or products."""
+    return "".join(ch for ch in value.lower() if ch.isalnum())
 
 
 # Confidence for a catalogue *suggestion* sourced from structured,

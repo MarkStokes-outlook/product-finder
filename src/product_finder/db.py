@@ -641,18 +641,19 @@ def create_product(
     target_deal_price: float | None,
 ) -> int:
     """Create a catalogue product — or return the existing one if this
-    (item, manufacturer, model) already exists case-insensitively. products
-    has no UNIQUE constraint (casing variants and double-submits created
-    real duplicates before this guard), so uniqueness is enforced here at
-    the only insert path rather than by a migration that would fail on
-    databases already containing duplicates."""
-    existing = conn.execute(
-        "SELECT id FROM products WHERE item_id = ? "
-        "AND manufacturer = ? COLLATE NOCASE AND model = ? COLLATE NOCASE",
-        (item_id, manufacturer, model),
-    ).fetchone()
-    if existing:
-        return existing["id"]
+    (item, manufacturer, model) already exists by identity key
+    (casing/spacing/punctuation insensitive — "CT15" and "CT 15" are one
+    product; see catalogue.model_key). products has no UNIQUE constraint
+    (casing variants and double-submits created real duplicates before
+    this guard), so uniqueness is enforced here at the only insert path
+    rather than by a migration that would fail on databases already
+    containing duplicates."""
+    for row in conn.execute(
+        "SELECT id, manufacturer, model FROM products WHERE item_id = ?", (item_id,)
+    ):
+        if (catalogue.model_key(row["manufacturer"]) == catalogue.model_key(manufacturer)
+                and catalogue.model_key(row["model"]) == catalogue.model_key(model)):
+            return row["id"]
     cur = conn.execute(
         "INSERT INTO products (item_id, manufacturer, model, match_terms, "
         "msrp, typical_new_price, target_deal_price) VALUES (?, ?, ?, ?, ?, ?, ?)",
@@ -739,16 +740,16 @@ def merge_products(conn: sqlite3.Connection, keep_id: int, dup_id: int) -> None:
 
 
 def find_duplicate_products(conn: sqlite3.Connection) -> list[list[sqlite3.Row]]:
-    """Groups of products that are the same (item, manufacturer, model)
-    case-insensitively — the exact duplicates create_product now prevents,
+    """Groups of products that are the same (item, manufacturer, model) by
+    identity key (casing/spacing/punctuation insensitive, see
+    catalogue.model_key) — the duplicates create_product now prevents,
     found so pre-guard databases can be swept (see cli catalogue-tidy).
     Each group is ordered oldest first (the natural keeper)."""
-    rows = conn.execute(
-        "SELECT * FROM products ORDER BY item_id, LOWER(manufacturer), LOWER(model), id"
-    ).fetchall()
+    rows = conn.execute("SELECT * FROM products ORDER BY item_id, id").fetchall()
     groups: dict[tuple, list[sqlite3.Row]] = {}
     for row in rows:
-        key = (row["item_id"], row["manufacturer"].lower(), row["model"].lower())
+        key = (row["item_id"], catalogue.model_key(row["manufacturer"]),
+               catalogue.model_key(row["model"]))
         groups.setdefault(key, []).append(row)
     return [group for group in groups.values() if len(group) > 1]
 
@@ -1173,11 +1174,13 @@ def triage_pending_suggestions(conn: sqlite3.Connection) -> list[dict]:
         if not model:
             verdict, evidence_note = TRIAGE_BRAND_ONLY, "no model — not approvable in bulk"
         else:
-            pattern = re.compile(r"(?<!\w)" + re.escape(model.lower()) + r"(?!\w)")
+            # Spacing-insensitive (catalogue.term_pattern): evidence for
+            # "KGS 216 M" includes listings titled "KGS216M" and vice versa.
+            pattern = catalogue.term_pattern(model.lower())
             evidence = [
                 l for l in item_listings.get(row["item_id"], ())
-                if pattern.search(l["title"].lower())
-            ]
+                if pattern is not None and pattern.search(l["title"].lower())
+            ] if pattern else []
             evidence_count = len(evidence)
             if evidence_count >= _TRIAGE_MIN_EVIDENCE:
                 avg_price = sum(l["price"] for l in evidence) / evidence_count
@@ -1250,15 +1253,20 @@ def record_suggestion_sighting(
         return None
     manufacturer, model = normalized
     now = _now()
-    # Case-insensitive: "DEWALT"/"DeWalt"/"Dewalt" corroborate one suggestion
-    # instead of splitting into three, without BRAND_ALIASES having to know
-    # every brand in advance. First-recorded casing wins and is adopted here,
-    # so the UNIQUE(item_id, manufacturer, model) row is reused.
-    existing = conn.execute(
-        "SELECT * FROM product_suggestions WHERE item_id = ? "
-        "AND manufacturer = ? COLLATE NOCASE AND model = ? COLLATE NOCASE",
-        (item_id, manufacturer, model),
-    ).fetchone()
+    # Identity-key match: "DEWALT"/"DeWalt" and "KGS 216 M"/"KGS216M"
+    # corroborate one suggestion instead of splitting, without
+    # BRAND_ALIASES having to know every brand in advance (see
+    # catalogue.model_key — casing, spacing and punctuation insensitive).
+    # First-recorded form wins and is adopted here, so the
+    # UNIQUE(item_id, manufacturer, model) row is reused.
+    existing = None
+    for row in conn.execute(
+        "SELECT * FROM product_suggestions WHERE item_id = ?", (item_id,)
+    ):
+        if (catalogue.model_key(row["manufacturer"]) == catalogue.model_key(manufacturer)
+                and catalogue.model_key(row["model"]) == catalogue.model_key(model)):
+            existing = row
+            break
     if existing:
         manufacturer, model = existing["manufacturer"], existing["model"]
     if existing and existing["status"] != "pending":
