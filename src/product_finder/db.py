@@ -1428,6 +1428,12 @@ def upsert_listing(conn: sqlite3.Connection, listing: Listing) -> tuple[int, boo
             (now, listing.price, listing.title, buying_options, listing.bid_count,
              listing.end_time, listing.image_url, row["id"]),
         )
+        # Commit immediately (as every db.py write function must): the watch
+        # loop calls this between network requests, and an uncommitted write
+        # holds the WAL writer lock through every rate-limit sleep that
+        # follows — which is exactly what made the web UI 500 with
+        # "database is locked" while watch waited out a 429 backoff.
+        conn.commit()
         return row["id"], False
     cur = conn.execute(
         "INSERT INTO listings (source, external_id, title, price, currency, url, "
@@ -1452,6 +1458,7 @@ def upsert_listing(conn: sqlite3.Connection, listing: Listing) -> tuple[int, boo
             listing.image_url,
         ),
     )
+    conn.commit()
     return cur.lastrowid, True
 
 
@@ -1810,6 +1817,11 @@ def record_match(
                 row["id"],
             ),
         )
+        # Committed immediately — the watch loop's next action after a
+        # match is often another network call (next term's search, or an
+        # enrichment fetch), and an uncommitted write would hold the WAL
+        # writer lock through it (and through any rate-limit backoff).
+        conn.commit()
         return row["id"], False
     cur = conn.execute(
         "INSERT INTO listing_matches (listing_id, item_id, grade, deal_score, "
@@ -1828,6 +1840,7 @@ def record_match(
             product_id,
         ),
     )
+    conn.commit()
     return cur.lastrowid, True
 
 
@@ -1838,6 +1851,9 @@ def mark_alerted(conn: sqlite3.Connection, match_id: int, channel: str) -> bool:
             "INSERT INTO alerts_sent (match_id, channel, sent_at) VALUES (?, ?, ?)",
             (match_id, channel, _now()),
         )
+        # Committed before the caller fires the (possibly slow) webhook —
+        # never hold the writer lock across network I/O.
+        conn.commit()
         return True
     except sqlite3.IntegrityError:
         return False
@@ -2009,6 +2025,8 @@ def record_source_run(
         datetime.now(timezone.utc) - timedelta(days=_SOURCE_RUN_RETENTION_DAYS)
     ).isoformat(timespec="seconds")
     conn.execute("DELETE FROM source_runs WHERE run_at < ?", (cutoff,))
+    # Committed here because run_once calls retailer_price (network) next.
+    conn.commit()
 
 
 def source_health(conn: sqlite3.Connection) -> dict[str, dict]:
