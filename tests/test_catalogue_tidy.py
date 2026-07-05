@@ -314,6 +314,53 @@ def test_triage_word_boundary_on_model(tmp_path):
     assert verdicts[("DEWALT", "DWS774")] == db.TRIAGE_STRONG
 
 
+# --- Approve with model correction (article number -> real model name) -----------
+
+
+def test_approve_with_corrected_model_keeps_article_number_as_alias(tmp_path):
+    cfg, conn, item_id = _setup(tmp_path)
+    s = _suggest(conn, item_id, "Metabo", "613216380")  # Metabo order number
+    product_id = db.approve_suggestion(conn, s["id"], model="KGS 216 M")
+
+    product = db.get_product(conn, product_id)
+    assert product["model"] == "KGS 216 M"
+    terms = json.loads(product["match_terms"])
+    assert terms == ["Metabo KGS 216 M", "KGS 216 M", "613216380"]
+    # The article number still earns matches; the real model now does too.
+    matchable = db.list_products_for_matching(conn, item_id)
+    assert catalogue.match("metabo kgs 216 m sliding mitre saw", matchable).id == product_id
+    assert catalogue.match("metabo mitre saw 613216380 boxed", matchable).id == product_id
+
+    # The suggestion keeps its raw model as the don't-ask-again key: another
+    # sighting of the same article number stays ignored, not reopened.
+    again = db.record_suggestion_sighting(conn, item_id, "Metabo", "613216380", "https://x/9")
+    assert again["status"] == "approved"
+
+    # A later structured sighting of the *corrected* model converges onto
+    # the same product instead of duplicating it.
+    s2 = _suggest(conn, item_id, "Metabo", "KGS 216 M")
+    assert db.approve_suggestion(conn, s2["id"]) == product_id
+    assert len(db.list_products(conn, item_id)) == 1
+
+
+def test_approve_blank_model_field_means_no_correction(tmp_path):
+    cfg, conn, item_id = _setup(tmp_path)
+    s = _suggest(conn, item_id, "Makita", "LS1019L")
+    product_id = db.approve_suggestion(conn, s["id"], model="   ")
+    assert db.get_product(conn, product_id)["model"] == "LS1019L"
+
+
+def test_approve_route_accepts_model_correction(web):
+    cfg, conn, item_id, client = web
+    s = _suggest(conn, item_id, "Metabo", "613216380")
+    resp = client.post(f"/suggestions/{s['id']}/approve", data={
+        "model": "KGS 216 M", "next": "/catalogue",
+    }, follow_redirects=True)
+    assert b"Metabo KGS 216 M" in resp.data  # flash names the corrected product
+    products = db.list_products(conn, item_id)
+    assert products[0]["model"] == "KGS 216 M"
+
+
 # --- Knowledge-only products (wanted=0: identified, priced, never surfaced) ------
 
 

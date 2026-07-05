@@ -1327,16 +1327,32 @@ def renormalize_pending_suggestions(conn: sqlite3.Connection) -> dict:
     return {"before": len(pending), "after": after, "rejected_outright": rejected}
 
 
-def approve_suggestion(conn: sqlite3.Connection, suggestion_id: int) -> int:
+def approve_suggestion(
+    conn: sqlite3.Connection, suggestion_id: int, model: str | None = None
+) -> int:
     """Create the real catalogue product from a pending suggestion. Returns
-    the new product's id."""
+    the new product's id.
+
+    `model` corrects the recorded model at approval time — sellers'
+    structured fields often carry an article/order number (Metabo
+    "613216380") where the human model name is "KGS 216 M". The product
+    gets the corrected model, and the originally-sighted string is kept as
+    an extra match term (sellers quote article numbers too, so it still
+    earns matches). The suggestion row keeps its *raw* model — that's the
+    dedup key that stops the same raw sighting reopening as a new
+    suggestion; a later suggestion of the corrected model converges onto
+    this same product via create_product's case-insensitive guard."""
     suggestion = get_product_suggestion(conn, suggestion_id)
-    combined = f"{suggestion['manufacturer']} {suggestion['model']}".strip()
+    raw_model = suggestion["model"]
+    final_model = (model or "").strip() or raw_model
+    combined = f"{suggestion['manufacturer']} {final_model}".strip()
     match_terms = [combined]
-    if suggestion["model"] and suggestion["model"] != combined:
-        match_terms.append(suggestion["model"])
+    if final_model and final_model != combined:
+        match_terms.append(final_model)
+    if raw_model and raw_model.lower() not in {t.lower() for t in match_terms}:
+        match_terms.append(raw_model)
     product_id = create_product(
-        conn, suggestion["item_id"], suggestion["manufacturer"], suggestion["model"],
+        conn, suggestion["item_id"], suggestion["manufacturer"], final_model,
         match_terms, None, None, None,
     )
     conn.execute("UPDATE product_suggestions SET status = 'approved' WHERE id = ?", (suggestion_id,))

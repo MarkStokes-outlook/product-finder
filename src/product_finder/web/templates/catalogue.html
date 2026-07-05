@@ -108,6 +108,11 @@ document.getElementById("pf-select-suspects").addEventListener("change", functio
     <td class="meta">
       <form class="inline" method="post" action="{{ url_for('suggestion_approve', suggestion_id=s['id']) }}">
         <input type="hidden" name="next" value="{{ url_for('catalogue_review') }}">
+        {% if s['part_number_shaped'] %}
+        <input type="text" name="model" placeholder="real model name?"
+               title="This looks like an article/order number. Type the real model name (e.g. KGS 216 M) to approve with it corrected — the number is kept as an extra match term."
+               style="width: 9rem;">
+        {% endif %}
         <button class="small" type="submit">Approve</button>
       </form>
       &middot;

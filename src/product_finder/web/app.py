@@ -699,8 +699,11 @@ def create_app(cfg: AppConfig) -> Flask:
         suggestion = db.get_product_suggestion(conn, suggestion_id)
         if suggestion is None:
             abort(404)
-        db.approve_suggestion(conn, suggestion_id)
-        label = f"{suggestion['manufacturer']} {suggestion['model']}".strip()
+        # Optional model correction at approval time (e.g. seller field held
+        # an article number, human knows the real model name).
+        model = (request.form.get("model") or "").strip()
+        db.approve_suggestion(conn, suggestion_id, model=model or None)
+        label = f"{suggestion['manufacturer']} {model or suggestion['model']}".strip()
         flash(f"Added '{label}' to the catalogue.")
         return _suggestion_redirect(suggestion["item_id"])
 
