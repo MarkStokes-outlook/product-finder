@@ -1,13 +1,21 @@
 """Fuzzy duplicate-listing detection — identity v2 candidate generation.
 
 Canonical-URL identity (identity.py) links sightings that provably share a
-platform's own ID. This module handles the case with no provable link: the
-same physical item listed more than once — a seller double-listing on the
-same marketplace, or cross-posting to another one. There is no identifier to
-key off, only title/price/location/image similarity, so nothing here ever
-merges anything: it proposes candidate pairs for a human to confirm or
-dismiss (see db.scan_duplicate_candidates / the "Possible duplicates"
-section on the project page). Design: docs/design/2026-07-04-fuzzy-duplicate-grouping.md.
+platform's own ID. This module handles the case with no provable link: a
+seller cross-posting the same physical item to another marketplace. There is
+no identifier to key off, only title/price/location/image similarity, so
+nothing here ever merges anything: it proposes candidate pairs for a human
+to confirm or dismiss (see db.scan_duplicate_candidates / the "Possible
+duplicates" section on the project page). Design:
+docs/design/2026-07-04-fuzzy-duplicate-grouping.md (same-marketplace pairs
+removed 2026-07-05 — see docs/implementation-notes/ for why).
+
+Same-marketplace pairs are never proposed, regardless of title/location/photo
+similarity: a different listing ID on the same marketplace is a different
+listing, most often a seller with several identical units of stock for sale
+in parallel — each priced and sold independently, one can go before the
+other or drift to a different price. Only cross-marketplace pairs are
+scored.
 
 Pure functions over plain listing rows — no sqlite knowledge, same style as
 catalogue.py/price_trend.py. All thresholds are named constants below,
@@ -31,8 +39,8 @@ BASE_AT_FULL_SIM = 70.0       # identical titles
 PRICE_CLOSENESS_MAX_BONUS = 15.0   # at 0% delta, linear to 0 at PRICE_DELTA_MAX_PCT
 SAME_IMAGE_BONUS = 20.0       # identical image URL = almost certainly a cross-post
 SAME_LOCATION_BONUS = 10.0    # same masked postcode = probably the same seller
-CROSS_SOURCE_PENALTY = 10.0   # cross-marketplace pairs skip the seller-proxy gate,
-                              # so they start from correspondingly lower confidence
+CROSS_SOURCE_PENALTY = 10.0   # every scored pair is cross-marketplace (see gate below),
+                              # so all of them start from correspondingly lower confidence
 CONFIDENCE_CAP = 99.0         # never 100 — only a human can be certain
 MIN_QUEUE_CONFIDENCE = 60.0
 
@@ -78,15 +86,15 @@ def evaluate_pair(a, b) -> tuple[float, dict] | None:
     signals) when the pair clears every gate and MIN_QUEUE_CONFIDENCE,
     else None.
 
-    Same-source pairs additionally require a seller proxy — matching
-    non-empty location, or an identical image URL. Without one, two
-    same-marketplace listings with similar titles are overwhelmingly
-    *different sellers selling the same product model*: genuinely distinct
-    purchasable items, not duplicates (measured on real data: 716 live
-    exact-title pairs, only 167 sharing a location). Cross-source pairs
-    skip that gate (location formats differ across marketplaces) but carry
-    CROSS_SOURCE_PENALTY instead.
+    Same-marketplace pairs are rejected outright, however similar: a
+    different listing ID on the same marketplace is a different listing
+    (most commonly a seller running several identical units of stock in
+    parallel, each free to sell or reprice independently of the other).
+    Only cross-marketplace pairs are ever scored.
     """
+    if a["source"] == b["source"]:
+        return None
+
     norm_a, norm_b = normalize_title(a["title"]), normalize_title(b["title"])
     if token_overlap(norm_a, norm_b) < TOKEN_OVERLAP_MIN:
         return None
@@ -98,11 +106,8 @@ def evaluate_pair(a, b) -> tuple[float, dict] | None:
     if delta > PRICE_DELTA_MAX_PCT:
         return None
 
-    same_source = a["source"] == b["source"]
     same_location = bool(a["location"]) and a["location"] == b["location"]
     same_image = bool(a["image_url"]) and a["image_url"] == b["image_url"]
-    if same_source and not (same_location or same_image):
-        return None
 
     sim_span = 1.0 - TITLE_SIM_MIN
     base = BASE_AT_MIN_SIM + (BASE_AT_FULL_SIM - BASE_AT_MIN_SIM) * (
@@ -113,8 +118,7 @@ def evaluate_pair(a, b) -> tuple[float, dict] | None:
         confidence += SAME_IMAGE_BONUS
     if same_location:
         confidence += SAME_LOCATION_BONUS
-    if not same_source:
-        confidence -= CROSS_SOURCE_PENALTY
+    confidence -= CROSS_SOURCE_PENALTY
     confidence = min(confidence, CONFIDENCE_CAP)
 
     if confidence < MIN_QUEUE_CONFIDENCE:
@@ -124,6 +128,6 @@ def evaluate_pair(a, b) -> tuple[float, dict] | None:
         "price_delta_pct": round(delta, 1),
         "same_location": same_location,
         "same_image": same_image,
-        "cross_source": not same_source,
+        "cross_source": True,
     }
     return confidence, signals

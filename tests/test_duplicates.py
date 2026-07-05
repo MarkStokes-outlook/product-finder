@@ -23,77 +23,83 @@ def test_normalize_title_strips_punctuation_and_case():
     )
 
 
-def test_viewedge_reference_pair_queues():
-    # The real pair this feature was built for: identical titles, same eBay
-    # seller location, ~20% price apart, different photos.
+def test_same_marketplace_pair_never_queues_even_with_every_signal_matching():
+    # This is the pair the feature was originally built around — identical
+    # titles, same eBay seller location, ~20% price apart. It turned out to
+    # be exactly the false-positive pattern Mark flagged: a seller with
+    # multiple stock units listed under different IDs, free to sell or
+    # reprice independently. Different listing ID, same marketplace, must
+    # never queue however strong the other signals are.
     a = _row("VIEWEDGE C2712FDA-P Monitor 27 inch FHD 144hz", 83.89, location="EN6***",
              image_url="https://i.ebayimg.com/images/g/774/s-l1600.jpg")
     b = _row("VIEWEDGE C2712FDA-P Monitor 27 inch FHD 144hz", 69.99, location="EN6***",
-             image_url="https://i.ebayimg.com/images/g/8F4/s-l1600.jpg")
-    result = duplicates.evaluate_pair(a, b)
-    assert result is not None
-    confidence, signals = result
-    assert 88 < confidence < 90
-    assert signals["title_sim"] == 1.0
-    assert signals["same_location"] is True
-    assert signals["same_image"] is False
-    assert signals["cross_source"] is False
+             image_url="https://i.ebayimg.com/images/g/774/s-l1600.jpg")
+    assert duplicates.evaluate_pair(a, b) is None
 
 
 def test_same_source_without_location_or_image_is_rejected():
-    # Two same-marketplace listings with identical titles but no shared
-    # seller evidence are overwhelmingly different sellers selling the same
-    # product model — distinct purchasable items, not duplicates.
     a = _row("VIEWEDGE C2712FDA-P Monitor 27 inch FHD 144hz", 83.89, location="EN6***")
     b = _row("VIEWEDGE C2712FDA-P Monitor 27 inch FHD 144hz", 69.99, location="LS1***")
     assert duplicates.evaluate_pair(a, b) is None
 
 
-def test_same_source_same_image_passes_without_location():
-    img = "https://i.ebayimg.com/images/g/774/s-l1600.jpg"
-    a = _row("Makita SP6000 track saw", 250.0, image_url=img)
-    b = _row("Makita SP6000 track saw", 250.0, image_url=img)
+def test_cross_marketplace_reference_pair_queues():
+    # Same title/price/location as the reference pair above, but genuinely
+    # cross-marketplace (a seller cross-posting) — this is the case v2
+    # exists for, and the only shape it now scores.
+    a = _row("VIEWEDGE C2712FDA-P Monitor 27 inch FHD 144hz", 83.89, source="ebay",
+             location="EN6***", image_url="https://i.ebayimg.com/images/g/774/s-l1600.jpg")
+    b = _row("VIEWEDGE C2712FDA-P Monitor 27 inch FHD 144hz", 69.99, source="gumtree",
+             location="EN6***", image_url="https://i.ebayimg.com/images/g/8F4/s-l1600.jpg")
     result = duplicates.evaluate_pair(a, b)
     assert result is not None
-    assert result[1]["same_image"] is True
+    confidence, signals = result
+    assert 78 < confidence < 80
+    assert signals["title_sim"] == 1.0
+    assert signals["same_location"] is True
+    assert signals["same_image"] is False
+    assert signals["cross_source"] is True
 
 
-def test_cross_source_pair_skips_seller_gate_but_scores_lower():
-    same = duplicates.evaluate_pair(
-        _row("Makita SP6000 track saw", 250.0, location="EN6***"),
-        _row("Makita SP6000 track saw", 250.0, location="EN6***"),
-    )
-    cross = duplicates.evaluate_pair(
+def test_cross_source_pair_scores_without_seller_evidence():
+    # Cross-marketplace pairs never need a location/image match (formats
+    # differ across marketplaces) — title/price similarity is enough to
+    # queue on its own; a matching location just adds confidence on top.
+    bare = duplicates.evaluate_pair(
         _row("Makita SP6000 track saw", 250.0, source="ebay"),
         _row("Makita SP6000 track saw", 250.0, source="gumtree"),
     )
-    assert same is not None and cross is not None
-    assert cross[1]["cross_source"] is True
-    assert cross[0] < same[0]
+    with_location = duplicates.evaluate_pair(
+        _row("Makita SP6000 track saw", 250.0, source="ebay", location="EN6***"),
+        _row("Makita SP6000 track saw", 250.0, source="gumtree", location="EN6***"),
+    )
+    assert bare is not None and with_location is not None
+    assert bare[1]["cross_source"] is True
+    assert with_location[0] > bare[0]
 
 
 def test_dissimilar_titles_rejected():
-    a = _row("Makita SP6000 track saw", 250.0, location="EN6***")
-    b = _row("Bosch GTS 10 XC table saw", 240.0, location="EN6***")
+    a = _row("Makita SP6000 track saw", 250.0, source="ebay", location="EN6***")
+    b = _row("Bosch GTS 10 XC table saw", 240.0, source="gumtree", location="EN6***")
     assert duplicates.evaluate_pair(a, b) is None
 
 
 def test_price_delta_beyond_cap_rejected():
-    a = _row("Makita SP6000 track saw", 100.0, location="EN6***")
-    b = _row("Makita SP6000 track saw", 200.0, location="EN6***")  # 100% apart
+    a = _row("Makita SP6000 track saw", 100.0, source="ebay", location="EN6***")
+    b = _row("Makita SP6000 track saw", 200.0, source="gumtree", location="EN6***")  # 100% apart
     assert duplicates.evaluate_pair(a, b) is None
 
 
 def test_zero_price_never_divides():
-    a = _row("Makita SP6000 track saw", 0.0, location="EN6***")
-    b = _row("Makita SP6000 track saw", 50.0, location="EN6***")
+    a = _row("Makita SP6000 track saw", 0.0, source="ebay", location="EN6***")
+    b = _row("Makita SP6000 track saw", 50.0, source="gumtree", location="EN6***")
     assert duplicates.evaluate_pair(a, b) is None
 
 
 def test_confidence_never_reaches_100():
     img = "https://i.ebayimg.com/x.jpg"
-    a = _row("Makita SP6000 track saw", 250.0, location="EN6***", image_url=img)
-    b = _row("Makita SP6000 track saw", 250.0, location="EN6***", image_url=img)
+    a = _row("Makita SP6000 track saw", 250.0, source="ebay", location="EN6***", image_url=img)
+    b = _row("Makita SP6000 track saw", 250.0, source="gumtree", location="EN6***", image_url=img)
     confidence, _ = duplicates.evaluate_pair(a, b)
     assert confidence == duplicates.CONFIDENCE_CAP
 
@@ -127,9 +133,10 @@ def _seed_listing(conn, item_id, external_id, title, price, location="EN6***",
 _TITLE = "VIEWEDGE C2712FDA-P Monitor 27 inch FHD 144hz"
 
 
-def _seed_pair(conn, item_id, price_a=83.89, price_b=69.99, **kwargs):
-    a = _seed_listing(conn, item_id, "L1", _TITLE, price_a, **kwargs)
-    b = _seed_listing(conn, item_id, "L2", _TITLE, price_b, **kwargs)
+def _seed_pair(conn, item_id, price_a=83.89, price_b=69.99,
+                source_a="ebay", source_b="gumtree", **kwargs):
+    a = _seed_listing(conn, item_id, "L1", _TITLE, price_a, source=source_a, **kwargs)
+    b = _seed_listing(conn, item_id, "L2", _TITLE, price_b, source=source_b, **kwargs)
     return a, b
 
 
@@ -145,20 +152,24 @@ def test_scan_records_pending_pair(tmp_path):
     assert row["item_id"] == item_id
 
 
-def test_scan_skips_pairs_without_seller_evidence(tmp_path):
+def test_scan_skips_same_marketplace_pairs_even_with_matching_location(tmp_path):
+    # Different listing ID, same marketplace, same seller location — the
+    # exact false-positive pattern (multiple stock units, different IDs)
+    # must never be proposed, however strong the seller-proxy signal.
     conn = db.connect(tmp_path / "t.db")
     _, item_id = _seed_item(conn)
-    _seed_listing(conn, item_id, "L1", _TITLE, 83.89, location="EN6***")
-    _seed_listing(conn, item_id, "L2", _TITLE, 69.99, location="LS1***")
+    _seed_listing(conn, item_id, "L1", _TITLE, 83.89, source="ebay", location="EN6***")
+    _seed_listing(conn, item_id, "L2", _TITLE, 69.99, source="ebay", location="EN6***")
     assert db.scan_duplicate_candidates(conn) == 0
 
 
 def test_scan_skips_ended_and_non_primary_listings(tmp_path):
     conn = db.connect(tmp_path / "t.db")
     _, item_id = _seed_item(conn)
-    a = _seed_listing(conn, item_id, "L1", _TITLE, 83.89)
-    _seed_listing(conn, item_id, "L2", _TITLE, 69.99, end_time="2020-01-01T00:00:00.000Z")
-    c = _seed_listing(conn, item_id, "L3", _TITLE, 75.00)
+    a = _seed_listing(conn, item_id, "L1", _TITLE, 83.89, source="ebay")
+    _seed_listing(conn, item_id, "L2", _TITLE, 69.99, source="gumtree",
+                   end_time="2020-01-01T00:00:00.000Z")
+    c = _seed_listing(conn, item_id, "L3", _TITLE, 75.00, source="facebook")
     conn.execute("UPDATE listings SET is_primary_sighting = 0 WHERE id = ?", (c,))
     conn.commit()
     assert db.scan_duplicate_candidates(conn) == 0
@@ -193,9 +204,9 @@ def test_scan_respects_per_item_pending_cap(tmp_path, monkeypatch):
     monkeypatch.setattr(duplicates, "MAX_PENDING_PER_ITEM", 1)
     conn = db.connect(tmp_path / "t.db")
     _, item_id = _seed_item(conn)
-    _seed_listing(conn, item_id, "L1", _TITLE, 80.0)
-    _seed_listing(conn, item_id, "L2", _TITLE, 79.0)
-    _seed_listing(conn, item_id, "L3", _TITLE, 78.0)
+    _seed_listing(conn, item_id, "L1", _TITLE, 80.0, source="ebay")
+    _seed_listing(conn, item_id, "L2", _TITLE, 79.0, source="gumtree")
+    _seed_listing(conn, item_id, "L3", _TITLE, 78.0, source="facebook")
     assert db.scan_duplicate_candidates(conn) == 1
 
 
@@ -301,7 +312,7 @@ def test_canonical_promotion_never_resurrects_confirmed_duplicate(tmp_path):
     native = Listing(source="ebay", external_id="195012345678", title=_TITLE,
                      price=70.0, url=url, location="EN6***")
     native_id, _ = db.upsert_listing(conn, native)
-    other_id = _seed_listing(conn, item_id, "OTHER", _TITLE, 69.99)
+    other_id = _seed_listing(conn, item_id, "OTHER", _TITLE, 69.99, source="gumtree")
     db.record_match(conn, native_id, item_id, Evaluation(
         grade="A", flags=[], margin_abs=0.0, margin_pct=0.0,
         under_target=False, deal_score=50.0,
@@ -351,7 +362,7 @@ def test_run_once_generates_candidates(tmp_path):
     listings = [
         Listing(source="ebay", external_id="L1", title=_TITLE, price=83.89,
                 url="https://example.com/L1", location="EN6***"),
-        Listing(source="ebay", external_id="L2", title=_TITLE, price=69.99,
+        Listing(source="gumtree", external_id="L2", title=_TITLE, price=69.99,
                 url="https://example.com/L2", location="EN6***"),
     ]
     orig = sources.build_registry

@@ -1002,8 +1002,9 @@ def test_archived_project_excluded_from_manual(cfg, client):
 
 def seed_duplicate_pair(cfg):
     """A project with two live listings that look like the same physical
-    item (identical title, same location, ~20% price apart) plus a scanned
-    pending pair. Returns (project_id, dup_id, listing_ids)."""
+    item cross-posted to another marketplace (identical title, same
+    location, ~20% price apart) plus a scanned pending pair. Returns
+    (project_id, dup_id, listing_ids)."""
     conn = db.connect(cfg.db_path)
     project_id = db.create_project(conn, "Gaming")
     from product_finder.config import ItemConfig
@@ -1014,9 +1015,9 @@ def seed_duplicate_pair(cfg):
     )
     title = "VIEWEDGE C2712FDA-P Monitor 27 inch FHD 144hz"
     ids = []
-    for ext, price in (("L1", 83.89), ("L2", 69.99)):
+    for ext, price, source in (("L1", 83.89, "ebay"), ("L2", 69.99, "gumtree")):
         listing_id, _ = db.upsert_listing(conn, Listing(
-            source="ebay", external_id=ext, title=title, price=price,
+            source=source, external_id=ext, title=title, price=price,
             url=f"https://example.com/{ext}", location="EN6***",
         ))
         db.record_match(conn, listing_id, item_id, Evaluation(
