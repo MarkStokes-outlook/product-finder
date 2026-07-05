@@ -636,9 +636,14 @@ def create_app(cfg: AppConfig) -> Flask:
     @app.route("/catalogue")
     def catalogue_review():
         conn = _get_conn(cfg)
+        suggestions = db.triage_pending_suggestions(conn)
+        verdict_counts = {}
+        for s in suggestions:
+            verdict_counts[s["verdict"]] = verdict_counts.get(s["verdict"], 0) + 1
         return render_template(
             "catalogue.html",
-            suggestions=db.list_all_pending_suggestions(conn),
+            suggestions=suggestions,
+            verdict_counts=verdict_counts,
             suspects=db.find_suspect_products(conn),
             auto_approve_threshold=db.get_auto_approve_threshold(conn),
         )

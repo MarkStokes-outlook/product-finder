@@ -1112,7 +1112,8 @@ def list_all_pending_suggestions(conn: sqlite3.Connection) -> list[sqlite3.Row]:
     strongest suggestions first within an item."""
     return conn.execute(
         """
-        SELECT s.*, i.name AS item_name, p.name AS project_name,
+        SELECT s.*, i.name AS item_name, i.normal_price AS item_normal,
+               p.name AS project_name,
                COUNT(*) OVER (PARTITION BY s.item_id) AS item_pending
         FROM product_suggestions s
         JOIN items i ON i.id = s.item_id AND i.archived = 0
@@ -1122,6 +1123,101 @@ def list_all_pending_suggestions(conn: sqlite3.Connection) -> list[sqlite3.Row]:
                  (s.model != '') DESC, s.confidence DESC, s.manufacturer
         """
     ).fetchall()
+
+
+# Triage verdict thresholds. Evidence = the item's own listings whose title
+# mentions the suggested model (word-boundary). Same discipline as
+# find_suspect_products: below the minimum, no verdict is offered at all.
+_TRIAGE_MIN_EVIDENCE = 2
+_TRIAGE_ACCESSORY_TITLE_SHARE = 0.5   # most evidence titles name an accessory
+_TRIAGE_ACCESSORY_PRICE_RATIO = 0.25  # evidence priced like a part, not the item
+_TRIAGE_STRONG_PRICE_RATIO = 0.4      # evidence priced like the actual item
+_TRIAGE_STRONG_TITLE_SHARE = 0.25     # ...and mostly not accessory-worded
+
+# Verdicts, in review-priority order (the UI groups by these).
+TRIAGE_STRONG = "strong"          # approve with confidence
+TRIAGE_ACCESSORY = "accessory"    # dismiss with confidence
+TRIAGE_UNCLEAR = "unclear"        # genuinely needs a human
+TRIAGE_BRAND_ONLY = "brand-only"  # no model — can't be a product yet
+
+
+def triage_pending_suggestions(conn: sqlite3.Connection) -> list[dict]:
+    """The pending queue with an evidence-based verdict per suggestion, so
+    a human arbitrates buckets instead of individually judging every row
+    (the operator's standing direction: evidence gates, humans arbitrate
+    small evidence-rich lists — a 1,600-row blind queue produced a
+    polluted catalogue).
+
+    Evidence for a suggestion is the item's own listings whose titles
+    mention the suggested model: their price level against the item's
+    normal price, and how often they're worded as accessories
+    ("bags for <model>"). Verdicts are proposals only — nothing here
+    approves, dismisses, or writes anything."""
+    rows = list_all_pending_suggestions(conn)
+
+    # One title/price sweep per item, not per suggestion.
+    item_listings: dict[int, list[sqlite3.Row]] = {}
+    for item_id in {r["item_id"] for r in rows}:
+        item_listings[item_id] = conn.execute(
+            "SELECT DISTINCT l.title, l.price FROM listing_matches m "
+            "JOIN listings l ON l.id = m.listing_id WHERE m.item_id = ?",
+            (item_id,),
+        ).fetchall()
+
+    triaged = []
+    for row in rows:
+        suggestion = dict(row)
+        model = row["model"]
+        verdict, evidence_note = TRIAGE_UNCLEAR, "no listings mention this model yet"
+        evidence_count, avg_price, accessory_share = 0, None, 0.0
+        if not model:
+            verdict, evidence_note = TRIAGE_BRAND_ONLY, "no model — not approvable in bulk"
+        else:
+            pattern = re.compile(r"(?<!\w)" + re.escape(model.lower()) + r"(?!\w)")
+            evidence = [
+                l for l in item_listings.get(row["item_id"], ())
+                if pattern.search(l["title"].lower())
+            ]
+            evidence_count = len(evidence)
+            if evidence_count >= _TRIAGE_MIN_EVIDENCE:
+                avg_price = sum(l["price"] for l in evidence) / evidence_count
+                accessory_share = catalogue.accessory_title_share(
+                    [l["title"] for l in evidence]
+                )
+                normal = row["item_normal"]
+                ratio = (avg_price / normal) if normal else None
+                if accessory_share >= _TRIAGE_ACCESSORY_TITLE_SHARE or (
+                    ratio is not None and ratio < _TRIAGE_ACCESSORY_PRICE_RATIO
+                ):
+                    verdict = TRIAGE_ACCESSORY
+                    evidence_note = (
+                        f"{evidence_count} listings avg £{avg_price:.0f}"
+                        + (f" vs £{normal:.0f} item" if normal else "")
+                        + (f"; {accessory_share:.0%} accessory-worded"
+                           if accessory_share else "")
+                    )
+                elif accessory_share <= _TRIAGE_STRONG_TITLE_SHARE and (
+                    ratio is None or ratio >= _TRIAGE_STRONG_PRICE_RATIO
+                ):
+                    verdict = TRIAGE_STRONG
+                    evidence_note = (
+                        f"{evidence_count} listings avg £{avg_price:.0f}"
+                        + (f" vs £{normal:.0f} item" if normal else "")
+                    )
+                else:
+                    evidence_note = (
+                        f"mixed evidence: {evidence_count} listings avg "
+                        f"£{avg_price:.0f}, {accessory_share:.0%} accessory-worded"
+                    )
+        suggestion["verdict"] = verdict
+        suggestion["evidence_note"] = evidence_note
+        suggestion["evidence_count"] = evidence_count
+        suggestion["part_number_shaped"] = bool(model) and catalogue.looks_like_part_number(model)
+        triaged.append(suggestion)
+
+    order = {TRIAGE_STRONG: 0, TRIAGE_ACCESSORY: 1, TRIAGE_UNCLEAR: 2, TRIAGE_BRAND_ONLY: 3}
+    triaged.sort(key=lambda s: (order[s["verdict"]], s["item_name"], -s["confidence"]))
+    return triaged
 
 
 _MAX_RAW_SAMPLES = 10

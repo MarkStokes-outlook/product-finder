@@ -6,11 +6,11 @@
   <span class="meta">{{ suggestions | length }} pending suggestion(s)</span>
 </div>
 <p class="hint">
-  Every pending product suggestion, across all items — spotted from listings'
-  own structured manufacturer/model data, never guessed. Approve to create
-  catalogue products (model-level pricing); dismiss what doesn't fit — a
-  dismissal is remembered and never re-asked. Brand-only rows (no model) are
-  excluded from bulk approval: a bare brand makes a poor product.
+  Every pending suggestion, triaged by evidence from each item's own listings:
+  what price level the suggested model actually sells at, and whether the
+  listings mentioning it are worded like accessories. Tick a bucket's header
+  checkbox to arbitrate it in one go — verdicts are proposals, the buttons are
+  yours. A dismissal is remembered and never re-asked.
 </p>
 
 {% if suspects %}
@@ -69,29 +69,40 @@ document.getElementById("pf-select-suspects").addEventListener("change", functio
   <input type="hidden" name="next" value="{{ url_for('catalogue_review') }}">
 </form>
 
+{% set verdict_meta = {
+  'strong':     ('Looks like the real product', 'Model appears in this item\'s own listings, priced like the item — safe to approve as a bucket.'),
+  'accessory':  ('Looks like an accessory or part', 'Model appears in listings priced like a part, or worded as bags/tips/kits — safe to dismiss as a bucket.'),
+  'unclear':    ('Needs a human', 'Mixed or no evidence in this item\'s listings — judge individually or leave to accumulate more sightings.'),
+  'brand-only': ('Brand only', 'No model, so not approvable in bulk — a bare brand makes a poor product. Dismiss freely; a dismissal here never blocks future brand+model suggestions.'),
+} %}
 {% for s in suggestions %}
-  {% if loop.changed(s['item_id']) %}
+  {% if loop.changed(s['verdict']) %}
     {% if not loop.first %}</tbody></table></div>{% endif %}
     <div class="page-head" style="margin-top: 1.6rem;">
-      <h2 style="margin: 0;">{{ s['item_name'] }}</h2>
-      <span class="meta">{{ s['project_name'] }} &middot; {{ s['item_pending'] }} pending &middot;
-        <a href="{{ url_for('item_edit', item_id=s['item_id']) }}">edit item</a></span>
+      <h2 style="margin: 0;">{{ verdict_meta[s['verdict']][0] }}</h2>
+      <span class="meta">{{ verdict_counts[s['verdict']] }} suggestion(s)</span>
     </div>
+    <p class="hint">{{ verdict_meta[s['verdict']][1] }}</p>
     <div class="card table-card">
     <table>
     <thead><tr>
-      <th><input type="checkbox" class="pf-select-item" data-item="{{ s['item_id'] }}"
-                 title="Select all for this item"></th>
-      <th>Manufacturer</th><th>Model</th><th>Confidence</th><th>Sightings</th><th>Example</th><th></th>
+      <th><input type="checkbox" class="pf-select-verdict" data-verdict="{{ s['verdict'] }}"
+                 title="Select this whole bucket"></th>
+      <th>Item</th><th>Manufacturer</th><th>Model</th><th>Evidence</th><th>Sightings</th><th>Example</th><th></th>
     </tr></thead>
     <tbody>
   {% endif %}
   <tr>
     <td><input type="checkbox" name="suggestion_ids" value="{{ s['id'] }}"
-               form="catalogue-bulk-form" data-item-group="{{ s['item_id'] }}"></td>
+               form="catalogue-bulk-form" data-verdict-group="{{ s['verdict'] }}"></td>
+    <td class="meta">{{ s['item_name'] }}<br><span class="meta">{{ s['project_name'] }}</span></td>
     <td>{{ s['manufacturer'] }}</td>
-    <td>{% if s['model'] %}{{ s['model'] }}{% else %}<span class="badge grade-unknown" title="Bulk approve skips these — a bare brand matches too much">brand only</span>{% endif %}</td>
-    <td class="num">{{ '%.0f' | format(s['confidence']) }}%</td>
+    <td>
+      {% if s['model'] %}{{ s['model'] }}
+        {% if s['part_number_shaped'] %}<span class="badge grade-unknown" title="Shaped like a parts-catalogue number">part no.?</span>{% endif %}
+      {% else %}<span class="badge grade-unknown">brand only</span>{% endif %}
+    </td>
+    <td class="meta">{{ s['evidence_note'] }}</td>
     <td class="num">{{ s['sighting_count'] }}</td>
     <td class="meta">{% if s['example_url'] %}<a href="{{ s['example_url'] }}" target="_blank" rel="noopener">example</a>{% else %}&mdash;{% endif %}</td>
     <td class="meta">
@@ -118,10 +129,10 @@ document.getElementById("pf-select-suspects").addEventListener("change", functio
 </div>
 
 <script>
-// Per-item "select all" + a running selected-count in the sticky action bar.
-document.querySelectorAll(".pf-select-item").forEach(function (head) {
+// Per-bucket "select all" + a running selected-count in the sticky action bar.
+document.querySelectorAll(".pf-select-verdict").forEach(function (head) {
   head.addEventListener("change", function () {
-    document.querySelectorAll('input[data-item-group="' + head.dataset.item + '"]')
+    document.querySelectorAll('input[data-verdict-group="' + head.dataset.verdict + '"]')
       .forEach(function (box) { box.checked = head.checked; });
     pfSelectedCount();
   });

@@ -240,6 +240,80 @@ def test_archived_product_not_listed(tmp_path):
     assert db.find_suspect_products(conn) == []
 
 
+# --- Suggestion triage (evidence-based verdicts on the pending queue) ------------
+
+
+def _suggest(conn, item_id, manufacturer, model, sightings=2):
+    row = None
+    for i in range(sightings):
+        row = db.record_suggestion_sighting(conn, item_id, manufacturer, model, f"https://x/{i}")
+    return row
+
+
+def _verdicts(conn):
+    return {
+        (s["manufacturer"], s["model"]): s["verdict"]
+        for s in db.triage_pending_suggestions(conn)
+    }
+
+
+def test_triage_strong_when_model_priced_like_the_item(tmp_path):
+    cfg, conn, item_id = _setup(tmp_path)
+    conn.execute("UPDATE items SET normal_price = 450 WHERE id = ?", (item_id,))
+    _listing_match(conn, item_id, None, "E1", "Makita LS1019L sliding mitre saw", 320.0)
+    _listing_match(conn, item_id, None, "E2", "Makita LS1019L mitre saw excellent", 300.0)
+    _suggest(conn, item_id, "Makita", "LS1019L")
+    assert _verdicts(conn)[("Makita", "LS1019L")] == db.TRIAGE_STRONG
+
+
+def test_triage_accessory_by_wording_and_by_price(tmp_path):
+    cfg, conn, item_id = _setup(tmp_path)
+    conn.execute("UPDATE items SET normal_price = 400 WHERE id = ?", (item_id,))
+    # Accessory wording at accessory prices.
+    _listing_match(conn, item_id, None, "E1", "Dust bags 204308 for Festool CT MINI", 12.0)
+    _listing_match(conn, item_id, None, "E2", "Festool 204308 dust bags pack", 15.0)
+    _suggest(conn, item_id, "Festool", "204308")
+    # Neutral wording but part-level prices.
+    _listing_match(conn, item_id, None, "E3", "Makita W107418353 genuine", 20.0)
+    _listing_match(conn, item_id, None, "E4", "Makita W107418353 new", 22.0)
+    _suggest(conn, item_id, "Makita", "W107418353")
+    verdicts = _verdicts(conn)
+    assert verdicts[("Festool", "204308")] == db.TRIAGE_ACCESSORY
+    assert verdicts[("Makita", "W107418353")] == db.TRIAGE_ACCESSORY
+
+
+def test_triage_unclear_without_evidence_and_brand_only(tmp_path):
+    cfg, conn, item_id = _setup(tmp_path)
+    _suggest(conn, item_id, "Bosch", "GCM800")  # no listings mention it
+    _suggest(conn, item_id, "DEWALT", "")       # brand only
+    verdicts = _verdicts(conn)
+    assert verdicts[("Bosch", "GCM800")] == db.TRIAGE_UNCLEAR
+    assert verdicts[("DEWALT", "")] == db.TRIAGE_BRAND_ONLY
+
+
+def test_triage_needs_two_evidence_listings(tmp_path):
+    # One cheap listing must not condemn a suggestion — same "no evidence,
+    # no accusation" rule as find_suspect_products.
+    cfg, conn, item_id = _setup(tmp_path)
+    conn.execute("UPDATE items SET normal_price = 400 WHERE id = ?", (item_id,))
+    _listing_match(conn, item_id, None, "E1", "Festool 204308 dust bags", 12.0)
+    _suggest(conn, item_id, "Festool", "204308")
+    assert _verdicts(conn)[("Festool", "204308")] == db.TRIAGE_UNCLEAR
+
+
+def test_triage_word_boundary_on_model(tmp_path):
+    # Model "774" must not take evidence from "DWS774" titles.
+    cfg, conn, item_id = _setup(tmp_path)
+    conn.execute("UPDATE items SET normal_price = 400 WHERE id = ?", (item_id,))
+    _listing_match(conn, item_id, None, "E1", "DEWALT DWS774 mitre saw", 250.0)
+    _listing_match(conn, item_id, None, "E2", "DEWALT DWS774 saw boxed", 260.0)
+    _suggest(conn, item_id, "DEWALT", "774")
+    _suggest(conn, item_id, "DEWALT", "DWS774")
+    verdicts = _verdicts(conn)
+    assert verdicts[("DEWALT", "774")] == db.TRIAGE_UNCLEAR       # no true mentions
+    assert verdicts[("DEWALT", "DWS774")] == db.TRIAGE_STRONG
+
+
 # --- Knowledge-only products (wanted=0: identified, priced, never surfaced) ------
 
 
@@ -328,7 +402,7 @@ def web(tmp_path):
     return cfg, conn, item_id, app.test_client()
 
 
-def test_catalogue_page_groups_by_item(web):
+def test_catalogue_page_groups_by_verdict(web):
     cfg, conn, item_id, client = web
     db.record_suggestion_sighting(conn, item_id, "Makita", "LS0816F/2", "https://x/1")
     db.record_suggestion_sighting(conn, item_id, "DEWALT", "", "https://x/2")
@@ -337,7 +411,9 @@ def test_catalogue_page_groups_by_item(web):
     assert b"Mitre Saw" in resp.data
     assert b"Workshop" in resp.data
     assert b"LS0816F/2" in resp.data
-    assert b"brand only" in resp.data  # model-less rows are labelled
+    assert b"brand only" in resp.data     # model-less rows are labelled
+    assert b"Needs a human" in resp.data  # verdict bucket headings
+    assert b"Brand only" in resp.data
 
 
 def test_catalogue_page_empty_state(web):
