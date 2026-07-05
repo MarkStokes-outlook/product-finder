@@ -458,9 +458,43 @@ def test_catalogue_page_groups_by_verdict(web):
     assert b"Mitre Saw" in resp.data
     assert b"Workshop" in resp.data
     assert b"LS0816F/2" in resp.data
-    assert b"brand only" in resp.data     # model-less rows are labelled
-    assert b"Needs a human" in resp.data  # verdict bucket headings
+    assert b"brand only" in resp.data          # model-less rows are labelled
+    assert b"Needs more evidence" in resp.data  # verdict bucket headings
     assert b"Brand only" in resp.data
+
+
+def test_catalogue_page_orders_tables_easy_to_hard(web):
+    # Strong at the top (the bucket the human can act on fastest), then
+    # accessory, then suspect products, then brand-only, with the
+    # "needs more evidence" pile last so it never buries actionable tables.
+    cfg, conn, item_id, client = web
+    conn.execute("UPDATE items SET normal_price = 400 WHERE id = ?", (item_id,))
+    # strong: model priced like the item.
+    _listing_match(conn, item_id, None, "S1", "Makita LS1019L mitre saw", 320.0)
+    _listing_match(conn, item_id, None, "S2", "Makita LS1019L saw mint", 310.0)
+    _suggest(conn, item_id, "Makita", "LS1019L")
+    # accessory: bags wording at part prices.
+    _listing_match(conn, item_id, None, "A1", "Dust bags 204308 for Festool", 12.0)
+    _listing_match(conn, item_id, None, "A2", "Festool 204308 bags", 14.0)
+    _suggest(conn, item_id, "Festool", "204308")
+    # suspect product: approved accessory.
+    product = db.create_product(conn, item_id, "Titan", "730-401", [], None, None, None)
+    _listing_match(conn, item_id, product, "P1", "Titan pump repair kit 730-401", 55.0)
+    _listing_match(conn, item_id, product, "P2", "Titan 730-401 repair kit", 58.0)
+    # brand-only and unclear.
+    _suggest(conn, item_id, "DEWALT", "")
+    _suggest(conn, item_id, "Bosch", "GCM800")
+    conn.commit()
+
+    body = client.get("/catalogue").data.decode()
+    positions = [
+        body.index("Looks like the real product"),
+        body.index("Looks like an accessory or part"),
+        body.index("Suspect products"),
+        body.index("Brand only"),
+        body.index("Needs more evidence"),
+    ]
+    assert positions == sorted(positions)
 
 
 def test_catalogue_page_empty_state(web):

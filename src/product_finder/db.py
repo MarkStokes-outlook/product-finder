@@ -1215,7 +1215,10 @@ def triage_pending_suggestions(conn: sqlite3.Connection) -> list[dict]:
         suggestion["part_number_shaped"] = bool(model) and catalogue.looks_like_part_number(model)
         triaged.append(suggestion)
 
-    order = {TRIAGE_STRONG: 0, TRIAGE_ACCESSORY: 1, TRIAGE_UNCLEAR: 2, TRIAGE_BRAND_ONLY: 3}
+    # Review-effort order: easiest/most-trustworthy decisions first, the
+    # "needs more evidence" pile last (it resolves itself as listings
+    # accumulate — it should never bury the actionable buckets).
+    order = {TRIAGE_STRONG: 0, TRIAGE_ACCESSORY: 1, TRIAGE_BRAND_ONLY: 2, TRIAGE_UNCLEAR: 3}
     triaged.sort(key=lambda s: (order[s["verdict"]], s["item_name"], -s["confidence"]))
     return triaged
 

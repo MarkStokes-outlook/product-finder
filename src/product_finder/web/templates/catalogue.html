@@ -1,81 +1,17 @@
 {% extends "base.html" %}
 {% block title %}Catalogue review — Product Finder{% endblock %}
-{% block content %}
-<div class="page-head">
-  <h1>Catalogue review</h1>
-  <span class="meta">{{ suggestions | length }} pending suggestion(s)</span>
-</div>
-<p class="hint">
-  Every pending suggestion, triaged by evidence from each item's own listings:
-  what price level the suggested model actually sells at, and whether the
-  listings mentioning it are worded like accessories. Tick a bucket's header
-  checkbox to arbitrate it in one go — verdicts are proposals, the buttons are
-  yours. A dismissal is remembered and never re-asked.
-</p>
 
-{% if suspects %}
-<div class="page-head" style="margin-top: 1.2rem;">
-  <h2 style="margin: 0;">Suspect products</h2>
-  <span class="meta">{{ suspects | length }} flagged</span>
-</div>
-<p class="hint">
-  Approved products whose own matched listings look like accessories, spares or
-  consumables rather than the wanted product (part numbers in the seller's
-  "model" field — dust bags, spray tips, repair kits). Archiving stops them
-  matching immediately; nothing is deleted, and un-archiving from the item page
-  undoes it.
-</p>
-<form id="suspects-form" method="post" action="{{ url_for('product_bulk_archive') }}">
-  <input type="hidden" name="next" value="{{ url_for('catalogue_review') }}">
-</form>
-<div class="card table-card">
-<table>
-<thead><tr>
-  <th><input type="checkbox" id="pf-select-suspects" title="Select all suspects"></th>
-  <th>Product</th><th>Item</th><th>Evidence</th><th>Example match</th>
-</tr></thead>
-<tbody>
-{% for s in suspects %}
-  <tr>
-    <td><input type="checkbox" name="product_ids" value="{{ s.id }}" form="suspects-form"></td>
-    <td><strong>{{ s.manufacturer }} {{ s.model }}</strong></td>
-    <td class="meta">{{ s.item_name }}</td>
-    <td class="meta">{% for r in s.reasons %}{{ r }}{% if not loop.last %}; {% endif %}{% endfor %} ({{ s.match_count }} matches)</td>
-    <td class="meta">{{ s.sample_title[:70] }}</td>
-  </tr>
-{% endfor %}
-</tbody>
-</table>
-<p style="padding: .6rem .2rem;">
-  <button class="small primary" type="submit" form="suspects-form"
-          formaction="{{ url_for('product_bulk_archive') }}">Archive selected</button>
-  <button class="small" type="submit" form="suspects-form"
-          formaction="{{ url_for('product_bulk_knowledge_only') }}"
-          title="Keep in the catalogue (identification + price history) but never surface as a deal — for real products this item just isn't after">Keep as knowledge-only</button>
-</p>
-</div>
-<script>
-document.getElementById("pf-select-suspects").addEventListener("change", function () {
-  document.querySelectorAll('input[name="product_ids"]').forEach(
-    (box) => { box.checked = this.checked; }, this);
-});
-</script>
-{% endif %}
-
-{% if not suggestions %}
-<div class="card"><p class="meta" style="margin:0;">Nothing waiting for review — the watcher will queue new suggestions as listings are scanned.</p></div>
-{% else %}
-<form id="catalogue-bulk-form" method="post">
-  <input type="hidden" name="next" value="{{ url_for('catalogue_review') }}">
-</form>
-
+{# Verdict labels + guidance, in page order: easiest, most accurate decisions
+   at the top, down to "needs more evidence" at the bottom. #}
 {% set verdict_meta = {
   'strong':     ('Looks like the real product', 'Model appears in this item\'s own listings, priced like the item — safe to approve as a bucket.'),
-  'accessory':  ('Looks like an accessory or part', 'Model appears in listings priced like a part, or worded as bags/tips/kits — safe to dismiss as a bucket.'),
-  'unclear':    ('Needs a human', 'Mixed or no evidence in this item\'s listings — judge individually or leave to accumulate more sightings.'),
+  'accessory':  ('Looks like an accessory or part', 'Model appears in listings priced like a part, or worded as bags/tips/kits — dismiss as a bucket after a quick skim for real-but-cheap products.'),
   'brand-only': ('Brand only', 'No model, so not approvable in bulk — a bare brand makes a poor product. Dismiss freely; a dismissal here never blocks future brand+model suggestions.'),
+  'unclear':    ('Needs more evidence', 'No listings mention this model yet, or the signals disagree. Leave these — evidence accumulates with every watch cycle and they migrate up on their own.'),
 } %}
-{% for s in suggestions %}
+
+{% macro verdict_tables(rows) %}
+{% for s in rows %}
   {% if loop.changed(s['verdict']) %}
     {% if not loop.first %}</tbody></table></div>{% endif %}
     <div class="page-head" style="margin-top: 1.6rem;">
@@ -124,6 +60,74 @@ document.getElementById("pf-select-suspects").addEventListener("change", functio
   </tr>
   {% if loop.last %}</tbody></table></div>{% endif %}
 {% endfor %}
+{% endmacro %}
+
+{% block content %}
+<div class="page-head">
+  <h1>Catalogue review</h1>
+  <span class="meta">{{ suggestions | length }} pending suggestion(s)</span>
+</div>
+<p class="hint">
+  Every pending suggestion, triaged by evidence from each item's own listings:
+  what price level the suggested model actually sells at, and whether the
+  listings mentioning it are worded like accessories. Tables run easiest and
+  most accurate first down to "needs more evidence" last. Tick a bucket's
+  header checkbox to arbitrate it in one go — verdicts are proposals, the
+  buttons are yours. A dismissal is remembered and never re-asked.
+</p>
+
+{% if suggestions %}
+<form id="catalogue-bulk-form" method="post">
+  <input type="hidden" name="next" value="{{ url_for('catalogue_review') }}">
+</form>
+{{ verdict_tables(suggestions | selectattr('verdict', 'in', ('strong', 'accessory')) | list) }}
+{% endif %}
+
+{% if suspects %}
+<div class="page-head" style="margin-top: 1.6rem;">
+  <h2 style="margin: 0;">Suspect products</h2>
+  <span class="meta">{{ suspects | length }} flagged</span>
+</div>
+<p class="hint">
+  Approved products whose own matched listings look like accessories, spares or
+  consumables rather than the wanted product (part numbers in the seller's
+  "model" field — dust bags, spray tips, repair kits). Archive true accessories;
+  keep real-but-unwanted products (old generations, cheaper tiers) as
+  knowledge-only. Nothing is deleted and both are undoable from the item page.
+</p>
+<form id="suspects-form" method="post" action="{{ url_for('product_bulk_archive') }}">
+  <input type="hidden" name="next" value="{{ url_for('catalogue_review') }}">
+</form>
+<div class="card table-card">
+<table>
+<thead><tr>
+  <th><input type="checkbox" id="pf-select-suspects" title="Select all suspects"></th>
+  <th>Product</th><th>Item</th><th>Evidence</th><th>Example match</th>
+</tr></thead>
+<tbody>
+{% for s in suspects %}
+  <tr>
+    <td><input type="checkbox" name="product_ids" value="{{ s.id }}" form="suspects-form"></td>
+    <td><strong>{{ s.manufacturer }} {{ s.model }}</strong></td>
+    <td class="meta">{{ s.item_name }}</td>
+    <td class="meta">{% for r in s.reasons %}{{ r }}{% if not loop.last %}; {% endif %}{% endfor %} ({{ s.match_count }} matches)</td>
+    <td class="meta">{{ s.sample_title[:70] }}</td>
+  </tr>
+{% endfor %}
+</tbody>
+</table>
+<p style="padding: .6rem .2rem;">
+  <button class="small primary" type="submit" form="suspects-form"
+          formaction="{{ url_for('product_bulk_archive') }}">Archive selected</button>
+  <button class="small" type="submit" form="suspects-form"
+          formaction="{{ url_for('product_bulk_knowledge_only') }}"
+          title="Keep in the catalogue (identification + price history) but never surface as a deal — for real products this item just isn't after">Keep as knowledge-only</button>
+</p>
+</div>
+{% endif %}
+
+{% if suggestions %}
+{{ verdict_tables(suggestions | selectattr('verdict', 'in', ('brand-only', 'unclear')) | list) }}
 
 <div class="card" style="position: sticky; bottom: .8rem; margin-top: 1.2rem; display: flex; gap: .6rem; align-items: center;">
   <button class="small primary" type="submit" form="catalogue-bulk-form"
@@ -148,6 +152,17 @@ function pfSelectedCount() {
 }
 document.addEventListener("change", function (e) {
   if (e.target.name === "suggestion_ids") pfSelectedCount();
+});
+</script>
+{% else %}
+<div class="card"><p class="meta" style="margin:0;">Nothing waiting for review — the watcher will queue new suggestions as listings are scanned.</p></div>
+{% endif %}
+
+{% if suspects %}
+<script>
+document.getElementById("pf-select-suspects").addEventListener("change", function () {
+  document.querySelectorAll('input[name="product_ids"]').forEach(
+    (box) => { box.checked = this.checked; }, this);
 });
 </script>
 {% endif %}
