@@ -1,5 +1,15 @@
 # Product Finder Platform Charter
 
+---
+
+Architecture Version: 1.0
+
+- Status: Active
+- Established: 2026-07-09
+- Baseline Tag: architecture/v1
+
+---
+
 This charter is the architecture contract for Product Finder. It defines the principles future features must satisfy.
 
 The implementation remains the source of truth for current behaviour. This charter defines how that implementation should continue to evolve.

@@ -1,5 +1,15 @@
 # Product Finder Platform Roadmap
 
+---
+
+Architecture Version: 1.0
+
+- Status: Active
+- Established: 2026-07-09
+- Baseline Tag: architecture/v1
+
+---
+
 This roadmap describes platform evolution, not implementation chronology.
 
 Historical implementation order remains in `docs/implementation-notes/` and the ADRs. This document answers: where should future work belong, and what architectural asset does it strengthen?

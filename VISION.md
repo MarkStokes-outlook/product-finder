@@ -1,5 +1,15 @@
 # Product Finder Vision
 
+---
+
+Architecture Version: 1.0
+
+- Status: Active
+- Established: 2026-07-09
+- Baseline Tag: architecture/v1
+
+---
+
 Product Finder exists to help people make better buying decisions in messy second-hand markets.
 
 It started as a practical tool for watching marketplaces for renovation tools, but the product has moved beyond saved searches and simple bargain alerts. Its real purpose is to build a growing body of market knowledge: what products exist, how to recognise them, what they usually cost, where they appear, and when a listing is genuinely worth acting on.

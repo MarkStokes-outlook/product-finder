@@ -4,6 +4,18 @@ Product Finder is a local-first market knowledge and buying-intelligence platfor
 
 It watches compliant marketplace sources, stores source evidence, builds reusable product and market knowledge, evaluates listings with explainable rules, and presents the opportunities most worth acting on. The current app is a single-operator Python/Flask/SQLite system; public, authenticated, and commercial layers are future roadmap work.
 
+## Architecture
+
+The platform architecture reached its first stable baseline on 9th July 2026.
+
+Core references:
+
+- Vision
+- Platform Charter
+- Architecture
+- Knowledge Model
+- Roadmap
+
 ## Canonical Documents
 
 Use this README for setup and day-to-day operation. Use the canonical docs for product and architecture context:

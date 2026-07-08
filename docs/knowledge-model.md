@@ -1,5 +1,15 @@
 # Product Finder Knowledge Model
 
+---
+
+Architecture Version: 1.0
+
+- Status: Active
+- Established: 2026-07-09
+- Baseline Tag: architecture/v1
+
+---
+
 This document is the intellectual centre of Product Finder.
 
 The platform's long-term value is the knowledge it compounds while watching markets. Every future feature should enrich one or more of these layers, or protect their quality.

@@ -1,5 +1,15 @@
 # Product Finder Architecture v2
 
+---
+
+Architecture Version: 1.0
+
+- Status: Active
+- Established: 2026-07-09
+- Baseline Tag: architecture/v1
+
+---
+
 This is the canonical architecture reference for Product Finder.
 
 It describes the platform as implemented today, not as originally planned. ADRs in `docs/adr/` remain historical decision records; when ADR prose disagrees with current implementation, implementation wins and the discrepancy is tracked in `docs/documentation-audit.md`.
