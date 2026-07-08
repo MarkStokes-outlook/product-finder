@@ -2,8 +2,8 @@
 #
 # Product Finder Repository Export Script
 #
-# Exports documentation and source code only — no working folders (data/,
-# reports/, .venv/, tests/), no compiled/generated artifacts (__pycache__,
+# Exports documentation, source code, and tests only — no working folders (data/,
+# reports/, .venv/), no compiled/generated artifacts (__pycache__,
 # *.egg-info, .pytest_cache), and no local secrets (config.yaml — only the
 # committed config.example.yaml template is included).
 #
@@ -38,10 +38,10 @@ echo ""
 cd "$REPO_ROOT"
 
 # ---------------------------------------------------------
-# What gets exported — documentation and source only.
+# What gets exported — documentation, source, and tests only.
 #
 # Edit these arrays to change scope. Everything else in the repo (data/,
-# reports/, .venv/, tests/, prompts history aside, build artifacts, the
+# reports/, .venv/, prompts history aside, build artifacts, the
 # real config.yaml, git history, editor/tool state) is deliberately left
 # out — this is an allow-list, not an "everything except" exclude list,
 # so anything new that shows up in the repo root in future is left out by
@@ -50,6 +50,7 @@ cd "$REPO_ROOT"
 INCLUDE_PATHS=(
     "docs"                  # ADRs, design notes, implementation notes, strategy, examples
     "src/product_finder"    # application source (excludes egg-info/__pycache__ below)
+    "tests"                 # pytest suite and fixtures
     "prompts"                # original build prompts — project intent history
     "README.md"
     "ARCHITECTURE.md"
