@@ -16,7 +16,16 @@ from flask import (
     url_for,
 )
 
-from .. import auction_trajectory, db, offers, project_import, retailer_price, runner, sources
+from .. import (
+    auction_trajectory,
+    connector_health,
+    db,
+    offers,
+    project_import,
+    retailer_price,
+    runner,
+    sources,
+)
 from ..config import AppConfig, ItemConfig
 
 # Deals scoring at or above this are "hot" — matches the excellent/hi score
@@ -415,6 +424,14 @@ def create_app(cfg: AppConfig) -> Flask:
             row["health"] = health.get(row["name"])
             row["coverage"] = coverage.get(row["name"])
             row["analytics"] = analytics.get(row["name"])
+            # Health *status* only makes sense once a source has actually
+            # run — a source with no rows yet is "not yet run", a distinct
+            # UI state this module doesn't classify (see connector_health's
+            # own docstring).
+            row["health_report"] = (
+                connector_health.evaluate(row["health"], row["analytics"])
+                if row["health"] else None
+            )
         return render_template("sources.html", rows=rows, ebay=sc.ebay)
 
     @app.route("/sources/<name>/toggle", methods=["POST"])

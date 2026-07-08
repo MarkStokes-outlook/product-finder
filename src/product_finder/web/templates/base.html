@@ -337,6 +337,18 @@ details.warnings[open] > summary::before { content: "▾ "; }
 .cap-unsupported { color: var(--muted); }
 .cap-na .cap-icon, .cap-na { color: var(--muted); opacity: .55; }
 
+/* Connector Health (Phase D) — status badges, most to least severe.
+   Offline reuses the same soft-red palette as Degraded (bold-weighted,
+   like .badge.auction.ending-soon) rather than a jarring new solid fill —
+   four distinct labels already carry the distinction; colour reinforces
+   severity in two tiers (green/amber/red), not four unrelated hues. */
+.badge.health-healthy { background: var(--green-soft); color: var(--green-bright); }
+.badge.health-warning { background: var(--amber-soft); color: var(--amber); }
+.badge.health-degraded { background: var(--red-soft); color: var(--red); }
+.badge.health-offline { background: var(--red-soft); color: var(--red); font-weight: 700; }
+.health-reasons { list-style: none; margin: .3rem 0 0; padding: 0 0 0 .1rem; }
+.health-reasons li { padding: .1rem 0; }
+
 /* Client-side pagination controls for long per-item listing tables. */
 .pagination { display: flex; align-items: center; justify-content: center; gap: .8rem;
               padding: .6rem 0 .2rem; }

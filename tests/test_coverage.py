@@ -283,13 +283,79 @@ def test_sources_page_coverage_analytics_empty_state(cfg, client):
     assert b"no listings yet" in resp.data
 
 
-def test_sources_page_connector_stats_no_health_status_shown(cfg, client):
-    # Phase A ships raw metrics only; the Healthy/Warning/Degraded/Offline
-    # status model is Phase D. The hint text may explain that in prose, but
-    # no connector should be tagged with a status value yet.
+def test_sources_page_connector_stats_no_degraded_or_offline_for_single_clean_run(cfg, client):
+    # A single successful run is healthy by every rule (too small a sample
+    # to trigger success-rate/trend signals, no failures, no age issue) -
+    # confirms the Connector Stats table itself carries no separate status
+    # concept of its own (that's the Health column's job, see
+    # test_connector_health.py and the tests below) and that a lone good
+    # run doesn't get flagged.
     conn = db.connect(cfg.db_path)
     db.record_source_run(conn, "ebay", searches=1, listings=1)
     conn.close()
     resp = client.get("/sources")
-    for term in (b"Degraded", b"Offline"):
+    for term in (b'badge health-degraded', b'badge health-offline'):
         assert term not in resp.data
+
+
+# --- Connector Health (roadmap Phase D) ----------------------------------------
+
+
+def test_sources_page_shows_healthy_status_for_clean_runs(cfg, client):
+    conn = db.connect(cfg.db_path)
+    for _ in range(3):
+        db.record_source_run(conn, "ebay", searches=1, listings=5)
+    conn.close()
+    resp = client.get("/sources")
+    assert b'class="badge health-healthy">Healthy' in resp.data
+
+
+def test_sources_page_shows_degraded_status_with_reason(cfg, client):
+    conn = db.connect(cfg.db_path)
+    # A healthy run history first, so success_rate stays high enough (87%)
+    # to land at Warning rather than co-triggering Offline - isolates
+    # consecutive_failures as the reason under test.
+    for _ in range(20):
+        db.record_source_run(conn, "ebay", searches=1, listings=5)
+    for _ in range(3):
+        db.record_source_run(conn, "ebay", searches=1, errors=1, last_error="timeout")
+    conn.close()
+    resp = client.get("/sources")
+    assert b'class="badge health-degraded">Degraded' in resp.data
+    assert b"3 consecutive failures" in resp.data
+
+
+def test_sources_page_shows_offline_status_with_reason(cfg, client):
+    conn = db.connect(cfg.db_path)
+    for _ in range(6):
+        db.record_source_run(conn, "ebay", searches=1, errors=1, last_error="timeout")
+    conn.close()
+    resp = client.get("/sources")
+    assert b'class="badge health-offline">Offline' in resp.data
+    assert b"6 consecutive failures" in resp.data
+
+
+def test_sources_page_shows_expandable_detail_when_multiple_reasons(cfg, client):
+    conn = db.connect(cfg.db_path)
+    for _ in range(3):
+        db.record_source_run(conn, "ebay", searches=1, errors=1, last_error="timeout")
+    for _ in range(20):
+        db.record_source_run(conn, "ebay", searches=1, errors=1, last_error="timeout")
+    conn.close()
+    resp = client.get("/sources")
+    data = resp.data.decode()
+    assert "reasons</summary>" in data
+    assert "consecutive failures" in data
+    assert "success rate" in data
+
+
+def test_sources_page_no_status_badge_for_unrun_source(cfg, client):
+    resp = client.get("/sources")
+    assert b"not yet run" in resp.data
+    for status in ("healthy", "warning", "degraded", "offline"):
+        assert f'badge health-{status}'.encode() not in resp.data
+
+
+def test_sources_page_health_hint_discloses_failure_classification_gap(cfg, client):
+    resp = client.get("/sources")
+    assert b"never specifically" in resp.data or b"not classified" in resp.data.lower() or b"classified by cause" in resp.data

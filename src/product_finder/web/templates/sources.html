@@ -4,6 +4,13 @@
 <div class="page-head">
   <h1>Sources</h1>
 </div>
+<p class="hint">
+  Health is a rule-based status, not a black-box score: each reason below is
+  independently true or not, and the status shown is the worst one currently
+  triggered. Failures aren't classified by cause (network vs. parsing vs.
+  auth) — only whether a run succeeded — so a reason can say a connector is
+  failing, never specifically <em>why</em> at that level of detail.
+</p>
 <div class="card table-card">
 <table>
 <thead><tr><th>Source</th><th>Type</th><th>Class</th><th>Status</th><th>Health</th><th>Actions</th></tr></thead>
@@ -27,10 +34,16 @@
       {% if not s.caps.automated %}<span class="meta">&mdash;</span>
       {% elif not s.health %}<span class="meta">not yet run</span>
       {% else %}
-        {% if s.health.consecutive_failures %}<span class="badge flag">failing &times;{{ s.health.consecutive_failures }}</span>
-        {% else %}<span class="badge target">ok</span>{% endif %}
-        <div class="meta">{{ s.health.listings_24h }} listings / 24h</div>
-        {% if s.health.consecutive_failures and s.health.last_error %}<div class="meta">{{ s.health.last_error[:90] }}</div>{% endif %}
+        <span class="badge health-{{ s.health_report.status }}">{{ s.health_report.status | capitalize }}</span>
+        <div class="meta">{{ s.health_report.summary if s.health_report.status != 'healthy' else s.health.listings_24h ~ ' listings / 24h' }}</div>
+        {% if s.health_report.reasons | length > 1 %}
+        <details class="listings">
+          <summary>{{ s.health_report.reasons | length }} reasons</summary>
+          <ul class="health-reasons">
+            {% for reason in s.health_report.reasons %}<li class="meta">{{ reason }}</li>{% endfor %}
+          </ul>
+        </details>
+        {% endif %}
       {% endif %}
     </td>
     <td>
