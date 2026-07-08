@@ -5,6 +5,11 @@
 **Phase:** 3 of 5 (see ADR-0001)
 **Related backlog:** EPIC-103 (FEATURE-1030..1034)
 
+> **Current-state note:** This ADR is preserved as historical planning for
+> user-owned data. Its catalogue schema gap was later resolved by EPIC-100 /
+> ADR-0007. Use `docs/platform-domain-model.md` and `ARCHITECTURE.md` for the
+> current ownership and schema model.
+
 ## Revision note (2026-07-08)
 
 The original version of this ADR described `products`, `product_price_observations`,

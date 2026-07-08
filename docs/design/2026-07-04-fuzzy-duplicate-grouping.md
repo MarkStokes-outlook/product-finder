@@ -1,5 +1,11 @@
 # Design: fuzzy cross-marketplace duplicate grouping (identity v2)
 
+> **Current-state note:** This is an approved historical design. The shipped
+> implementation later removed same-marketplace fuzzy duplicate generation;
+> current behaviour only scores cross-marketplace pairs. See
+> `docs/implementation-notes/2026-07-05-2010-same-marketplace-duplicates-removed.md`
+> and `ARCHITECTURE.md` for current behaviour.
+
 Status: **approved by Mark 2026-07-04 (all three open questions per
 recommendation: bulk-confirm included, location gate accepted, condition
 mismatch display-only) and implemented the same day — see

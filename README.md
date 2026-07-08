@@ -1,225 +1,24 @@
 # Product Finder
 
-## Vision
+Product Finder is a local-first market knowledge and buying-intelligence platform for second-hand and clearance markets.
 
-Product Finder is a lightweight application that helps users discover genuine bargains across second-hand marketplaces.
+It watches compliant marketplace sources, stores source evidence, builds reusable product and market knowledge, evaluates listings with explainable rules, and presents the opportunities most worth acting on. The current app is a single-operator Python/Flask/SQLite system; public, authenticated, and commercial layers are future roadmap work.
 
-Unlike traditional saved searches, Product Finder understands projects, expected market value and product condition, allowing it to distinguish between a true bargain and a listing that only appears cheap because it is faulty or incomplete.
+## Canonical Documents
 
-The initial focus is renovation tools for **The Coachhouse**, but the application is designed to support any collection of wanted items.
+Use this README for setup and day-to-day operation. Use the canonical docs for product and architecture context:
 
----
+- [VISION.md](VISION.md) — product purpose and boundaries.
+- [ARCHITECTURE.md](ARCHITECTURE.md) — current runtime architecture and canonical implementation model.
+- [docs/platform-charter.md](docs/platform-charter.md) — platform principles and invariants.
+- [docs/knowledge-model.md](docs/knowledge-model.md) — evidence, knowledge, intelligence, and decision model.
+- [docs/strategy/roadmap.md](docs/strategy/roadmap.md) — future platform evolution.
 
-## Goals
+Related architecture references:
 
-- Monitor multiple marketplaces from a single application.
-- Organise searches into projects.
-- Alert only on new, relevant listings.
-- Estimate whether a listing represents good value.
-- Identify likely false bargains.
-- Keep configuration simple.
-- Run locally with minimal setup.
-
----
-
-## Core Concepts
-
-### Projects
-
-Projects group related wanted items.
-
-Examples:
-
-- The Coachhouse
-- Spain Villa
-- Homelab
-- Camera Gear
-- Car Parts
-
-Projects can also restrict which sources apply to everything inside them —
-no point searching CeX for power tools.
-
-### Wanted Items
-
-Each item defines:
-
-- Search terms
-- Maximum purchase price
-- Expected market value
-- Target deal price
-- Preferred sources (narrowed further by the project's own source list, if set)
-- Search radius
-- Priority
-
-### Product Catalogue
-
-An item's search terms often match wildly different products at wildly
-different price points — "mitre saw" matches a £50 own-brand tool and a £600
-Makita alike. Scoring both against the item's one blended `normal_price`
-would make the cheap one look artificially poor and the premium one look
-like a bargain just for clearing a low bar.
-
-Each item can optionally have a **catalogue of known manufacturer/model
-products**, managed from the item's edit page in the web UI (no YAML
-support — this is DB-only). Each product has its own match terms (checked
-against a listing's title *and* description). When a listing's text matches
-more than one product, the most specific match wins — a full model/SKU term
-beats a bare manufacturer term. Listings that don't match any catalogue
-product keep using the item's own price, exactly as before — the catalogue
-is opt-in per item, not required.
-
-A product tracks three separate prices, because "normal price" hides real
-differences (MSRP vs. shortage-inflated street price vs. what things
-actually resell for used):
-
-- **MSRP** — the manufacturer's list price. Informational only; not used for
-  scoring (it's often stale either way).
-- **Typical new price** — what it actually costs to buy new right now.
-  This is what scoring treats as "the new price". Manually maintained today.
-- **Typical used price** — a rolling median (last 90 days) of prices seen on
-  matched second-hand listings, computed automatically — never set by hand.
-  It builds up on its own as `watch` finds and matches listings, and only
-  counts each distinct listing once (not on every rescan of one that hasn't
-  sold), so a single stale unsold listing can't skew it.
-
-Both the new-vs-used comparison matter for scoring: a listing priced below
-the typical *new* price can still be a poor deal if it's priced above the
-typical *used* price for that product (flagged "above typical used price")
-— a saving vs. buying new doesn't mean much if it's still above what the
-used market normally charges.
-
-#### Suggested products
-
-Typing every manufacturer/model into the catalogue by hand doesn't scale, so
-`watch` also looks for new ones automatically — but only from **eBay's own
-structured item data** (the `brand`/`mpn` "item specifics" fields a seller
-fills in on their listing), never by guessing from free text. That's a
-seller's own declared fact, not an inference, so it's trustworthy enough to
-suggest without needing AI. It only checks a listing once (not on every
-rescan), and only when the listing didn't already match an existing
-catalogue product — no wasted lookups once you've added coverage.
-
-Each distinct manufacturer/model spotted this way becomes a **pending
-suggestion** on the item's edit page, with a confidence score that starts at
-70% and climbs as more independent listings corroborate the same
-manufacturer/model (capped at 99% — even seller-declared fields can be
-wrong). Nothing gets added to the catalogue without your approval by
-default. If you'd rather trust high-confidence suggestions to add
-themselves, there's an adjustable "auto-approve at or above N% confidence"
-setting right next to the suggestions list — leave it blank (the default)
-to review everything yourself. Dismissing a suggestion is permanent; it
-won't come back no matter how many more times it's seen.
-
-A free-text fallback (for listings with no structured brand/model at all —
-common with casual/private sellers) is planned but not built yet.
-
-### Live Auctions
-
-An active eBay-style auction's price is just the current bid, not a
-committed price — it can rise sharply before it closes, especially in the
-final seconds ("sniping"), so an auction that's ending soon and already has
-bids is *not* a reliable signal that the current price will hold. Rather
-than try to predict where it'll land, matched listings whose price is a live
-bid are flagged **"live auction"** and are structurally excluded from the
-dashboard's and each project's hero "best deal" cards — those only ever
-feature a price you could actually commit to right now (fixed-price or Buy
-It Now). Live auctions still appear in the regular listings table, flagged,
-for visibility if you want to go bid yourself. They never contribute an
-*asking*-price observation to the used-price tracking above, for the same
-reason — but `watch` does capture their genuine closing price (next
-section), which is a much better signal than an asking price anyway.
-
-#### Auction close tracking
-
-`watch` doesn't just run a full search every `interval_minutes` — it also
-checks, every 20 seconds, whether any tracked auction (one matched to a
-catalogue product) is due a price check, on a cadence that tightens as the
-auction nears its end:
-
-| Time remaining | Poll at most every |
-|---|---|
-| > 10 minutes | 5 minutes |
-| 2–10 minutes | 1 minute |
-| < 2 minutes | 20 seconds |
-
-eBay's Browse API keeps reporting the last bid price for a little while
-after an auction's listed end time, so a plain timestamp check risks
-capturing a split-second-too-early read. Instead, each poll checks the
-item's live availability status directly — once it flips to out-of-stock
-(confirmed empirically: the bid price itself stops changing at that point),
-the last-seen price is logged as a genuine "sold for" observation (tagged
-`ebay-close` in the price history, distinct from ordinary asking-price
-observations) and that listing stops being tracked. No separate process to
-run — it's all inside the same `watch` command.
-
-### Deal Intelligence
-
-For every matching listing the application should estimate:
-
-- Expected market value
-- Saving (£)
-- Saving (%)
-- Deal score
-- Condition grade
-- Warning flags
-
----
-
-## Condition Classification
-
-Listings should be automatically classified where possible:
-
-- Grade A — Excellent or nearly new.
-- Grade B — Good used condition.
-- Grade C — Heavy wear but serviceable.
-- Spares / Repair — Faulty, incomplete or non-working.
-- Unknown — Insufficient information.
-
-Listings that appear inexpensive because they are faulty should receive a poor deal score.
-
----
-
-## MVP Scope
-
-The first version should:
-
-- Support multiple projects.
-- Search eBay automatically where practical.
-- Support Gumtree where practical.
-- Generate manual-assisted searches for Facebook Marketplace if automation is not appropriate.
-- Store seen listings locally.
-- Show live results in a local web dashboard.
-- Provide console alerts.
-- Calculate a simple deal score.
-
-The objective is a useful tool, not a polished product.
-
----
-
-## Future Ideas
-
-Potential future enhancements include:
-
-- AI-assisted listing analysis.
-- Historical pricing trends.
-- Image analysis for condition.
-- Browser UI.
-- Mobile notifications.
-- Seller reputation scoring.
-- Team-shared projects.
-
-These ideas are intentionally out of scope for the MVP.
-
----
-
-## Design Principles
-
-- Working software over perfect software.
-- Simple configuration.
-- Local-first.
-- Compliant with marketplace terms of service.
-- Small, maintainable codebase.
-- Easy to extend.
+- [docs/platform-domain-model.md](docs/platform-domain-model.md) — ownership boundaries.
+- [docs/connector-architecture.md](docs/connector-architecture.md) — connector contract and source compliance model.
+- [docs/documentation-audit.md](docs/documentation-audit.md) — canonical vs historical documentation status.
 
 ---
 
@@ -509,15 +308,13 @@ that project's manual search links. Both update themselves automatically as
   Canonical-URL identity (`identity.py`/`db.resolve_identity()`) auto-links
   sightings sharing a platform's own native ID recoverable straight from the
   URL (eBay only so far). Fuzzy duplicate detection (`duplicates.py`) covers
-  the rest — the same physical item double-listed or cross-posted with no
-  shared ID — but only ever *proposes* pairs for human review ("Possible
-  duplicates" on the project page): merging on title/price similarity alone
-  risks conflating two different real items, so nothing is hidden without a
-  human confirming it. Same-marketplace pairs additionally need matching
-  seller location (or an identical photo URL) before being proposed —
-  without that, identical titles usually mean two different sellers selling
-  the same model, which are genuinely separate opportunities. A relisting
-  seller who hides or changes their location therefore slips through.
+  probable cross-marketplace duplicates with no shared ID, but only ever
+  *proposes* pairs for human review ("Possible duplicates" on the project
+  page): merging on title/price similarity alone risks conflating two
+  different real items, so nothing is hidden without a human confirming it.
+  Same-marketplace fuzzy proposals are deliberately not generated at the
+  moment; identical titles on one marketplace usually mean different sellers
+  selling the same model, not the same opportunity.
 - Once a duplicate pair is confirmed, the hidden listing stays hidden even
   if the kept one later ends while the hidden one is still live — the
   opportunity vanishes from view until the pair's decision is undone (the

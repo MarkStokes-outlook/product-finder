@@ -1,5 +1,10 @@
 # Product Finder — Architectural Briefing
 
+> **Status:** Historical briefing. This document is superseded by
+> `ARCHITECTURE.md` for current-state architecture. It is preserved as an
+> earlier field-level snapshot and may contain stale statements about Ollama,
+> SearXNG, duplicate behaviour, catalogue ownership, and test counts.
+
 ## Executive Summary
 
 Product Finder is a **local, single-user Python application** that monitors second-hand marketplaces (currently eBay UK, with manual-assisted support for Gumtree and Facebook Marketplace, plus arbitrary config-defined RSS/link sources) for listings matching a user-defined set of wanted items, and scores each match for how good a deal it genuinely is.

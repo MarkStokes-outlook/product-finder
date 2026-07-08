@@ -35,15 +35,15 @@ Both describe system architecture.
 
 Recommendation:
 
-Keep `ARCHITECTURE.md` as canonical. Treat `docs/architecture-briefing.md` as an earlier snapshot and field-level/historical briefing. Add a superseded banner later if desired; do not delete it.
+Keep `ARCHITECTURE.md` as canonical. Treat `docs/architecture-briefing.md` as an earlier snapshot and field-level/historical briefing. A historical-status banner has been added; do not delete it.
 
-### README vision and `VISION.md`
+### README and `VISION.md`
 
-README contains a product vision section. `VISION.md` is now the canonical product vision.
+README is now the operational front door. `VISION.md` is the canonical product vision.
 
 Recommendation:
 
-Later, shorten README's vision section and link to `VISION.md` to avoid drift.
+README has been shortened into an operational front door and now links to the canonical product and architecture documents.
 
 ### ADR roadmap and strategy roadmap
 
@@ -63,7 +63,7 @@ Implementation wins.
 
 Recommendation:
 
-Do not rewrite ADR history silently. Add a status note to ADR-0007 in a future documentation cleanup if desired.
+Do not rewrite ADR history silently. ADR-0007 now has a current-state note pointing to the shipped EPIC-100 implementation and canonical current-state docs.
 
 ### ADR-0004 current schema statements
 
@@ -73,7 +73,7 @@ Implementation wins.
 
 Recommendation:
 
-Keep the ADR as historical context. Use `docs/platform-domain-model.md` for current ownership truth.
+Keep the ADR as historical context. ADR-0004 now has a current-state note pointing to `docs/platform-domain-model.md` for current ownership truth.
 
 ### Roadmap AI/Ollama statements vs older architecture briefing
 
@@ -120,7 +120,7 @@ Stale areas:
 
 Recommendation:
 
-Mark as superseded by `ARCHITECTURE.md` for current state. Keep as historical field-level briefing until all useful details have been migrated.
+Marked as superseded by `ARCHITECTURE.md` for current state. Keep as historical field-level briefing until all useful details have been migrated.
 
 ### ADR-0007
 
@@ -128,7 +128,7 @@ Stale status and planning-only language after EPIC-100 shipped.
 
 Recommendation:
 
-Append a short "Superseded by implementation" status note later.
+Current-state note added.
 
 ### ADR-0004
 
@@ -136,7 +136,7 @@ Stale known schema gap after EPIC-100 shipped.
 
 Recommendation:
 
-Append a short note pointing to EPIC-100 implementation and `docs/platform-domain-model.md`.
+Current-state note added.
 
 ### README
 
@@ -144,7 +144,7 @@ The README remains useful for setup and usage, but the product description still
 
 Recommendation:
 
-Keep operational setup detail in README. Link out to canonical platform docs instead of expanding README further.
+Completed. README now keeps operational setup detail and links out to canonical platform docs instead of expanding product/architecture prose.
 
 ## Superseded Documents
 
@@ -192,10 +192,10 @@ Recommended later, not implemented by this refresh:
 
 Do not delete historical docs yet.
 
-Suggested future consolidation:
+Consolidation status:
 
-1. Add superseded banners to `docs/architecture-briefing.md`, ADR-0004, and ADR-0007.
-2. Shorten README's vision/product sections and link to `VISION.md`, `ARCHITECTURE.md`, and `docs/platform-charter.md`.
+1. Superseded/current-state banners have been added to `docs/architecture-briefing.md`, ADR-0004, ADR-0007, and the fuzzy duplicate design document.
+2. README's vision/product sections have been shortened and link to `VISION.md`, `ARCHITECTURE.md`, `docs/platform-charter.md`, `docs/knowledge-model.md`, and `docs/strategy/roadmap.md`.
 3. Keep implementation notes chronological and immutable.
 4. Keep ADRs as decisions, but append status notes when implementation has moved past them.
 5. Treat `ARCHITECTURE.md` as the only current-state architecture entry point.

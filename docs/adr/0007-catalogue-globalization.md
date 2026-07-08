@@ -6,6 +6,13 @@
 **Related ADRs:** ADR-0004 (revises its "Known schema gap" into tracked work), ADR-0006 (forward-looking note)
 **Sequencing:** planning only, no implementation. Recommended to land **before** EPIC-103 (Phase 3, user-owned data); **hard blocking dependency** before EPIC-104 (Phase 4, public rollout) and EPIC-105 (Phase 5, cloning). See ADR-0001 (revised).
 
+> **Current-state note:** EPIC-100 has shipped. This ADR remains the historical
+> design record for catalogue globalization, but its "Proposed" and "planning
+> only" status no longer describes the implementation. Use
+> `ARCHITECTURE.md`, `docs/platform-domain-model.md`, and
+> `docs/implementation-notes/2026-07-08-2100-catalogue-globalization-epic-100.md`
+> for current behaviour.
+
 ## Context
 
 ADR-0004 flagged, but explicitly did not fix, a real pre-existing schema

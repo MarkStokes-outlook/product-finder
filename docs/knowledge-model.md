@@ -4,16 +4,40 @@ This document is the intellectual centre of Product Finder.
 
 The platform's long-term value is the knowledge it compounds while watching markets. Every future feature should enrich one or more of these layers, or protect their quality.
 
+## Evidence Flow
+
+Product Finder's knowledge starts as evidence, not assertion.
+
+Evidence is any persisted observation, declaration, review decision, or telemetry record that can support later reasoning. In the current implementation this includes listings, auction snapshots, price observations, retailer price candidates, duplicate reviews, connector telemetry, source capability declarations, outbound click records, and human approvals or dismissals.
+
+Knowledge emerges when evidence is normalised, accumulated, linked, and made reusable. Intelligence is the rule-based evaluation of that knowledge in a project context. Decisions are durable human or system outcomes such as alerts, review statuses, suppressions, saved/ignored states, and future recommendations. Presentation is how those decisions and their evidence are exposed to a user.
+
+```mermaid
+flowchart TD
+    E[Evidence<br/>listings, snapshots, observations, telemetry, approvals] --> K[Knowledge<br/>connector, listing, product, identity, market, project]
+    K --> I[Intelligence<br/>scoring, warnings, trajectory, triage, offers]
+    I --> D[Decision<br/>alerts, review statuses, suppressions, future saved states]
+    D --> P[Presentation<br/>dashboard, project pages, sources, catalogue, offers]
+```
+
+This is a description of the implementation, not a separate abstraction to build. Existing tables and review workflows already follow this pattern: uncertain inputs are retained with provenance, accumulated into knowledge, evaluated by explainable rules, and surfaced without pretending uncertainty has disappeared.
+
 ## Knowledge Layers
 
 ```mermaid
 flowchart TD
-    A[Connector Knowledge] --> B[Listing Knowledge]
+    E[Evidence Foundation] --> A[Connector Knowledge]
+    E --> B[Listing Knowledge]
+    E --> C[Product Knowledge]
+    E --> D[Identity Knowledge]
+    E --> F[Market Knowledge]
+    E --> G[Project Knowledge]
+    A --> B
     B --> C[Product Knowledge]
     C --> D[Identity Knowledge]
-    D --> E[Market Knowledge]
-    E --> F[Project Knowledge]
-    F --> G[Decision Knowledge]
+    D --> F[Market Knowledge]
+    F --> G[Project Knowledge]
+    G --> H[Decision Intelligence]
 ```
 
 The layers are not strictly linear in implementation, but they form a dependency chain for trust. A recommendation is only as good as the connector, listing, product, identity, market, and project evidence underneath it.
@@ -315,7 +339,9 @@ Future evolution:
 - per-project notification policies
 - compatibility profiles
 
-## 7. Decision Knowledge
+## 7. Decision Intelligence
+
+This layer is called intelligence rather than knowledge because it primarily evaluates accumulated evidence in context. A deal score, auction label, offer suggestion, or warning surface is not a new market fact by itself; it is an explainable judgement over connector, listing, product, identity, market, and project knowledge.
 
 Ownership:
 

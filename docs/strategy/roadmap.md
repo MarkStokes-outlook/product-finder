@@ -23,6 +23,14 @@ Current state:
 
 The next stage is platform consolidation: keep expanding knowledge without weakening evidence, compliance, or ownership boundaries.
 
+The strategic flow is evidence first:
+
+```text
+Evidence -> Knowledge -> Intelligence -> Decision -> Presentation
+```
+
+Roadmap work should either improve evidence quality, compound evidence into reusable knowledge, evaluate that knowledge more clearly, or present decisions with better context.
+
 ## Foundations
 
 Shipped foundations:
@@ -49,6 +57,30 @@ Deliberately deferred:
 - replacing SQLite before scale requires it
 - distributed workers before orchestration policies need them
 - public deployment before ownership and public-safe filtering exist
+
+## Platform Hardening
+
+This lane covers architecture maintenance that keeps the platform trustworthy as its evidence base grows.
+
+Current foundations:
+
+- SQLite/WAL write discipline
+- pytest coverage around migrations, scoring, connectors, web flows, and lock boundaries
+- source telemetry and connector health
+- documentation audit and canonical architecture set
+- implementation notes for shipped work
+
+Future direction:
+
+- retention policy for stale listings, source telemetry, price observations, and audit rows
+- explicit migration safety checklist for non-additive schema changes
+- audit trail for global product edits, merges, and review decisions
+- observability around search cycles, connector failures, and queue sizes
+- governance for shared catalogue edits before multi-user operation
+- documentation status hygiene for ADRs, historical design docs, and canonical references
+- recommendation-readiness criteria before action-oriented guidance expands
+
+This is intentionally a maintenance lane, not a feature bucket. Hardening work should protect evidence, provenance, ownership, and explainability.
 
 ## Core Engine
 

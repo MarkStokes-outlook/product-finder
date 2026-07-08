@@ -4,6 +4,29 @@ This charter is the architecture contract for Product Finder. It defines the pri
 
 The implementation remains the source of truth for current behaviour. This charter defines how that implementation should continue to evolve.
 
+Product Finder's architectural flow is:
+
+```text
+Evidence -> Knowledge -> Intelligence -> Decision -> Action
+```
+
+The platform collects evidence, compounds it into reusable knowledge, evaluates it with explainable intelligence, records or proposes decisions, and only then presents or enables action. Future features should strengthen that chain rather than bypass it.
+
+## Platform Invariants
+
+These are properties the platform should not intentionally violate:
+
+- Marketplace evidence is preserved as source evidence. Stored `listings.url` values are not rewritten for affiliate logic; outbound adapters add parameters at navigation time.
+- Shared market knowledge is platform-owned. Products, listings, price observations, source telemetry, identity links, auction snapshots, and connector declarations are not duplicated per project as ordinary design.
+- Project data expresses intent. Projects, items, item-product tracking, listing matches, alerts, and future saved/ignored feedback interpret shared facts in context.
+- Provenance is retained wherever practical. Review decisions, telemetry, duplicate status, price observations, and click audit records should be traceable back to the source evidence that caused them.
+- Uncertain automation enters review. AI extraction, duplicate candidates, retailer price candidates, product suggestions, and suspect-product judgements must not silently mutate trusted knowledge when the evidence is weak.
+- Objective deal score remains independent of personal preference. Priority and future user taste can rank or filter opportunities, but they must not redefine the objective quality score.
+- Connector behaviour is declared through `SourceCapabilities` and `ConnectorKnowledge`. Downstream code should reason over these contracts, not hard-coded marketplace names.
+- Marketplace-specific logic belongs in connectors or outbound adapters. Scoring, matching, identity, persistence, and UI query paths should consume normalised facts.
+- Search execution stays outside web requests. The web UI reads and mutates state; the watch/run cycle acquires marketplace evidence.
+- Database writes must complete before network boundaries. Long API waits, rate-limit backoff, or webhook calls must not hold SQLite writer locks open.
+
 ## 1. Evidence Before AI
 
 The platform should prefer direct evidence over inference.
