@@ -232,6 +232,12 @@ _MIGRATIONS = [
     # history, keeps listings out of suggestion churn) but never alerted or
     # shown as a deal. Distinct from archived, which stops matching entirely.
     ("products", "wanted", "INTEGER NOT NULL DEFAULT 1"),
+    # Distinct from `price`'s BIN-preferring fallback — see Listing.current_bid_price
+    # docstring. Bug fix (2026-07-08): a BIN+AUCTION listing was displaying its
+    # Buy It Now price labelled as "current bid" because nothing persisted
+    # currentBidPrice separately until the auction-close poller reached it.
+    ("listings", "current_bid_price", "REAL"),
+    ("listings", "buy_it_now_price", "REAL"),
 ]
 
 
@@ -1491,11 +1497,16 @@ def list_auction_snapshots(conn: sqlite3.Connection, listing_id: int) -> list[sq
 def upsert_listing(conn: sqlite3.Connection, listing: Listing) -> tuple[int, bool]:
     """Insert a listing or touch last_seen. Returns (listing_id, is_new).
 
-    buying_options/bid_count/end_time/image_url are refreshed on every rescan
-    too (a Buy It Now can disappear once bidding starts, bid count/price move,
-    sellers swap photos) — this is what the auction-close poller
-    (auction_watch.py) later reads to know which listings are auctions and
-    when they end. image_url only ever overwrites with a real value, so a
+    buying_options/bid_count/end_time/image_url/current_bid_price/
+    buy_it_now_price are refreshed on every rescan too (a Buy It Now can
+    disappear once bidding starts, bid count/price move, sellers swap
+    photos) — this is what the auction-close poller (auction_watch.py)
+    later reads to know which listings are auctions and when they end, and
+    what the Active Auctions page reads for a correct current-bid display
+    before any poll has happened yet (see the bug this fixed, 2026-07-08:
+    current_bid_price/buy_it_now_price used to not exist at all, so a
+    freshly-seen BIN+auction listing had nothing but the BIN-preferring
+    `price` to show). image_url only ever overwrites with a real value, so a
     source that stops sending one doesn't blank an image we already have."""
     now = _now()
     buying_options = json.dumps(listing.buying_options)
@@ -1507,9 +1518,11 @@ def upsert_listing(conn: sqlite3.Connection, listing: Listing) -> tuple[int, boo
         conn.execute(
             "UPDATE listings SET last_seen = ?, price = ?, title = ?, "
             "buying_options = ?, bid_count = ?, end_time = ?, "
+            "current_bid_price = ?, buy_it_now_price = ?, "
             "image_url = COALESCE(?, image_url) WHERE id = ?",
             (now, listing.price, listing.title, buying_options, listing.bid_count,
-             listing.end_time, listing.image_url, row["id"]),
+             listing.end_time, listing.current_bid_price, listing.buy_it_now_price,
+             listing.image_url, row["id"]),
         )
         # Commit immediately (as every db.py write function must): the watch
         # loop calls this between network requests, and an uncommitted write
@@ -1521,8 +1534,9 @@ def upsert_listing(conn: sqlite3.Connection, listing: Listing) -> tuple[int, boo
     cur = conn.execute(
         "INSERT INTO listings (source, external_id, title, price, currency, url, "
         "location, description, condition, first_seen, last_seen, "
-        "buying_options, bid_count, end_time, image_url) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "buying_options, bid_count, end_time, image_url, "
+        "current_bid_price, buy_it_now_price) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (
             listing.source,
             listing.external_id,
@@ -1539,6 +1553,8 @@ def upsert_listing(conn: sqlite3.Connection, listing: Listing) -> tuple[int, boo
             listing.bid_count,
             listing.end_time,
             listing.image_url,
+            listing.current_bid_price,
+            listing.buy_it_now_price,
         ),
     )
     conn.commit()
@@ -1952,6 +1968,7 @@ SELECT p.name AS project_name, p.slug AS project_slug, p.id AS project_id,
        pr.price_trend_pct, pr.price_trend_confidence,
        l.id AS listing_id, l.title, l.price, l.currency, l.url, l.source, l.location,
        l.first_seen, l.last_seen, l.end_time, l.bid_count, l.buying_options, l.image_url,
+       l.current_bid_price, l.buy_it_now_price,
        m.grade, m.deal_score, m.margin_abs, m.margin_pct, m.under_target, m.flags
 FROM listing_matches m
 JOIN listings l ON l.id = m.listing_id

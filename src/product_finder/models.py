@@ -25,6 +25,20 @@ class Listing:
     buying_options: list[str] = field(default_factory=list)
     bid_count: int | None = None
     end_time: str | None = None  # ISO 8601, auction/listing end — if known
+    # Distinct from `price`'s BIN-preferring fallback (_price_value()) — see
+    # the bug this fixed (2026-07-08): a BIN+AUCTION listing was displaying
+    # its Buy It Now price labelled as "current bid", because nothing
+    # captured currentBidPrice separately until the (much less frequent)
+    # auction-close poller happened to reach it. Real captures confirm
+    # currentBidPrice is present even at zero bids (equal to
+    # minimumPriceToBid there) — never absent — so this is populated
+    # whenever "AUCTION" is in buying_options, with no separate
+    # "starting price" fallback needed. None when not an auction.
+    current_bid_price: float | None = None
+    # The Buy It Now price specifically, when "FIXED_PRICE" is also in
+    # buying_options — kept distinct from `price` so it can be displayed
+    # alongside the current bid rather than instead of it.
+    buy_it_now_price: float | None = None
     # Best single product image, if the source provides one. eBay's Browse
     # API always does (thumbnailImages[0] is the large render, ~1200-1600px;
     # `image` is the 225px one); RSS feeds sometimes carry media:thumbnail.

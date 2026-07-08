@@ -52,3 +52,35 @@ of both `getItem` responses, not just the fields we expected):
 no `watchCount`/`viewCount`/equivalent field exists anywhere in eBay's Browse
 API `item_summary` or `getItem` response. Auction snapshot fields for these
 are always recorded as `None`/unknown with provenance, never guessed.
+
+## Zero-bid AUCTION+FIXED_PRICE bug investigation (2026-07-08)
+
+Captured after Mark reported Product Finder showing a Buy It Now price
+(£73.50) as "the" price on a listing also classified as a live auction with
+£52.70/0 bids on the real eBay page. Swept 61 real zero-bid AUCTION+
+FIXED_PRICE listings and 106 real zero-bid pure-AUCTION listings (no BIN)
+across 6 search terms to test the hypothesis that `currentBidPrice` might
+be absent at zero bids — **it was never absent in any of the 167 samples**.
+At zero bids, `currentBidPrice` was confirmed (via 3 real `getItem` detail
+checks) to always equal `minimumPriceToBid` exactly — i.e. `currentBidPrice`
+already correctly represents "the starting/minimum bid" the moment an
+auction has zero bids; there is no separate start-price field needed.
+
+- `search_auction_with_bin_zero_bids.json` — real capture, `item_summary/search`
+  for a `["FIXED_PRICE", "AUCTION"]` listing (Corsair CX550 PSU) with
+  `bidCount: 0`: `price` (31.00, BIN) and `currentBidPrice` (9.68) both
+  present and distinct, confirming the bug-report scenario reproduces with
+  zero bids specifically, not just "has some bids".
+- `getitem_auction_with_bin_zero_bids.json` — real capture, single-item
+  `getItem` for the same listing: `minimumPriceToBid` (9.68) exactly equals
+  `currentBidPrice` (9.68) at zero bids; `bidCount: null`, `uniqueBidderCount: 0`.
+  No `startPrice`/`auctionInfo`/equivalent field exists anywhere in the full
+  key set of this response — checked explicitly, not assumed absent.
+
+**Root cause identified, not yet fixed at fixture-capture time:**
+`EbaySource.search()` only ever wrote the BIN-preferring `_price_value()`
+fallback to `Listing.price`; it never captured `currentBidPrice` as a
+distinct value at all (only `get_item()`, used by the much-less-frequent
+auction-close poller, did). A freshly-discovered BIN+auction listing had no
+distinct current-bid value anywhere until the tiered poller happened to
+reach it — see the implementation notes for the actual fix.

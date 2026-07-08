@@ -54,6 +54,35 @@ def _price_value(data: dict) -> tuple[float, str] | None:
         return None
 
 
+def _current_bid_and_bin(data: dict) -> tuple[float | None, float | None]:
+    """currentBidPrice and (when FIXED_PRICE is also present) the Buy It Now
+    price, kept as two distinct values — never merged, unlike _price_value()'s
+    fallback. Real captures confirm both are present and independent when a
+    listing has both AUCTION and FIXED_PRICE (see
+    tests/fixtures/ebay/README.md), and that currentBidPrice is present even
+    at zero bids (equal to minimumPriceToBid then) — never absent — so there
+    is no separate "starting price" case to handle. Same field shape on both
+    the search (item_summary) and single-item (getItem) endpoints, used by
+    both search() and get_item()."""
+    current_bid = None
+    bid_info = data.get("currentBidPrice")
+    if bid_info:
+        try:
+            current_bid = float(bid_info["value"])
+        except (TypeError, ValueError, KeyError):
+            current_bid = None
+
+    buy_it_now_price = None
+    if "FIXED_PRICE" in (data.get("buyingOptions") or []):
+        bin_info = data.get("price") or {}
+        try:
+            buy_it_now_price = float(bin_info["value"])
+        except (TypeError, ValueError, KeyError):
+            buy_it_now_price = None
+
+    return current_bid, buy_it_now_price
+
+
 class EbaySource(Source):
     name = "ebay"
 
@@ -150,6 +179,7 @@ class EbaySource(Source):
             image_url = (thumbs[0].get("imageUrl") if thumbs else None) or (
                 summary.get("image") or {}
             ).get("imageUrl")
+            current_bid, buy_it_now_price = _current_bid_and_bin(summary)
             listings.append(
                 Listing(
                     source=self.name,
@@ -167,6 +197,8 @@ class EbaySource(Source):
                     bid_count=summary.get("bidCount"),
                     end_time=summary.get("itemEndDate"),
                     image_url=image_url,
+                    current_bid_price=current_bid,
+                    buy_it_now_price=buy_it_now_price,
                 )
             )
         return listings
@@ -203,28 +235,7 @@ class EbaySource(Source):
             a.get("estimatedAvailabilityStatus") == "OUT_OF_STOCK"
             for a in data.get("estimatedAvailabilities", [])
         )
-        buying_options = data.get("buyingOptions") or []
-        # currentBidPrice specifically, never falling back to price/BIN —
-        # see AuctionSnapshot.current_bid docstring for why this must stay
-        # distinct from the price= fallback used just above.
-        current_bid = None
-        bid_info = data.get("currentBidPrice")
-        if bid_info:
-            try:
-                current_bid = float(bid_info["value"])
-            except (TypeError, ValueError, KeyError):
-                current_bid = None
-        # Real captures confirm `price` is the Buy It Now price, distinct
-        # from `currentBidPrice`, when both AUCTION and FIXED_PRICE are
-        # active simultaneously (tests/fixtures/ebay/getitem_auction_with_bin.json)
-        # — not a fallback of one for the other like _price_value()'s use.
-        buy_it_now_price = None
-        if "FIXED_PRICE" in buying_options:
-            bin_info = data.get("price") or {}
-            try:
-                buy_it_now_price = float(bin_info["value"])
-            except (TypeError, ValueError, KeyError):
-                buy_it_now_price = None
+        current_bid, buy_it_now_price = _current_bid_and_bin(data)
         shipping_price = None
         shipping_opts = data.get("shippingOptions") or []
         if shipping_opts:

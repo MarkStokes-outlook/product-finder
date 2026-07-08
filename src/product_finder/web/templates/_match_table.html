@@ -18,8 +18,20 @@
       <a href="{{ row['url'] }}" target="_blank" rel="noopener">{{ row['title'] }}</a>
       {% if row['product_manufacturer'] %}<br><span class="meta">{{ row['product_manufacturer'] }}{% if row['product_model'] %} {{ row['product_model'] }}{% endif %}</span>{% endif %}</td>
     {% if show_item %}<td class="meta">{{ row['project_name'] }} / {{ row['item_name'] }}</td>{% endif %}
-    <td class="num"><strong>£{{ '%.2f' | format(row['price']) }}</strong>
-      {% if 'AUCTION' in buying %}<br><span class="badge auction">auction{% if row['bid_count'] %} · {{ row['bid_count'] }} bids{% endif %}{% if row['end_time'] %} · <span data-ends="{{ row['end_time'] }}">…</span>{% endif %}</span>{% endif %}</td>
+    <td class="num">
+      {% if 'AUCTION' in buying and row['current_bid_price'] is not none %}
+      {# Bug fixed 2026-07-08: this used to show row['price'] here even for
+         AUCTION+FIXED_PRICE listings, which is the Buy It Now price (see
+         sources/ebay.py _price_value()'s BIN-preferring fallback) — labelled
+         with an "auction" badge, making a BIN price look like the bid. #}
+      <strong>£{{ '%.2f' | format(row['current_bid_price']) }}</strong>
+      <br><span class="badge auction">auction{% if row['bid_count'] is not none %} · {{ row['bid_count'] }} bid{{ 's' if row['bid_count'] != 1 else '' }}{% endif %}{% if row['end_time'] %} · <span data-ends="{{ row['end_time'] }}">…</span>{% endif %}</span>
+      {% if row['buy_it_now_price'] %}<br><span class="meta">BIN £{{ '%.2f' | format(row['buy_it_now_price']) }}</span>{% endif %}
+      {% else %}
+      <strong>£{{ '%.2f' | format(row['price']) }}</strong>
+      {% if 'AUCTION' in buying %}<br><span class="badge auction">auction{% if row['bid_count'] %} · {{ row['bid_count'] }} bids{% endif %}{% if row['end_time'] %} · <span data-ends="{{ row['end_time'] }}">…</span>{% endif %}</span>{% endif %}
+      {% endif %}
+    </td>
     <td class="num">{% if row['normal_price'] %}£{{ '%.0f' | format(row['normal_price']) }}{% else %}&mdash;{% endif %}</td>
     <td class="num">{% if row['margin_pct'] %}{{ '%.0f' | format(row['margin_pct']) }}%{% else %}&mdash;{% endif %}</td>
     <td><span class="badge grade-{{ 'spares' if row['grade'] == 'spares/repair' else row['grade'] }}">{{ row['grade'] }}</span></td>

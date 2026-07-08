@@ -598,6 +598,39 @@ def test_ebay_search_maps_real_auction_response():
     assert listing.bid_count == 13
     assert listing.end_time == "2026-07-08T17:00:01.000Z"
     assert listing.image_url == "https://i.ebayimg.com/images/g/EXAMPLE1/s-l1600.jpg"
+    # No BIN on a pure auction — current_bid_price mirrors the current bid,
+    # buy_it_now_price stays None.
+    assert listing.current_bid_price == 235.00
+    assert listing.buy_it_now_price is None
+
+
+def test_ebay_search_maps_real_zero_bid_auction_with_bin_response():
+    """Bug fix (2026-07-08): a BIN+AUCTION listing with zero bids was
+    showing its Buy It Now price labelled as "current bid" because search()
+    never captured currentBidPrice distinctly. Real capture: Corsair CX550
+    PSU, bidCount=0, price (BIN) 31.00, currentBidPrice 9.68 — both present
+    and distinct even at zero bids (see tests/fixtures/ebay/README.md)."""
+    from product_finder.sources.ebay import EbaySource
+
+    search_resp = mock.Mock()
+    search_resp.raise_for_status = mock.Mock()
+    search_resp.json.return_value = _load_fixture("search_auction_with_bin_zero_bids.json")
+    source = EbaySource(_ebay_cfg())
+    with mock.patch("product_finder.sources.ebay.requests.post", return_value=_mock_token_response()):
+        with mock.patch("product_finder.sources.ebay.requests.get", return_value=search_resp):
+            listings = source.search("power supply psu", make_item())
+
+    assert len(listings) == 1
+    listing = listings[0]
+    assert listing.bid_count == 0
+    # .price keeps its existing BIN-preferring fallback meaning, unchanged —
+    # this test is not about changing that, only about capturing the two
+    # values distinctly alongside it.
+    assert listing.price == 31.00
+    # The actual fix: current_bid_price is the real current bid (here, the
+    # starting/minimum bid since bidCount is 0), never the BIN price.
+    assert listing.current_bid_price == 9.68
+    assert listing.buy_it_now_price == 31.00
 
 
 def test_ebay_search_maps_real_fixed_price_response():
@@ -685,3 +718,22 @@ def test_ebay_get_item_real_auction_with_bin_maps_both_prices_and_shipping():
     assert snapshot.current_bid == 156.70  # distinct field, never falls back to BIN
     assert snapshot.buy_it_now_price == 229.50
     assert snapshot.shipping_price == 5.88
+
+
+def test_ebay_get_item_real_zero_bid_auction_with_bin_current_bid_equals_minimum():
+    """Real capture: at zero bids, currentBidPrice is present (never absent)
+    and equals minimumPriceToBid exactly — confirms there's no separate
+    "starting price" field needed, currentBidPrice already represents it."""
+    from product_finder.sources.ebay import EbaySource
+
+    item_resp = mock.Mock()
+    item_resp.status_code = 200
+    item_resp.json.return_value = _load_fixture("getitem_auction_with_bin_zero_bids.json")
+    source = EbaySource(_ebay_cfg())
+    with mock.patch("product_finder.sources.ebay.requests.post", return_value=_mock_token_response()):
+        with mock.patch("product_finder.sources.ebay.requests.get", return_value=item_resp):
+            snapshot = source.get_item("v1|444555666777|0")
+
+    assert snapshot.current_bid == 9.68
+    assert snapshot.buy_it_now_price == 31.00
+    assert snapshot.bid_count is None  # real capture: bidCount is null at zero bids on getItem

@@ -79,6 +79,36 @@ def test_upsert_listing_refreshes_auction_fields_on_rescan(tmp_path):
     assert row["price"] == 25.0
 
 
+def test_upsert_listing_persists_current_bid_and_bin_distinctly(tmp_path):
+    """Bug fix (2026-07-08): current_bid_price/buy_it_now_price must be
+    stored distinctly from price (the BIN-preferring fallback) — this is
+    what closes the gap where a freshly-seen BIN+auction listing had
+    nothing but the BIN price recorded anywhere."""
+    cfg, conn, item_id, product_id = _setup(tmp_path)
+    listing_id, is_new = db.upsert_listing(
+        conn,
+        Listing(source="ebay", external_id="e9", title="PSU, auction with BIN",
+                price=31.00, url="https://x/e9", buying_options=["AUCTION", "FIXED_PRICE"],
+                bid_count=0, current_bid_price=9.68, buy_it_now_price=31.00),
+    )
+    assert is_new is True
+    row = conn.execute("SELECT * FROM listings WHERE id = ?", (listing_id,)).fetchone()
+    assert row["price"] == 31.00
+    assert row["current_bid_price"] == 9.68
+    assert row["buy_it_now_price"] == 31.00
+
+    # Refresh on rescan — bid climbs, BIN unchanged.
+    db.upsert_listing(
+        conn,
+        Listing(source="ebay", external_id="e9", title="PSU, auction with BIN",
+                price=31.00, url="https://x/e9", buying_options=["AUCTION", "FIXED_PRICE"],
+                bid_count=2, current_bid_price=15.40, buy_it_now_price=31.00),
+    )
+    row = conn.execute("SELECT * FROM listings WHERE id = ?", (listing_id,)).fetchone()
+    assert row["current_bid_price"] == 15.40
+    assert row["buy_it_now_price"] == 31.00
+
+
 # --- cadence tiers ---------------------------------------------------------------
 
 

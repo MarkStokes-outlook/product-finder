@@ -1,0 +1,78 @@
+{
+  "itemSummaries": [
+    {
+      "itemId": "v1|444555666777|0",
+      "title": "Corsair CX550 550W Power Supply PSU 80 PLUS Bronze Black Sleeved Cables Tested",
+      "leafCategoryIds": [
+        "42017"
+      ],
+      "categories": [
+        {
+          "categoryId": "42017",
+          "categoryName": "Power Supplies"
+        },
+        {
+          "categoryId": "58058",
+          "categoryName": "Computers/Tablets & Networking"
+        },
+        {
+          "categoryId": "175673",
+          "categoryName": "Computer Components & Parts"
+        }
+      ],
+      "image": {
+        "imageUrl": "https://i.ebayimg.com/images/g/EXAMPLE5/s-l225.jpg"
+      },
+      "price": {
+        "value": "31.00",
+        "currency": "GBP"
+      },
+      "itemHref": "https://api.ebay.com/buy/browse/v1/item/v1%7C444555666777%7C0",
+      "seller": {
+        "username": "example_seller",
+        "feedbackPercentage": "99.5",
+        "feedbackScore": 500,
+        "sellerAccountType": "INDIVIDUAL"
+      },
+      "condition": "Used",
+      "conditionId": "3000",
+      "thumbnailImages": [
+        {
+          "imageUrl": "https://i.ebayimg.com/images/g/EXAMPLE5/s-l1600.jpg"
+        }
+      ],
+      "shippingOptions": [
+        {
+          "shippingCostType": "FIXED",
+          "shippingCost": {
+            "value": "5.21",
+            "currency": "GBP"
+          }
+        }
+      ],
+      "buyingOptions": [
+        "FIXED_PRICE",
+        "AUCTION"
+      ],
+      "bidCount": 0,
+      "currentBidPrice": {
+        "value": "9.68",
+        "currency": "GBP"
+      },
+      "itemWebUrl": "https://www.ebay.co.uk/itm/444555666777?_skw=power+supply+psu&hash=item000000000:g:EXAMPLE5",
+      "itemLocation": {
+        "postalCode": "AB12***",
+        "country": "GB"
+      },
+      "adultOnly": false,
+      "legacyItemId": "444555666777",
+      "availableCoupons": false,
+      "itemOriginDate": "2026-07-07T09:40:58.000Z",
+      "itemCreationDate": "2026-07-07T09:40:58.000Z",
+      "itemEndDate": "2026-07-14T09:40:58.000Z",
+      "topRatedBuyingExperience": false,
+      "priorityListing": false,
+      "listingMarketplaceId": "EBAY_GB"
+    }
+  ]
+}

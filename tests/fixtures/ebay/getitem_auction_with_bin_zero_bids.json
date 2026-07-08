@@ -1,0 +1,272 @@
+{
+  "itemId": "v1|444555666777|0",
+  "title": "Corsair CX550 550W Power Supply PSU 80 PLUS Bronze Black Sleeved Cables Tested",
+  "price": {
+    "value": "31.00",
+    "currency": "GBP"
+  },
+  "categoryPath": "Computers/Tablets & Networking|Computer Components & Parts|Power Supplies",
+  "categoryIdPath": "58058|175673|42017",
+  "condition": "Used",
+  "conditionId": "3000",
+  "itemLocation": {
+    "city": "Example City",
+    "postalCode": "AB12***",
+    "country": "GB"
+  },
+  "image": {
+    "imageUrl": "https://i.ebayimg.com/images/g/EXAMPLE5/s-l225.jpg"
+  },
+  "currentBidPrice": {
+    "value": "9.68",
+    "currency": "GBP"
+  },
+  "color": "Black",
+  "brand": "Corsair",
+  "itemCreationDate": "2026-07-07T09:40:58.000Z",
+  "itemEndDate": "2026-07-14T09:40:58.000Z",
+  "seller": {
+    "username": "example_seller",
+    "feedbackPercentage": "99.5",
+    "feedbackScore": 500,
+    "sellerAccountType": "INDIVIDUAL"
+  },
+  "mpn": "CP9020102UK, CP9020277UK",
+  "estimatedAvailabilities": [
+    {
+      "deliveryOptions": [
+        "SHIP_TO_HOME"
+      ],
+      "estimatedAvailabilityStatus": "IN_STOCK",
+      "estimatedAvailableQuantity": 1,
+      "estimatedSoldQuantity": 0,
+      "estimatedRemainingQuantity": 1
+    }
+  ],
+  "shippingOptions": [
+    {
+      "shippingServiceCode": "Standard Tracked Delivery",
+      "shippingCarrierCode": "Evri",
+      "type": "Economy Delivery",
+      "shippingCost": {
+        "value": "5.21",
+        "currency": "GBP"
+      },
+      "quantityUsedForEstimate": 1,
+      "minEstimatedDeliveryDate": "2026-07-10T10:00:00.000Z",
+      "maxEstimatedDeliveryDate": "2026-07-15T10:00:00.000Z"
+    },
+    {
+      "shippingServiceCode": "Express Tracked Delivery",
+      "shippingCarrierCode": "Royal Mail",
+      "type": "Standard Delivery",
+      "shippingCost": {
+        "value": "6.10",
+        "currency": "GBP"
+      },
+      "quantityUsedForEstimate": 1,
+      "minEstimatedDeliveryDate": "2026-07-10T10:00:00.000Z",
+      "maxEstimatedDeliveryDate": "2026-07-11T10:00:00.000Z"
+    }
+  ],
+  "shipToLocations": {
+    "regionIncluded": [
+      {
+        "regionName": "United Kingdom",
+        "regionType": "COUNTRY",
+        "regionId": "GB"
+      }
+    ],
+    "regionExcluded": [
+      {
+        "regionName": "Afghanistan",
+        "regionType": "COUNTRY",
+        "regionId": "AF"
+      },
+      {
+        "regionName": "Libya",
+        "regionType": "COUNTRY",
+        "regionId": "LY"
+      },
+      {
+        "regionName": "Nauru",
+        "regionType": "COUNTRY",
+        "regionId": "NR"
+      },
+      {
+        "regionName": "Somalia",
+        "regionType": "COUNTRY",
+        "regionId": "SO"
+      },
+      {
+        "regionName": "Yemen",
+        "regionType": "COUNTRY",
+        "regionId": "YE"
+      },
+      {
+        "regionName": "Ukraine",
+        "regionType": "COUNTRY",
+        "regionId": "UA"
+      },
+      {
+        "regionName": "Iran",
+        "regionType": "COUNTRY",
+        "regionId": "IR"
+      },
+      {
+        "regionName": "Russian Federation",
+        "regionType": "COUNTRY",
+        "regionId": "RU"
+      }
+    ]
+  },
+  "returnTerms": {
+    "returnsAccepted": false
+  },
+  "taxes": [
+    {
+      "taxType": "VAT",
+      "includedInPrice": false,
+      "ebayCollectAndRemitTax": false
+    }
+  ],
+  "localizedAspects": [
+    {
+      "type": "STRING",
+      "name": "Voltage Compatibility",
+      "value": "240 V"
+    },
+    {
+      "type": "STRING",
+      "name": "Compatible Brand",
+      "value": "Universal"
+    },
+    {
+      "type": "STRING",
+      "name": "Cooling",
+      "value": "1 Fan"
+    },
+    {
+      "type": "STRING",
+      "name": "Compatible Model",
+      "value": "Universal"
+    },
+    {
+      "type": "STRING",
+      "name": "MPN",
+      "value": "CP9020102UK, CP9020277UK"
+    },
+    {
+      "type": "STRING",
+      "name": "Colour",
+      "value": "Black"
+    },
+    {
+      "type": "STRING",
+      "name": "Connectors",
+      "value": "20 Pin, 4 Pin Peripheral, 24 Pin, 4 Pin 12 V, 20+4 Pin"
+    },
+    {
+      "type": "STRING",
+      "name": "Brand",
+      "value": "Corsair"
+    },
+    {
+      "type": "STRING",
+      "name": "Form Factor",
+      "value": "ATX"
+    },
+    {
+      "type": "STRING",
+      "name": "Type",
+      "value": "Power Module"
+    },
+    {
+      "type": "STRING",
+      "name": "Maximum Wattage",
+      "value": "500 W"
+    },
+    {
+      "type": "STRING",
+      "name": "Maximum Power",
+      "value": "550 W"
+    },
+    {
+      "type": "STRING",
+      "name": "Unit Type",
+      "value": "Unit"
+    },
+    {
+      "type": "STRING",
+      "name": "Item Height",
+      "value": "86 mm"
+    },
+    {
+      "type": "STRING",
+      "name": "Model",
+      "value": "CX550"
+    },
+    {
+      "type": "STRING",
+      "name": "Number of Outlets",
+      "value": "1"
+    },
+    {
+      "type": "STRING",
+      "name": "Features",
+      "value": "Modular"
+    },
+    {
+      "type": "STRING",
+      "name": "Country of Origin",
+      "value": "China"
+    }
+  ],
+  "topRatedBuyingExperience": false,
+  "buyingOptions": [
+    "FIXED_PRICE",
+    "AUCTION"
+  ],
+  "itemWebUrl": "https://www.ebay.co.uk/itm/444555666777?_skw=search&hash=item000000000:g:EXAMPLE5",
+  "paymentMethods": [
+    {
+      "paymentMethodType": "WALLET",
+      "paymentMethodBrands": [
+        {
+          "paymentMethodBrandType": "PAYPAL"
+        },
+        {
+          "paymentMethodBrandType": "APPLE_PAY"
+        }
+      ]
+    },
+    {
+      "paymentMethodType": "CREDIT_CARD",
+      "paymentMethodBrands": [
+        {
+          "paymentMethodBrandType": "VISA"
+        },
+        {
+          "paymentMethodBrandType": "MASTERCARD"
+        },
+        {
+          "paymentMethodBrandType": "DINERS_CLUB"
+        }
+      ]
+    }
+  ],
+  "immediatePay": false,
+  "minimumPriceToBid": {
+    "value": "9.68",
+    "currency": "GBP"
+  },
+  "uniqueBidderCount": 0,
+  "enabledForGuestCheckout": true,
+  "eligibleForInlineCheckout": true,
+  "lotSize": 0,
+  "legacyItemId": "444555666777",
+  "priorityListing": false,
+  "adultOnly": false,
+  "categoryId": "42017",
+  "listingMarketplaceId": "EBAY_GB"
+}

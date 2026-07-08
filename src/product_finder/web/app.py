@@ -151,16 +151,25 @@ def _auction_view(conn, row: dict) -> dict:
     """Resolve one listings-row into its trajectory view-model: reference
     price prefers the product's typical_used_price (real market evidence)
     over the item's blended normal_price estimate, same convention as
-    scoring.effective_prices()."""
+    scoring.effective_prices().
+
+    current_bid must never fall back to row['price'] — bug fixed 2026-07-08:
+    for a BIN+AUCTION listing, row['price'] is the BIN-preferring
+    _price_value() fallback (see sources/ebay.py), so falling back to it
+    here displayed the Buy It Now price mislabelled as "current bid". The
+    fix: row['current_bid_price'] is now populated at search time (real
+    captures confirm currentBidPrice is present even at zero bids, equal to
+    minimumPriceToBid then — never absent, so no further "starting price"
+    fallback is needed), so the only remaining preference is snapshot
+    history (freshest observed) over the listing's own last-seen value."""
     remaining = None
     if row["end_time"]:
         end_time = datetime.fromisoformat(row["end_time"].replace("Z", "+00:00"))
         remaining = end_time - datetime.now(timezone.utc)
     snapshots = db.list_auction_snapshots(conn, row["listing_id"])
-    # Best-effort current bid before the first poll snapshot exists: the
-    # listing's own price reflects search-time _price_value() fallback
-    # (BIN-or-bid), which is the best we have until a snapshot lands.
-    current_bid = snapshots[-1]["current_bid_price"] if snapshots else row["price"]
+    current_bid = (
+        snapshots[-1]["current_bid_price"] if snapshots else row["current_bid_price"]
+    )
     reference_price = row["typical_used_price"] or row["normal_price"]
     reference_label = "typical used price" if row["typical_used_price"] else "estimated normal price"
     trajectory = auction_trajectory.evaluate(
@@ -174,6 +183,7 @@ def _auction_view(conn, row: dict) -> dict:
     return {
         "row": row,
         "current_bid": current_bid,
+        "buy_it_now_price": row["buy_it_now_price"],
         "trajectory": trajectory,
         "trajectory_css": _TRAJECTORY_CSS.get(trajectory.label, "traj-unknown"),
     }

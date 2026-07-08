@@ -1145,6 +1145,58 @@ def test_auctions_page_uses_latest_snapshot_for_current_bid(cfg, client):
     assert b"\xc2\xa335.00" in resp.data  # latest snapshot, not the stale listing price of 20.0
 
 
+def test_auctions_page_never_shows_bin_as_current_bid_before_first_poll(cfg, client):
+    """Regression test for the reported bug (2026-07-08): a BIN+AUCTION
+    listing with zero bids and no snapshot yet must show the real current
+    bid, never the Buy It Now price, on the Active Auctions page."""
+    project_id, item_id = seed_match(cfg)
+    conn = db.connect(cfg.db_path)
+    listing_id, _ = db.upsert_listing(
+        conn,
+        Listing(source="ebay", external_id="BUG1", title="PSU with BIN, zero bids",
+                price=73.50, url="https://example.com/bug1",
+                buying_options=["AUCTION", "FIXED_PRICE"], bid_count=0,
+                current_bid_price=52.70, buy_it_now_price=73.50,
+                end_time="2099-01-01T12:00:00Z"),
+    )
+    db.record_match(conn, listing_id, item_id, Evaluation(
+        grade="B", flags=["live auction"], margin_abs=0, margin_pct=0,
+        under_target=False, deal_score=50.0))
+    conn.commit()
+    # Deliberately no auction_snapshots row — this is the "never been
+    # polled yet" state the bug report was about.
+
+    resp = client.get("/auctions")
+    assert b"\xc2\xa352.70" in resp.data  # real current bid
+    assert b"\xc2\xa373.50" in resp.data  # BIN shown too, but separately
+    # The old bug: BIN (73.50) shown as THE price/current bid with no
+    # distinct current-bid figure at all. Confirm 52.70 appears in a context
+    # that isn't just coincidentally also matching 73.50 twice.
+    assert resp.data.count(b"\xc2\xa373.50") == 1
+
+
+def test_match_table_shows_current_bid_not_bin_for_auction_with_bin(cfg, client):
+    """Same bug, dashboard/project-page match table (pre-existing display,
+    not part of the original Coverage-phase UI work but the same defect)."""
+    project_id, item_id = seed_match(cfg)
+    conn = db.connect(cfg.db_path)
+    listing_id, _ = db.upsert_listing(
+        conn,
+        Listing(source="ebay", external_id="BUG2", title="PSU with BIN, zero bids",
+                price=73.50, url="https://example.com/bug2",
+                buying_options=["AUCTION", "FIXED_PRICE"], bid_count=0,
+                current_bid_price=52.70, buy_it_now_price=73.50),
+    )
+    db.record_match(conn, listing_id, item_id, Evaluation(
+        grade="B", flags=["live auction"], margin_abs=0, margin_pct=0,
+        under_target=False, deal_score=50.0))
+    conn.commit()
+
+    resp = client.get(f"/projects/{project_id}")
+    assert b"\xc2\xa352.70" in resp.data
+    assert b"BIN \xc2\xa373.50" in resp.data
+
+
 def test_ended_auction_excluded_from_active_auctions_page(cfg, client):
     project_id, item_id = seed_match(cfg)
     conn = db.connect(cfg.db_path)
