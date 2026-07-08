@@ -1,0 +1,5 @@
+{
+  "files.associations": {
+    "/docs/examples/**/*.html": "plaintext"
+  }
+}
