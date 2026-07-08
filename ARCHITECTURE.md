@@ -1,540 +1,445 @@
-# Product Finder — Architecture
+# Product Finder Architecture v2
 
-This is the canonical, high-level architecture reference for Product
-Finder. It complements, but does not replace, the ADRs in `docs/adr/` (the
-record of *why* a specific decision was made) and
-`docs/architecture-briefing.md` (an earlier, narrower snapshot, now
-superseded by this document as the entry point). A new engineer or AI agent
-should be able to read this document in 10–15 minutes and understand the
-whole system.
+This is the canonical architecture reference for Product Finder.
 
----
+It describes the platform as implemented today, not as originally planned. ADRs in `docs/adr/` remain historical decision records; when ADR prose disagrees with current implementation, implementation wins and the discrepancy is tracked in `docs/documentation-audit.md`.
 
-## 1. Vision and guiding principles
+## 1. System Purpose
 
-Product Finder monitors second-hand marketplaces for listings matching a
-user's wanted items, and judges each match — not just "does this exist" but
-"is this genuinely cheap, and is it cheap for a good reason." A plain saved
-search tells you a keyword matched; this application adds condition
-grading, reference pricing at both item and specific-product granularity,
-and a composite deal score on top.
+Product Finder is a local-first market knowledge and buying-intelligence platform.
 
-Guiding principles (see `README.md`, "Design Principles" and
-`docs/architecture-briefing.md`):
+It watches marketplaces for listings that match a user's wanted items, then evaluates whether each listing is genuinely relevant, good value, current, trustworthy enough to consider, and worth acting on.
 
-- **Working software over perfect software.** Small, additive, shippable
-  changes over big-bang rewrites — see ADR-0001's five-phase roadmap, which
-  explicitly rejects a "big-bang SaaS rewrite."
-- **Local-first, currently.** Runs on the user's own machine against a
-  local SQLite file, no accounts, no cloud dependency today. The roadmap
-  (§13) grows this toward a public, multi-user surface *additively*, not by
-  replacing this model.
-- **Conservatism about inference.** The system prefers a plain, explainable
-  rule (keyword match, median of observations, word-boundary regex) over a
-  fuzzy or AI-driven guess. Where automation isn't possible without
-  violating a marketplace's terms of service, it falls back to a
-  human-followed manual link rather than scraping (see §8, connector risk
-  model).
-- **Declared, not inferred.** Connector capabilities, connector risk, and
-  known limitations are explicit dataclass fields the code must state
-  (`sources/base.py`'s `SourceCapabilities`/`ConnectorKnowledge`), never
-  guessed from a source's name or type.
-- **Nothing is hidden by accident.** Risk (connector account risk, scraping
-  basis), affiliate config, and known gaps are surfaced, not silently
-  absorbed — e.g. a scraping-based connector can exist, but never
-  disguised as "automated" with no risk attached.
-- **Compliant with marketplace terms of service.** Automation only where a
-  marketplace's own official API or an open feed permits it; everything
-  else is manual-assisted.
+The system has moved beyond "bargain finder" into a platform that accumulates reusable knowledge about:
 
----
+- connectors and source quality
+- listings and listing state
+- products and catalogue identity
+- cross-source listing identity
+- used and new market prices
+- project-specific buying intent
+- decision signals such as scores, warnings, auction trajectory, and offer suggestions
 
-## 2. System overview
+## 2. Current Runtime Architecture
 
-A single Python package (`src/product_finder/`), run either as a CLI or as
-a Flask web app, both operating against one shared SQLite database (WAL
-mode, so a background writer and the web UI reader never lock each other
-out).
+Current state:
 
-```
-                        ┌────────────────────┐
-                        │   config.yaml       │  (settings: postcode,
-                        │   (config.py)        │   interval, alerts,
-                        └─────────┬───────────┘   source *definitions*)
-                                  │ seeds/overlays
-                                  ▼
-   ┌────────────┐   watch/    ┌──────────────────────┐   reads/writes   ┌────────────┐
-   │ Marketplace │──run-once──▶│  runner.py            │◀────────────────▶│  db.py      │
-   │ connectors  │  fetch      │  (orchestration)       │                  │  (SQLite,   │
-   │ (sources/)  │  Listings   │  catalogue/grading/    │                  │   WAL mode) │
-   └────────────┘             │  scoring/identity/dedup │                  └─────┬──────┘
-                               └───────────┬────────────┘                        │
-                                           │ alerts                              │ reads
-                                           ▼                                     ▼
-                                  ┌────────────────┐                    ┌──────────────────┐
-                                  │ alerts/         │                    │ web/app.py         │
-                                  │ (console/webhook)│                    │ (Flask, server-    │
-                                  └────────────────┘                    │  rendered UI)       │
-                                                                          └─────────┬─────────┘
-                                                                                    │ every outbound
-                                                                                    │ listing click
-                                                                                    ▼
-                                                                          ┌───────────────────────┐
-                                                                          │ outbound.py             │
-                                                                          │ Marketplace Outbound    │
-                                                                          │ Gateway (§9)            │
-                                                                          └───────────┬─────────────┘
-                                                                                      ▼
-                                                                              real marketplace
+- Python package under `src/product_finder/`
+- CLI entry point via `product-finder`
+- Flask server-rendered web UI bound to localhost
+- SQLite database with WAL mode and a 10 second busy timeout
+- YAML configuration for global settings and source definitions
+- DB-backed projects, items, catalogue, listings, matches, source settings, and telemetry
+- `watch` and `web` run as independent OS processes against the same SQLite file
+
+Search never runs inside a web request. The web app reads and mutates local state; the watch loop fetches marketplaces.
+
+```mermaid
+flowchart LR
+    CFG[config.yaml] --> C[config.py]
+    C --> CLI[cli.py]
+    C --> WEB[web/app.py]
+    C --> RUN[runner.py]
+
+    CLI --> RUN
+    CLI --> WATCH[watch loop]
+    WATCH --> RUN
+    WATCH --> AUCTION[auction_watch.py]
+
+    RUN --> ORCH[orchestrator.py]
+    ORCH --> SRC[sources/* connectors]
+    SRC --> L[normalised Listing]
+    L --> RUN
+
+    RUN --> CAT[catalogue.py]
+    RUN --> SCORE[scoring.py]
+    RUN --> ID[identity.py / duplicates.py]
+    RUN --> DB[(SQLite / db.py)]
+    AUCTION --> DB
+
+    WEB --> DB
+    WEB --> OUT[outbound.py]
+    OUT --> MARKET[Marketplace URL]
 ```
 
-`watch`/`run-once` and `web` are **independent OS processes**. Search never
-happens inside the web process — the dashboard only polls and displays
-whatever `watch` finds. This is deliberate: a page load must never block on
-a network call to a marketplace.
+## 3. Architectural Layers
 
----
+```mermaid
+flowchart TB
+    UI[Presentation: Flask templates + CLI commands]
+    OR[Orchestration: runner.py + SearchOrchestrator]
+    DOMAIN[Domain services: catalogue, scoring, grading, identity, duplicates, auctions, offers, health]
+    CONN[Connectors: Source contract + eBay/RSS/links/Gumtree/Facebook]
+    STORE[Storage and config: db.py SQLite + config.py YAML]
 
-## 3. High-level architecture diagram
-
-Layered by responsibility, narrowest at the bottom:
-
-```
-┌───────────────────────────────────────────────────────────────────┐
-│  Presentation:  web/app.py (Flask routes) + templates/ (Jinja)      │
-│                 cli.py (argparse entry points)                      │
-├───────────────────────────────────────────────────────────────────┤
-│  Orchestration: runner.py (one search cycle),                       │
-│                 orchestrator.py (SearchOrchestrator/ExecutionPolicy) │
-├───────────────────────────────────────────────────────────────────┤
-│  Domain logic:  catalogue.py (product matching) · grading.py         │
-│                 scoring.py (deal score/warnings) · identity.py       │
-│                 duplicates.py · price_trend.py · auction_trajectory  │
-│                 offers.py · connector_health.py · outbound.py (§9)   │
-├───────────────────────────────────────────────────────────────────┤
-│  Connectors:    sources/base.py (Source contract) + sources/*.py     │
-│                 (ebay, gumtree, facebook, rss, links)                │
-├───────────────────────────────────────────────────────────────────┤
-│  Storage:       db.py (SQLite/WAL — schema, migrations, all CRUD)    │
-│  Config:        config.py (YAML → dataclasses)                       │
-└───────────────────────────────────────────────────────────────────┘
+    UI --> OR
+    UI --> DOMAIN
+    UI --> STORE
+    OR --> DOMAIN
+    OR --> CONN
+    OR --> STORE
+    DOMAIN --> STORE
 ```
 
-Each layer only ever calls downward. Presentation and orchestration never
-contain marketplace-specific logic (that's the connectors' and, for
-outbound navigation, the Marketplace Outbound Gateway's job). Domain logic
-never contains SQL or Flask (`catalogue.match()`, `grading.grade()`,
-`scoring.evaluate()` etc. are pure functions over plain data).
+Layer rules:
 
----
+- Connectors translate marketplace-specific access into normalised `Listing` or `ManualLink` objects.
+- The orchestrator knows how search work is executed, not what a listing means.
+- The runner owns the search cycle: fetch, filter, match, score, persist, alert.
+- Domain modules should stay deterministic and source-agnostic.
+- `db.py` owns schema, migrations, and persistence.
+- Templates must not emit raw marketplace listing URLs directly; listing clicks go through the outbound gateway.
 
-## 4. Data ownership model (platform-owned vs project-owned)
+## 4. Major Components
 
-Today (single-user, no accounts) this distinction is architectural intent
-more than an enforced boundary — but it already shapes the schema, and is
-the basis Phase 3 (ADR-0004) builds real authorization on top of without a
-data-model rewrite:
+| Component | Current responsibility |
+|---|---|
+| `config.py` | Loads YAML into dataclasses: sources, alerts, Ollama, SearXNG, outbound config, seed projects. |
+| `db.py` | SQLite schema, migrations, CRUD, effective config overlays, query surfaces, telemetry, import/export support. |
+| `cli.py` | Commands: `run-once`, `watch`, `import-config`, `list-projects`, `list-items`, `catalogue-tidy`, `web`. |
+| `runner.py` | One full search cycle and alert dispatch. |
+| `orchestrator.py` | Work item execution and `ExecutionPolicy` seam for future scheduling/retry/concurrency. |
+| `sources/*` | Marketplace acquisition and manual link generation behind the `Source` contract. |
+| `catalogue.py` | Product identity helpers, suggestion normalisation, product matching, accessory/suspect signals. |
+| `scoring.py` | Margins, warning flags, objective deal score, under-target decision, spec-conflict penalties. |
+| `grading.py` | Deterministic condition classification. |
+| `spec_match.py` | Generic technical/category contradiction detection for unverified listings. |
+| `identity.py` | Canonical URL identity v1, currently eBay item id extraction. |
+| `duplicates.py` | Cross-marketplace fuzzy duplicate candidate generation for human review. |
+| `auction_watch.py` | Auction polling and closing-price capture. |
+| `auction_trajectory.py` | Explainable live-auction labels and bid-ceiling suggestions. |
+| `offers.py` | Human-use offer suggestions; never submits offers. |
+| `retailer_price.py` | Optional SearXNG-backed retailer price candidate discovery and approved URL refresh. |
+| `extraction.py` | Optional Ollama brand/model extraction fallback feeding the suggestion queue. |
+| `outbound.py` | Marketplace Outbound Gateway and affiliate/query-param adapter abstraction. |
+| `connector_health.py` | Explainable source health classification over persisted telemetry. |
+| `project_import.py` | Versioned JSON/YAML project-item import/export format. |
 
-**Platform-owned (shared, global — not scoped to any one project/user):**
-- `listings` — a marketplace listing is one real-world fact, not owned by
-  whichever item happened to match it first.
-- `products` / catalogue price history (`product_price_observations`,
-  `product_new_price_history`, `product_price_candidates`) — see
-  ADR-0007 (Catalogue globalization, EPIC-100, **shipped**): manufacturer/
-  model entries and their price history are shared across every project,
-  not duplicated per item. `item_products` is the join/context table for
-  an item's *own* tracking of a shared product (match terms, target price,
-  wanted/archived) — never a copy of the product itself.
-- `listing_identities` / `listing_identity_members` (cross-source identity,
-  §7) and `listing_duplicates` (fuzzy dedup, §7) — properties of the
-  listings themselves.
-- `listing_clicks` (§9) — an audit/analytics fact about a click, not
-  project data.
-- Source *definitions* (`sources.extra` in YAML) — always config, never
-  duplicated into the DB (see §8).
+## 5. Current Domain Model
 
-**Project-owned (scoped to a project/user's own intent):**
-- `projects`, `items` — what someone is watching for.
-- `item_products` — an item's own match terms/target price *against* a
-  shared product.
-- `listing_matches` — the result of evaluating one listing against one
-  item; a listing matching two items produces two independent match rows.
-- `alerts_sent` — per-match alert delivery record.
-- `source_settings` — currently host-wide (enabled/eBay creds), not
-  per-user; Phase 2/3 (ADR-0003/0004) will need to decide whether this
-  becomes per-user or stays host-wide.
-
-This split is exactly why Catalogue Globalization (EPIC-100) was a hard
-blocking prerequisite before the public/sharing phases (ADR-0001): once
-real distinct users exist, per-user catalogue fragmentation would mean
-duplicate products and fragmented price history instead of one shared,
-improving catalogue.
-
----
-
-## 5. Core domain model
-
-See `docs/architecture-briefing.md` for the full field-level table (kept
-there rather than duplicated here, since field lists rot fast — trust that
-document's "Domain Model" section, or `db.py`'s `_SCHEMA`, as current
-ground truth). Summary of the entities and how they relate:
-
-```
-Project 1───* Item 1───* ItemProduct *───1 Product 1───* ProductPriceObservation
-                │                                              (used-price history)
-                │                                          Product 1───* ProductNewPriceHistory
-                │                                              (new-price history, SearXNG-sourced)
-                *
-         ListingMatch *───1 Listing
-                              │
-                              ├──* AuctionSnapshot (per-poll bid/BIN observation history)
-                              ├──* ListingClick (Marketplace Outbound Gateway, §9)
-                              └── ListingIdentity / ListingDuplicate (§7)
+```mermaid
+erDiagram
+    PROJECTS ||--o{ ITEMS : contains
+    ITEMS ||--o{ ITEM_PRODUCTS : tracks
+    PRODUCTS ||--o{ ITEM_PRODUCTS : "tracked by"
+    PRODUCTS ||--o{ PRODUCT_PRICE_OBSERVATIONS : has
+    PRODUCTS ||--o{ PRODUCT_NEW_PRICE_HISTORY : has
+    PRODUCTS ||--o{ PRODUCT_PRICE_CANDIDATES : has
+    ITEMS ||--o{ PRODUCT_SUGGESTIONS : receives
+    LISTINGS ||--o{ LISTING_MATCHES : matched_as
+    ITEMS ||--o{ LISTING_MATCHES : evaluates
+    PRODUCTS ||--o{ LISTING_MATCHES : resolves_to
+    LISTING_MATCHES ||--o{ ALERTS_SENT : alerts
+    LISTINGS ||--o{ AUCTION_SNAPSHOTS : observed_as
+    LISTINGS ||--o{ LISTING_IDENTITY_MEMBERS : member
+    LISTING_IDENTITIES ||--o{ LISTING_IDENTITY_MEMBERS : groups
+    LISTINGS ||--o{ LISTING_CLICKS : clicked
 ```
 
-- **Project** — a named group of wanted items.
-- **Item** — one wanted product search within a project (terms, prices,
-  priority, source filter).
-- **Product** — a platform-owned manufacturer/model catalogue entry
-  (three-tier pricing: MSRP, typical new, typical used).
-- **ItemProduct** — the join/context row: this item's own match terms and
-  target price *against* a shared product.
-- **Listing** — a single marketplace listing as fetched from a connector,
-  normalised (`models.Listing`) — everything downstream only ever sees
-  this shape, never a marketplace-specific one.
-- **ListingMatch** (`models.Evaluation`) — the result of scoring one
-  Listing against one Item: grade, deal score, margin, warning flags.
-- **ListingClick** — one outbound redirect attempt (§9).
+Important entities:
 
----
+- **Project**: a group of wanted items and optional source restrictions.
+- **Item**: project-scoped user intent: terms, exclude terms, max price, normal price, target price, priority, notes, source restrictions.
+- **Product**: global platform catalogue identity and market fields: manufacturer, model, MSRP, typical new price, typical used price, canonical retailer URL, price trend fields.
+- **ItemProduct**: item-specific tracking of a global product: match terms, target deal override, archived state, wanted/knowledge-only state.
+- **Listing**: one marketplace listing, deduplicated by `(source, external_id)`.
+- **ListingMatch**: one listing evaluated against one item, optionally resolved to a global product.
+- **ProductSuggestion**: item-scoped candidate manufacturer/model discovered from structured source data or optional Ollama extraction.
+- **ListingIdentity**: automatic canonical identity where a stable marketplace id is recoverable from URL.
+- **ListingDuplicate**: human-reviewed possible cross-marketplace duplicate pair.
+- **SourceRun**: per-source run telemetry used for health, maturity, and coverage analytics.
+- **ListingClick**: outbound redirect audit event.
 
-## 6. Request flow
+## 6. Data Ownership
 
-A typical dashboard page load:
+Current state has no users or authentication. Ownership here means architectural ownership, not enforced authorization.
 
-```
-GET /  (web/app.py: dashboard())
-  → _get_conn(cfg)                      one SQLite connection per request (g)
-  → _dashboard_data(conn, cfg)
-      → db.project_summaries()
-      → db.project_top_picks()
-      → db.query_matches(flagged=False) → best deals ("hero" + runners)
-      → db.query_matches(flagged=True)  → warnings
-      → db.dashboard_stats()
-      → db.pending_duplicate_counts()
-  → render_template("dashboard.html", ...)
-      → macros in _ui.html / _match_table.html render each row
-      → every listing href calls the listing_out_url() Jinja global (§9),
-        never row['url'] directly
-```
+Platform-owned data:
 
-A listing click:
+- `listings`
+- `products`
+- `product_price_observations`
+- `product_new_price_history`
+- `product_price_candidates`
+- `listing_identities`
+- `listing_identity_members`
+- `listing_duplicates`
+- `auction_snapshots`
+- `source_runs`
+- `listing_clicks`
+- source definitions from YAML
 
-```
-GET /out/<listing_id>?context=dashboard[&project_id=N]
-  (web/app.py: listing_out())
-  → db.get_listing(listing_id)          404 if missing
-  → MarketplaceOutboundService.resolve(source, listing.url)   (§9)
-  → outbound.is_safe_redirect_url(resolved)   defence in depth
-  → db.record_listing_click(...)        never blocks the redirect on failure
-  → 302 redirect to the resolved URL
-```
+Project-owned data:
 
-Search/matching is a separate process entirely (§7) — a page load never
-triggers a marketplace fetch.
+- `projects`
+- `items`
+- `item_products`
+- `listing_matches`
+- `alerts_sent`
+- product suggestions as review candidates for an item's catalogue context
 
----
+Future user-owned data:
 
-## 7. Search/matching pipeline
+- project owner id
+- private project/item notes and preferences
+- saved/ignored/shortlisted listing decisions
+- project-scoped feedback such as wrong item, accessory, not relevant
+- share/invite/clone state
+- per-user alert preferences and recommendation preferences
 
-Driven by `runner.py`, invoked by `watch` (continuous, `interval_minutes`)
-or `run-once` (single pass). Per project → item → eligible source → search
-term:
+The boundary is: products and listings are shared facts; matches and intent are project context.
 
-```
-Source.search(term, item)             one connector, one term
-  → raw Listing objects
-Item exclude_terms / max_price filter
-  → db.upsert_listing()                dedup by (source, external_id);
-                                        refreshes price/bid/image on rescan
-  → db.resolve_identity()              identity v1: canonical-URL match
-                                        (identity.py) links a generic-feed
-                                        sighting to an already-seen native
-                                        listing (eBay item IDs today)
-  → catalogue.match()                  resolve to a specific Product, if any
-  → scoring.evaluate()                 grade + warning flags + deal score
-                                        (scoring.py delegates grading to
-                                        grading.py, warning detection to
-                                        spec_match.py/price_trend.py)
-  → db.record_match()                  one listing_matches row per (listing, item)
-  → alerts (console/webhook)           only for genuinely new matches
-```
+## 7. Search Pipeline
 
-Two-layer deduplication, only the first automatic:
-- **Identity v1** (`identity.py`) — same platform-native ID recoverable
-  straight from the URL (e.g. an RSS entry linking to an eBay item page).
-  Auto-links, no human step.
-- **Identity v2 / fuzzy duplicates** (`duplicates.py`) — no shared ID, only
-  title/price/location/image similarity. Never auto-merges — only
-  *proposes* pairs for human confirm/dismiss (`listing_duplicates` table,
-  "Possible duplicates" on the project page). Same-marketplace pairs are
-  never proposed (almost always distinct parallel stock, not a re-list).
+`runner.run_once()` performs one cycle:
 
-Auction awareness runs on its own cadence inside the same `watch` process
-(not a separate worker) — `auction_watch.py` polls a tracked auction more
-frequently as it nears close, and captures a genuine "sold for" price the
-moment eBay's availability flag flips, rather than trusting the last
-timestamp.
+```mermaid
+sequenceDiagram
+    participant Runner
+    participant DB
+    participant Orch as SearchOrchestrator
+    participant Source
+    participant Domain
 
-**Search Aggregation Foundation (`orchestrator.py`, roadmap Phase F):** a
-seam, not yet a behaviour change. `SearchOrchestrator` + `ExecutionPolicy`
-formalise *how* connector search calls are scheduled/executed, decoupled
-from *what* `runner.py` does with the results. `DefaultExecutionPolicy`
-reproduces today's exact sequential, zero-retry, always-run semantics —
-this exists so future work (priority ordering, health-aware skipping,
-retry-with-backoff, concurrency) is a new `ExecutionPolicy`, not a rewrite
-of `runner.py`.
-
----
-
-## 8. Connector architecture
-
-Every marketplace connector implements one small contract
-(`sources/base.py`'s `Source` ABC): `name`, `capabilities()`,
-`search(term, item)` (automated) or `manual_links(item)` (manual-assisted).
-Everything downstream — grading, scoring, dedup, the web UI — only ever
-sees a normalised `Listing` or `ManualLink`, never marketplace-specific
-data.
-
-**Two connector classes, both first-class:**
-- **Automated** — official APIs (eBay Browse API), or genuinely open
-  RSS/Atom feeds. `search()` does the work.
-- **Manual-assisted** — marketplaces whose terms don't permit automation
-  (Gumtree, Facebook Marketplace). `manual_links()` generates a
-  pre-filtered search link for a human to follow instead.
-
-**Connector risk model** (`SourceCapabilities.account_risk`,
-`compliance_mode`, `is_scraping_based`, `requires_user_auth`) — compliance
-is not a binary build/don't-build gate. A scraping or user-session
-connector *can* exist, but risk must be declared, never hidden behind
-`automated=True` (enforced by `__post_init__` validation — e.g.
-`is_scraping_based=True` cannot be paired with `account_risk="none"`).
-Anything above "low" risk requires explicit per-source opt-in in
-`sources.risk_acknowledged` — being "enabled" is never enough on its own
-(`sources/__init__.py`'s scheduler-side gate).
-
-**Adding a connector:**
-- Most new sites need **zero code** — add an entry under `sources.extra`
-  in `config.yaml` (`type: rss` for an automated per-term feed, `type:
-  links` for a manual-assisted templated search link).
-- A connector needing real API integration (like eBay) gets a `Source`
-  subclass registered in `sources/__init__.py`.
-
-**Connector health & knowledge** (`connector_health.py`,
-`sources/base.py`'s `ConnectorKnowledge`) — explainable, rule-based health
-status built from telemetry already persisted (`source_runs`), not a
-black-box score; every triggered rule reports its own reason. Each
-connector self-describes its supported listing types, marketplaces,
-known limitations, and roadmap notes for the Sources page's Capabilities
-reference.
-
----
-
-## 9. Marketplace outbound gateway
-
-**Every outbound marketplace navigation in this application flows through
-one service.** Templates never render a marketplace URL directly:
-
-```
-Listing → MarketplaceOutboundService → MarketplaceAdapter → redirect URL → Marketplace
+    Runner->>DB: effective_config(), load projects/items
+    Runner->>DB: list_products_for_matching(item)
+    Runner->>Orch: WorkItem(source, term, item)
+    Orch->>Source: search(term, item)
+    Source-->>Orch: Listing[]
+    Orch-->>Runner: SearchOutcome
+    Runner->>Domain: exclude/max-price/catalogue.match/evaluate
+    Runner->>DB: upsert listing
+    Runner->>DB: resolve identity
+    Runner->>DB: record match
+    Runner->>DB: record price observation if eligible
+    Runner->>DB: record product suggestion if eligible
+    Runner->>DB: record source run
+    Runner->>DB: scan duplicate candidates
+    Runner->>DB: commit
 ```
 
-- **`web/app.py`'s `GET /out/<listing_id>`** — the only route that emits a
-  marketplace URL. Validates the listing exists (404 if not), resolves the
-  destination via the service below, validates the result is a safe
-  absolute http(s) URL (`outbound.is_safe_redirect_url` — open-redirect
-  defence in depth), records a `listing_clicks` audit row, then issues a
-  302. A resolution failing the safety check aborts with 502 and records a
-  `failure` outcome rather than ever redirecting somewhere unsafe.
-- **`outbound.MarketplaceOutboundService`** — the single entry point;
-  built once per effective config (affiliate config can be DB-overlaid the
-  same way source enable/disable is). Dispatches on `Listing.source` to a
-  `MarketplaceAdapter`; an unrecognised source (stale data, a removed
-  connector) fails safe to the original URL unchanged rather than blocking
-  navigation.
-- **`outbound.MarketplaceAdapter`** (ABC) — the extension point every
-  future affiliate programme, marketplace quirk, or tracking need plugs
-  into. Deliberately mirrors `sources/base.py`'s `Source` contract style.
-  Each adapter decides, entirely on its own: whether affiliate parameters
-  are supported, how the destination URL is constructed, and how its own
-  failures are handled (must not raise for a normal URL; falls back to the
-  original URL unchanged on any internal problem). Two generic
-  implementations cover every marketplace today:
-  - `PassthroughAdapter` — no affiliate programme configured; URL
-    unchanged. This is not a bypass of the gateway — tracking and the
-    redirect hop still apply uniformly.
-  - `QueryParamAffiliateAdapter` — config-driven query-parameter
-    injection (covers eBay Partner Network and most affiliate schemes). A
-    marketplace needing something more exotic (a cloaked/signed redirect
-    URL) gets its own `MarketplaceAdapter` subclass without touching the
-    service or the route.
-- **`config.OutboundConfig`** (`AppConfig.outbound`) — server-side-only
-  affiliate config (`outbound.affiliate_params` in `config.yaml`), keyed by
-  source name. Never rendered into a template, script, or API response —
-  only the resolved destination URL (in the redirect's `Location` header)
-  ever carries a partner ID.
-- **`listing_clicks` table** (`db.record_listing_click`) — one row per
-  redirect attempt: `listing_id`, `project_id` (nullable — set for
-  project-scoped surfaces), `source`, `context` (which page/surface:
-  `dashboard`/`project`/`auctions`/`offers`/`duplicate_review`/`unknown`),
-  `outcome` (`success`/`failure`), `affiliate_applied`, `user_id` (nullable,
-  always `NULL` until Phase 3/EPIC-103 starts writing it — the column
-  exists now so that phase needs no second migration), `clicked_at`. A
-  failed click-record write never blocks the redirect itself (the route
-  wraps the write in its own try/except).
+Current execution policy:
 
-**Deferred, deliberately:** per-user click attribution (needs Phase 3's
-real `user_id`), affiliate revenue reporting/dashboards, A/B testing or
-multi-programme selection per source, extending tracking to
-manual-assisted search links (Gumtree/Facebook/`links`-type sources — those
-are search pages, not listings, with no natural `listing_id`), and
-anonymous session identifiers (no session concept exists anywhere else in
-this single-operator, no-auth app yet — adding one purely for click
-tracking would be speculative; it belongs with whatever phase introduces
-real sessions). See `docs/adr/0002-affiliate-link-redirect-and-tracking.md`.
+- sequential
+- order-preserving
+- zero retries by default
+- no health-aware skipping yet
+- no concurrency yet
 
----
+Retry and policy seams exist; scheduling intelligence is future work.
 
-## 10. Import/export architecture
+## 8. Matching Pipeline
 
-`project_import.py` — a JSON/YAML backup and bulk-load format
-(`product-finder/import/v1`, see `docs/imports/*.example.{yaml,json}`).
-Deliberately two-phase:
+Matching has several layers:
 
-1. **`build_plan()`** — read-only. Parses a document (naming a project by
-   id or by name, optionally creating it, plus a `defaults` block and a
-   list of items), validates it, and returns an `ImportPlan` — including a
-   full validation error list — for the caller to render as a preview
-   before anything commits.
-2. **`apply_plan()`** — performs the writes, and must only be called with a
-   plan whose `valid` flag is `True`. Callers **must** re-validate
-   (call `build_plan()` again on the same raw text) at the point of
-   commit rather than trusting an earlier plan — the database may have
-   changed in between (e.g. the target project renamed).
+1. **Source result filtering**: item exclude terms and max price.
+2. **Catalogue match**: deterministic match terms over listing title, condition, and description. Longest matching term wins.
+3. **Product verification**: a listing matched to an `ItemProduct` is treated as verified for scoring.
+4. **Spec/category conflict detection**: unverified listings are checked for contradictions such as wrong component category, capacity, generation, or form factor.
+5. **Identity resolution**:
+   - canonical URL identity auto-links where a platform-native id can be derived
+   - fuzzy duplicate candidates are proposed for human review only
 
-`export_project()` produces the same document shape back out, so
-export → edit → import round-trips. `to_yaml()`/`to_json()` are the two
-supported serialisations.
+Catalogue matching is deliberately narrow and explainable. It is a replaceable entry point, but the current implementation is deterministic.
 
-Separately, `import-config` (CLI command / Projects page button) is a
-different, simpler mechanism: merges `config.yaml`'s `projects:` section
-into the database by (project slug, item name), for the YAML-as-seed
-workflow described in §12 below. It is not part of the JSON/YAML backup
-format above.
+## 9. Scoring Pipeline
 
----
+`scoring.evaluate()` produces:
 
-## 11. Public vs authenticated architecture (future)
+- condition grade
+- warning flags
+- absolute and percentage margin
+- under-target boolean
+- objective deal score
 
-Not built yet — this section describes the target shape from ADR-0001's
-five-phase roadmap, so current work doesn't foreclose it by accident.
+Inputs:
 
-Today: every page is unauthenticated, local-only, single implicit owner.
-Planned phases (each independently shippable — see §13):
+- listing price and text
+- item prices and priority
+- matched product reference prices
+- typical used price
+- used-price trend
+- buying options
+- technical/category conflicts
 
-- **Phase 2 (ADR-0003)** — Authentik/OIDC as the authentication backend.
-  Login/session plumbing only; no ownership changes yet, so login
-  correctness is provable in isolation before authorization rules layer on
-  top.
-- **Phase 3 (ADR-0004)** — user-owned data. `projects.owner_user_id` and an
-  authorization model. Platform-owned data (§4: listings, catalogue) stays
-  unrestricted by project ownership — only project/item-scoped data gains
-  an owner.
-- **Phase 4 (ADR-0005)** — public vs signed-in split. Anonymous users can
-  search, browse live deals, and click through (via the outbound gateway,
-  §9); gated actions (saving a project, editing sources) require sign-in.
-  Subscriptions/billing get no-op hooks here, not real payment
-  integration.
-- **Phase 5 (ADR-0006)** — project sharing, invites, and cloning (not
-  real-time co-editing — two distinct primitives: share-by-invite and
-  clone-by-reference). Depends on Catalogue Globalization (EPIC-100,
-  already shipped) so cloning references the shared catalogue rather than
-  copying it.
+Important decisions:
 
-Explicitly out of scope for all five phases: subscriptions/billing
-enforcement, real-time multi-editor collaboration, a public API, a mobile
-app or browser extension, and role-based access control beyond
-owner/recipient/anonymous.
+- Item priority is not part of deal score. It belongs to future ranking/recommendation, not objective deal quality.
+- Live auctions cannot be under-target and are excluded from best-deal hero surfaces.
+- Multi-item/price-range listings cannot receive target bonus.
+- Implausibly cheap unverified listings are treated as likely wrong-product matches.
+- Verified catalogue matches are trusted over generic spec-conflict heuristics.
+- Deal score remains heuristic and explainable, not a black-box recommendation.
 
----
+## 10. Connector Architecture
 
-## 12. Extension points
+Every connector implements `sources.base.Source`.
 
-The places designed to grow without touching the core:
+Connector classes:
 
-- **New marketplace connector** — implement `sources.base.Source`
-  (§8). Zero-code option (`sources.extra` in YAML) for anything needing
-  only an RSS feed or a templated search link.
-- **New marketplace affiliate programme / outbound behaviour** — implement
-  `outbound.MarketplaceAdapter` (§9). Zero-code option
-  (`outbound.affiliate_params` in YAML) for a simple query-param scheme.
-- **New search execution policy** (scheduling, retry, health-aware
-  skipping, concurrency) — implement `orchestrator.ExecutionPolicy` (§7).
-- **New catalogue matching strategy** — `catalogue.match()` is the only
-  entry point; a future AI-assisted matcher can replace or wrap it without
-  touching `runner.py`/`scoring.py`.
-- **New alert channel** — `alerts/` package; console and webhook exist
-  today behind a common per-match "already sent" guard
-  (`alerts_sent` table).
-- **New import/export consumer** — `project_import.py`'s
-  `product-finder/import/v1` document shape is versioned in its own name,
-  so a v2 can be introduced without breaking v1 documents.
+- **Automated**: official API or legitimate feed/search source, returning normalised listings.
+- **Manual-assisted**: generates pre-filtered links for a human to open.
 
----
+Current built-in connectors:
 
-## 13. Roadmap overview
+- eBay: official Browse API, automated when credentials exist.
+- Gumtree: manual-assisted links.
+- Facebook Marketplace: manual-assisted links.
+- RSS extra sources: automated config-defined feed parser.
+- Link extra sources: manual-assisted config-defined URL template.
 
-See `docs/adr/0001-phased-path-to-public-commercial-readiness.md` for the
-authoritative sequencing and rationale. Summary:
+Connector declarations include:
 
-| # | Phase | ADR | Epic | Status |
-|---|---|---|---|---|
-| — | Catalogue globalization (prerequisite, not a numbered phase) | ADR-0007 | EPIC-100 | **Shipped** |
-| 1 | Marketplace outbound gateway / affiliate links | ADR-0002 | EPIC-101 | **Shipped** |
-| 2 | Authentik/OIDC authentication backend | ADR-0003 | EPIC-102 | Planned |
-| 3 | User-owned data & authorization | ADR-0004 | EPIC-103 | Planned |
-| 4 | Public homepage & search experience | ADR-0005 | EPIC-104 | Planned |
-| 5 | Project sharing, invites & cloning | ADR-0006 | EPIC-105 | Planned |
+- capabilities
+- compliance basis
+- account risk
+- automation and manual-input flags
+- freshness and scheduling guidance
+- listing fields supplied
+- enrichment support
+- connector knowledge and maturity
 
-Each phase merges to `main` independently, is useful (or at minimum
-inert-and-safe) on its own, and does not require a later phase to be
-correct or valuable. No phase requires rewriting the SQLite/WAL storage
-model, the `Source` connector contract, or the scoring/catalogue/identity
-pipeline — all five are additive to the domain model described in §5.
+Risk gating happens before scheduled execution: medium/high risk connectors require explicit `sources.risk_acknowledged`.
 
-Separately from the ownership roadmap, `docs/strategy/roadmap.md` tracks
-product-quality workstreams (deal accuracy, identity resolution, coverage)
-that apply regardless of which ownership phase is current.
+See `docs/connector-architecture.md` for the implementation guide.
 
----
+## 11. Marketplace Outbound Gateway
 
-## 14. References to relevant ADRs
+Every listing click goes through `GET /out/<listing_id>`.
 
-- `docs/adr/0001-phased-path-to-public-commercial-readiness.md` — the
-  five-phase sequencing and rationale (§11, §13).
-- `docs/adr/0002-affiliate-link-redirect-and-tracking.md` — the Marketplace
-  Outbound Gateway decision record (§9).
-- `docs/adr/0003-authentik-oidc-authentication-backend.md` — Phase 2 (§11).
-- `docs/adr/0004-user-owned-data-model-and-migration.md` — Phase 3,
-  ownership boundary (§4, §11).
-- `docs/adr/0005-public-vs-signed-in-experience-split.md` — Phase 4 (§11).
-- `docs/adr/0006-project-sharing-invites-and-cloning.md` — Phase 5 (§11).
-- `docs/adr/0007-catalogue-globalization.md` — the platform-owned/
-  project-owned catalogue split (§4, §5), shipped prerequisite.
-- `docs/architecture-briefing.md` — earlier, narrower architectural
-  snapshot (domain model field-level detail, marketplace support table,
-  known limitations) — still useful for detail this document
-  deliberately keeps out to avoid duplication/rot.
-- `docs/strategy/roadmap.md` — product-quality workstreams orthogonal to
-  the ownership roadmap.
-- `README.md` — setup, configuration, and day-to-day usage.
+```mermaid
+flowchart LR
+    Template --> Route[/out listing_id/]
+    Route --> DB[(listing row)]
+    DB --> Service[MarketplaceOutboundService]
+    Service --> Adapter[MarketplaceAdapter]
+    Adapter --> Safe[Safe redirect check]
+    Safe --> Click[listing_clicks]
+    Click --> Redirect[302 marketplace URL]
+```
+
+Rules:
+
+- templates use `listing_out_url()`
+- stored `listings.url` is never mutated for affiliate logic
+- affiliate parameters are resolved server-side
+- unsafe redirect destinations produce a 502 and a failure click record
+- analytics writes must not block safe navigation
+- manual-assisted search links and retailer price candidate URLs are not listing clicks
+
+## 12. Catalogue Architecture
+
+The catalogue is now globalised.
+
+`products` stores shared product identity and market facts. `item_products` stores the item-specific tracking context.
+
+This split enables:
+
+- shared used-price observations across projects
+- clone-by-reference in future sharing
+- platform-owned catalogue quality
+- per-item match terms and target thresholds
+- knowledge-only products that still identify listings and collect price history but do not surface as deals
+
+Product discovery paths:
+
+- structured eBay brand/model enrichment
+- optional Ollama free-text brand/model extraction
+- human approval queue
+- correction at approval time
+- triage into strong/accessory/suspect/brand-only/needs-evidence buckets
+
+Retailer price paths:
+
+- optional SearXNG search for retailer price candidates
+- human approval of canonical retailer URL
+- deterministic refresh of approved URL
+
+## 13. Import And Export
+
+There are two import/export mechanisms:
+
+- `import-config`: merges `config.yaml` projects/items into the DB for the original seed workflow.
+- `project_import.py`: versioned `product-finder/import/v1` JSON/YAML format for previewed bulk import and export.
+
+The versioned import/export format covers project and item intent. It does not export accumulated marketplace knowledge: listings, matches, product catalogue, source telemetry, price observations, auction snapshots, duplicate decisions, or clicks.
+
+That is intentional. Project files are portable user intent, not database backups.
+
+## 14. Extension Points
+
+Current extension points:
+
+- new connector: implement `Source`, or configure `sources.extra`
+- new source risk model fields: extend `SourceCapabilities` only when consumed
+- new connector prose/roadmap: implement `knowledge()`
+- new search scheduling: implement `ExecutionPolicy`
+- new outbound handling: implement `MarketplaceAdapter`, or configure `outbound.affiliate_params`
+- new matching strategy: replace/wrap `catalogue.match()`
+- new alert channel: add under `alerts/`, guarded by `alerts_sent`
+- new import format: add schema version after `product-finder/import/v1`
+
+Future integration points:
+
+- authentication and ownership
+- public search
+- user decisions and feedback
+- notifications
+- browser extension
+- API/webhooks
+- mobile app
+- community templates
+- public catalogue
+
+## 15. Current Limitations
+
+Current state:
+
+- no authentication or user ownership
+- localhost-only Flask app
+- no public search surface
+- no subscriptions, billing, or public API
+- no seller identity model
+- no automated Gumtree/Facebook ingestion
+- no perceptual image matching
+- no automatic purchase, offer submission, or seller messaging
+- no general data-retention/pruning policy for all historical rows
+- no health-aware search scheduling yet
+- no concurrency in search orchestration
+- no moderation/audit model for shared global product edits
+- no global merge audit trail
+
+Deliberately deferred:
+
+- scraping/user-session connectors by default
+- public exposure without explicit route/data filtering
+- recommendation intelligence before catalogue, identity, trust, and coverage mature
+
+## 16. Roadmap Relationship
+
+Product evolution is tracked in `docs/strategy/roadmap.md`.
+
+The public/commercial readiness sequence is:
+
+| Area | Status |
+|---|---|
+| Catalogue globalization | shipped |
+| Marketplace Outbound Gateway / affiliate click tracking | shipped |
+| Authentik/OIDC authentication | planned |
+| User-owned data and authorization | planned |
+| Public homepage/search | planned |
+| Project sharing/invites/cloning | planned |
+
+This roadmap must remain additive to the platform model. Commercial layers should consume platform knowledge; they should not redefine it.
+
+## 17. Canonical Companion Documents
+
+- `VISION.md`
+- `docs/platform-charter.md`
+- `docs/knowledge-model.md`
+- `docs/platform-domain-model.md`
+- `docs/connector-architecture.md`
+- `docs/strategy/roadmap.md`
+- `docs/documentation-audit.md`
+- `docs/architecture-review.md`
+- `docs/strategic-review.md`
