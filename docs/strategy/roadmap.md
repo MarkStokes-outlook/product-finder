@@ -431,6 +431,27 @@ meant to be planned against:
 - Public API.
 - Notification channels beyond console/webhook.
 - Automatic negotiation / seller messaging.
+- **eBay listing-page HTML enrichment** (parked 2026-07-08, see
+  `docs/implementation-notes/2026-07-08-1155-coverage-phase-auctions-offers-connector-risk.md`
+  and the current-bid/BIN display bug fix in the same period). Real eBay
+  page source confirmed to carry `watchCount` and other page-only signals
+  (`x-watch-heart`, etc.) that the official Browse API does not expose at
+  all — verified against a real saved page, not assumed.
+  - **Purpose:** watcher count / other page-only signals, nothing the
+    official API can provide.
+  - **Source:** the listing's own HTML page, not the Browse API.
+  - **Risk:** `compliance_mode="scraping"`, `account_risk` medium-high — this
+    is outside eBay's official API and against its user agreement for
+    automated access; risks the developer API credentials this project's
+    one fully-compliant connector depends on.
+  - **Disabled by default. Opt-in only** (per `sources.risk_acknowledged`,
+    see `sources/base.py`) if ever built — never silently enabled, never
+    scheduled as a default part of the watch cycle.
+  - **Not needed for current bid/Buy It Now correctness** — that gap is
+    already closed via the official API (`current_bid_price`/
+    `buy_it_now_price` on `Listing`, populated by `EbaySource.search()`).
+    This item exists only for watcher-count-style signals the API can't
+    provide, and is not currently justified by real usage.
 
 ---
 
