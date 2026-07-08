@@ -82,6 +82,46 @@
 </table>
 </div>
 
+<h2>Connector Stats</h2>
+<p class="hint">
+  Operational history rather than configuration: when each connector was first seen,
+  how reliably it's been running, and what a typical run turns up. Averages are over
+  every run still inside the 30-day retention window. No health score yet &mdash; that's
+  a separate, explainable model still to come.
+</p>
+<div class="card table-card">
+<table>
+<thead><tr>
+  <th>Source</th><th>First seen</th><th>Last success</th><th>Last failure</th>
+  <th>Consecutive failures</th><th>Success rate</th><th>Avg runtime</th>
+  <th>Avg listings/run</th><th>Avg new/run</th><th>Avg duplicates/run</th>
+  <th>Avg catalogue matches/run</th><th>Avg deals/run</th>
+</tr></thead>
+<tbody>
+{% for s in rows %}{% if s.caps.automated %}
+  <tr>
+    <td><strong>{{ s.label }}</strong></td>
+    {% if s.health %}
+    <td class="meta">{% if s.health.first_seen %}{{ s.health.first_seen | timeago }}{% else %}&mdash;{% endif %}</td>
+    <td class="meta">{% if s.health.last_success_at %}{{ s.health.last_success_at | timeago }}{% else %}never{% endif %}</td>
+    <td class="meta">{% if s.health.last_failed_at %}{{ s.health.last_failed_at | timeago }}{% else %}never{% endif %}</td>
+    <td>{% if s.health.consecutive_failures %}<span class="badge flag">{{ s.health.consecutive_failures }}</span>{% else %}0{% endif %}</td>
+    <td>{% if s.health.success_rate is not none %}{{ s.health.success_rate }}%{% else %}&mdash;{% endif %}</td>
+    <td class="meta">{% if s.health.avg_duration_ms is not none %}{{ s.health.avg_duration_ms }}ms{% else %}&mdash;{% endif %}</td>
+    <td>{{ s.health.avg_listings_found if s.health.avg_listings_found is not none else '—' }}</td>
+    <td>{{ s.health.avg_new_listings if s.health.avg_new_listings is not none else '—' }}</td>
+    <td>{{ s.health.avg_duplicates if s.health.avg_duplicates is not none else '—' }}</td>
+    <td>{{ s.health.avg_catalogue_matches if s.health.avg_catalogue_matches is not none else '—' }}</td>
+    <td>{{ s.health.avg_deals_found if s.health.avg_deals_found is not none else '—' }}</td>
+    {% else %}
+    <td colspan="11"><span class="meta">not yet run</span></td>
+    {% endif %}
+  </tr>
+{% endif %}{% endfor %}
+</tbody>
+</table>
+</div>
+
 <h2>eBay API credentials</h2>
 <p class="hint">
   Free developer keys from <a href="https://developer.ebay.com" target="_blank" rel="noopener">developer.ebay.com</a>

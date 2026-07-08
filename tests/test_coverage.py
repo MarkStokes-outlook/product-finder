@@ -187,3 +187,37 @@ def test_sources_page_coverage_empty_state(cfg, client):
     # Automated-class connectors appear with a quiet empty state; manual-
     # assisted ones (gumtree/facebook) never ingest, so no row at all.
     assert b"no listings yet" in resp.data
+
+
+# --- Connector Stats table (roadmap Phase A: connector maturity) --------------
+
+
+def test_sources_page_renders_connector_stats_table(cfg, client):
+    conn = db.connect(cfg.db_path)
+    db.record_source_run(
+        conn, "ebay", searches=1, listings=4, duration_ms=250,
+        new_listings=2, duplicates=1, catalogue_matches=1, deals_found=1,
+    )
+    conn.close()
+    resp = client.get("/sources")
+    assert resp.status_code == 200
+    assert b"Connector Stats" in resp.data
+    assert b"100%" in resp.data  # success rate, single clean run
+    assert b"250ms" in resp.data
+
+
+def test_sources_page_connector_stats_empty_state_for_unrun_source(cfg, client):
+    resp = client.get("/sources")
+    assert b"not yet run" in resp.data
+
+
+def test_sources_page_connector_stats_no_health_status_shown(cfg, client):
+    # Phase A ships raw metrics only; the Healthy/Warning/Degraded/Offline
+    # status model is Phase D. The hint text may explain that in prose, but
+    # no connector should be tagged with a status value yet.
+    conn = db.connect(cfg.db_path)
+    db.record_source_run(conn, "ebay", searches=1, listings=1)
+    conn.close()
+    resp = client.get("/sources")
+    for term in (b"Degraded", b"Offline"):
+        assert term not in resp.data
