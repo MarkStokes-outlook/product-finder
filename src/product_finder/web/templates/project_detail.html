@@ -10,6 +10,8 @@
     </p>
   </div>
   <div class="actions">
+    <a class="button" href="{{ url_for('project_export', project_id=project['id'], format='yaml') }}">Export YAML</a>
+    <a class="button" href="{{ url_for('project_export', project_id=project['id'], format='json') }}">Export JSON</a>
     <a class="button" href="{{ url_for('projects') }}">&larr; All projects</a>
   </div>
 </div>

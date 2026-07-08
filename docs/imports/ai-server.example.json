@@ -1,0 +1,367 @@
+{
+  "schema": "product-finder/import/v1",
+  "schema_version": 1,
+
+  "project": {
+    "name": "AI Server",
+    "description": "Hardware for an AI inference and development server.",
+    "create": true
+  },
+
+  "options": {
+    "dry_run": false,
+    "upsert_mode": "name",
+    "merge_defaults": true
+  },
+
+  "defaults": {
+    "enabled": true,
+    "priority": "normal",
+
+    "sources": {
+      "ebay": true,
+      "gumtree": true,
+      "facebook": true,
+      "hardwareswapuk": true,
+      "johnpyeauctions": true,
+      "cexwebuy": true,
+      "vinted": true,
+      "preloved": true
+    },
+
+    "exclude_terms": [
+      "wanted",
+      "wtb",
+      "repair",
+      "broken",
+      "faulty",
+      "spares",
+      "parts",
+      "box only",
+      "waterblock",
+      "water block",
+      "cooler",
+      "heatsink",
+      "fan",
+      "shroud",
+      "backplate",
+      "pcb",
+      "laptop",
+      "mobile",
+      "egpu"
+    ]
+  },
+
+  "items": [
+    {
+      "name": "NVIDIA RTX 3090",
+      "category": "gpu",
+
+      "search_terms": [
+        "3090",
+        "rtx 3090",
+        "geforce rtx 3090",
+        "nvidia 3090"
+      ],
+
+      "target_price": 525,
+      "normal_price": 575,
+      "max_price": 700,
+
+      "notes": "24GB VRAM. Excellent AI inference value."
+    },
+
+    {
+      "name": "NVIDIA RTX 3090 Ti",
+      "category": "gpu",
+
+      "search_terms": [
+        "3090 ti",
+        "3090ti",
+        "rtx 3090 ti",
+        "geforce rtx 3090 ti",
+        "nvidia 3090 ti"
+      ],
+
+      "target_price": 650,
+      "normal_price": 725,
+      "max_price": 850
+    },
+
+    {
+      "name": "NVIDIA RTX 3080 Ti",
+      "category": "gpu",
+
+      "search_terms": [
+        "3080 ti",
+        "3080ti",
+        "rtx 3080 ti",
+        "geforce rtx 3080 ti",
+        "nvidia 3080 ti"
+      ],
+
+      "target_price": 350,
+      "normal_price": 425,
+      "max_price": 550
+    },
+
+    {
+      "name": "NVIDIA RTX 3080 12GB",
+      "category": "gpu",
+
+      "search_terms": [
+        "3080 12gb",
+        "rtx 3080 12gb",
+        "geforce rtx 3080 12gb"
+      ],
+
+      "target_price": 300,
+      "normal_price": 350,
+      "max_price": 450
+    },
+
+    {
+      "name": "NVIDIA RTX 3080 10GB",
+      "category": "gpu",
+
+      "search_terms": [
+        "3080 10gb",
+        "rtx 3080 10gb",
+        "geforce rtx 3080 10gb"
+      ],
+
+      "target_price": 250,
+      "normal_price": 300,
+      "max_price": 350
+    },
+
+    {
+      "name": "NVIDIA RTX 4070 Ti Super",
+      "category": "gpu",
+
+      "search_terms": [
+        "4070 ti super",
+        "4070ti super",
+        "rtx 4070 ti super"
+      ],
+
+      "target_price": 700,
+      "normal_price": 800,
+      "max_price": 900
+    },
+
+    {
+      "name": "NVIDIA RTX 4080",
+      "category": "gpu",
+
+      "search_terms": [
+        "4080",
+        "rtx 4080",
+        "geforce rtx 4080"
+      ],
+
+      "target_price": 700,
+      "normal_price": 775,
+      "max_price": 850
+    },
+
+    {
+      "name": "NVIDIA RTX 4090",
+      "category": "gpu",
+
+      "priority": "high",
+
+      "search_terms": [
+        "4090",
+        "rtx 4090",
+        "geforce rtx 4090"
+      ],
+
+      "target_price": 1000,
+      "normal_price": 1200,
+      "max_price": 1400,
+
+      "notes": "Immediate notification if target price is reached."
+    },
+
+    {
+      "name": "RTX A4000",
+      "category": "gpu",
+
+      "search_terms": [
+        "rtx a4000",
+        "a4000"
+      ],
+
+      "target_price": 250,
+      "normal_price": 350,
+      "max_price": 500
+    },
+
+    {
+      "name": "RTX A4500",
+      "category": "gpu",
+
+      "search_terms": [
+        "rtx a4500",
+        "a4500"
+      ],
+
+      "target_price": 550,
+      "normal_price": 700,
+      "max_price": 900
+    },
+
+    {
+      "name": "RTX A5000",
+      "category": "gpu",
+
+      "search_terms": [
+        "rtx a5000",
+        "a5000"
+      ],
+
+      "target_price": 850,
+      "normal_price": 1100,
+      "max_price": 1500
+    },
+
+    {
+      "name": "Tesla P40",
+      "category": "gpu",
+
+      "search_terms": [
+        "tesla p40",
+        "nvidia p40"
+      ],
+
+      "target_price": 175,
+      "normal_price": 225,
+      "max_price": 300
+    },
+
+    {
+      "name": "Tesla V100",
+      "category": "gpu",
+
+      "search_terms": [
+        "tesla v100",
+        "nvidia v100"
+      ],
+
+      "target_price": 500,
+      "normal_price": 700,
+      "max_price": 900
+    },
+
+    {
+      "name": "Ryzen 9950X",
+      "category": "cpu",
+
+      "search_terms": [
+        "9950x",
+        "ryzen 9950x"
+      ],
+
+      "target_price": 425,
+      "normal_price": 500,
+      "max_price": 600
+    },
+
+    {
+      "name": "AMD Threadripper",
+      "category": "cpu",
+
+      "search_terms": [
+        "threadripper",
+        "ryzen threadripper"
+      ],
+
+      "target_price": 700,
+      "normal_price": 900,
+      "max_price": 1200
+    },
+
+    {
+      "name": "128GB DDR5 RAM",
+      "category": "memory",
+
+      "search_terms": [
+        "128gb ddr5",
+        "128gb ram",
+        "4x32gb ddr5",
+        "2x64gb ddr5"
+      ],
+
+      "target_price": 220,
+      "normal_price": 275,
+      "max_price": 350
+    },
+
+    {
+      "name": "4TB NVMe SSD",
+      "category": "storage",
+
+      "search_terms": [
+        "4tb nvme",
+        "4tb m.2",
+        "4tb ssd"
+      ],
+
+      "target_price": 175,
+      "normal_price": 220,
+      "max_price": 275
+    },
+
+    {
+      "name": "1000W PSU",
+      "category": "power",
+
+      "search_terms": [
+        "1000w psu",
+        "1000 watt psu",
+        "corsair rm1000x",
+        "seasonic prime 1000",
+        "be quiet 1000w"
+      ],
+
+      "target_price": 100,
+      "normal_price": 140,
+      "max_price": 180
+    },
+
+    {
+      "name": "1500W PSU",
+      "category": "power",
+
+      "search_terms": [
+        "1500w psu",
+        "1500 watt psu",
+        "corsair hx1500i",
+        "seasonic prime 1600",
+        "be quiet dark power pro"
+      ],
+
+      "target_price": 200,
+      "normal_price": 275,
+      "max_price": 350
+    },
+
+    {
+      "name": "10Gb Networking",
+      "category": "networking",
+
+      "search_terms": [
+        "10gbe",
+        "10gb switch",
+        "mikrotik crs",
+        "intel x550",
+        "mellanox connectx"
+      ],
+
+      "target_price": 125,
+      "normal_price": 175,
+      "max_price": 250
+    }
+  ]
+}

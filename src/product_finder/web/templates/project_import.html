@@ -1,0 +1,125 @@
+{% extends "base.html" %}
+{% block title %}Import — Product Finder{% endblock %}
+{% block content %}
+<div class="page-head">
+  <h1>Import project</h1>
+  <div class="actions">
+    <a class="button" href="{{ url_for('projects') }}">&larr; All projects</a>
+  </div>
+</div>
+<p class="meta">
+  Paste or upload a JSON/YAML file describing a project and its items
+  (schema <code>{{ 'product-finder/import/v1' }}</code>). Nothing is written
+  until you confirm the preview below.
+</p>
+
+{% if plan %}
+
+  {% if plan.errors %}
+  <div class="card" style="border-color: var(--red);">
+    <h3 style="color: var(--red); margin-top: 0;">Could not validate import</h3>
+    <ul style="margin: .3rem 0 0; padding-left: 1.2rem;">
+    {% for e in plan.errors %}
+      <li>
+        {% if e.index is not none %}<strong>Item #{{ e.index + 1 }}{% if e.name %} "{{ e.name }}"{% endif %}</strong> &mdash;
+        {% elif e.scope != 'document' %}<strong>{{ e.scope | capitalize }}</strong> &mdash;
+        {% endif %}
+        {{ e.message }}
+      </li>
+    {% endfor %}
+    </ul>
+  </div>
+
+  <form method="post" action="{{ url_for('project_import_form') }}" enctype="multipart/form-data" class="card">
+    <label for="payload">Fix the document and re-preview</label>
+    <textarea id="payload" name="payload" rows="16">{{ raw_text }}</textarea>
+    <label for="file">&hellip;or upload a corrected file instead</label>
+    <input type="file" id="file" name="file" accept=".json,.yaml,.yml">
+    <p><label><input type="checkbox" name="dry_run" value="1" {% if dry_run_checked %}checked{% endif %}>
+      Dry run (preview only — don't write anything)</label></p>
+    <p><button class="primary" type="submit">Re-preview</button></p>
+  </form>
+
+  {% else %}
+
+  <div class="card">
+    <h3 style="margin-top: 0;">
+      Project: <strong>{{ plan.project_name }}</strong>
+      {% if plan.project_action == 'create' %}<span class="badge target">will create</span>
+      {% else %}<span class="badge grade-B">existing &mdash; id {{ plan.project_id }}</span>{% endif %}
+    </h3>
+    {% if result %}
+    <p class="meta">
+      {% if result.dry_run %}<strong>Dry run</strong> &mdash; nothing was written.
+      {% else %}<strong>Import complete.</strong>{% endif %}
+      {{ result.created_items | length }} created, {{ result.updated_items | length }} updated.
+    </p>
+    {% endif %}
+  </div>
+
+  <div class="card table-card">
+  <table>
+  <thead><tr>
+    <th>#</th><th>Item</th><th>Action</th><th>Prices (max / normal / target)</th>
+    <th>Priority</th><th>Sources</th><th>Enabled</th>
+  </tr></thead>
+  <tbody>
+  {% for ip in plan.items %}
+    <tr>
+      <td class="num">{{ ip.index + 1 }}</td>
+      <td>{{ ip.name }}</td>
+      <td><span class="badge {{ 'target' if ip.action == 'create' else 'auction' }}">{{ ip.action }}</span></td>
+      <td class="num">
+        {{ ('£%g' | format(ip.after.max_price)) if ip.after.max_price is not none else '—' }} /
+        {{ ('£%g' | format(ip.after.normal_price)) if ip.after.normal_price is not none else '—' }} /
+        {{ ('£%g' | format(ip.after.target_price)) if ip.after.target_price is not none else '—' }}
+      </td>
+      <td>{{ ip.after.priority }}</td>
+      <td class="meta">{{ (ip.after.sources | join(', ')) if ip.after.sources is not none else 'all' }}</td>
+      <td>{{ 'yes' if ip.after.enabled else 'no' }}</td>
+    </tr>
+  {% endfor %}
+  </tbody>
+  </table>
+  </div>
+
+  {% if not result %}
+  <form method="post" action="{{ url_for('project_import_commit') }}" class="card">
+    <textarea name="raw_text" hidden>{{ raw_text }}</textarea>
+    <p><label><input type="checkbox" name="dry_run" value="1" {% if plan.dry_run %}checked{% endif %}>
+      Dry run (preview only — don't write anything)</label></p>
+    <p>
+      <button class="primary" type="submit">Confirm import</button>
+      <a class="button" href="{{ url_for('project_import_form') }}">Cancel</a>
+    </p>
+  </form>
+  {% else %}
+  <p>
+    {% if not result.dry_run %}
+    <a class="button primary" href="{{ url_for('project_detail', project_id=result.project_id) }}">View project</a>
+    {% endif %}
+    <a class="button" href="{{ url_for('project_import_form') }}">Import another file</a>
+  </p>
+  {% endif %}
+
+  {% endif %}
+
+{% else %}
+
+<form method="post" action="{{ url_for('project_import_form') }}" enctype="multipart/form-data" class="card">
+  <label for="payload">Paste JSON or YAML</label>
+  <textarea id="payload" name="payload" rows="16" placeholder="schema: product-finder/import/v1
+project:
+  name: My Project
+  create: true
+items:
+  - name: Widget
+    search_terms: [widget]"></textarea>
+  <label for="file">&hellip;or upload a file</label>
+  <input type="file" id="file" name="file" accept=".json,.yaml,.yml">
+  <p><label><input type="checkbox" name="dry_run" value="1"> Dry run (preview only — don't write anything)</label></p>
+  <p><button class="primary" type="submit">Preview import</button></p>
+</form>
+
+{% endif %}
+{% endblock %}

@@ -5,6 +5,7 @@
   <h1>Projects</h1>
   <div class="actions">
     <a class="button primary" href="{{ url_for('project_new') }}">New project</a>
+    <a class="button" href="{{ url_for('project_import_form') }}">Import file&hellip;</a>
     <form class="inline" method="post" action="{{ url_for('import_config') }}">
       <button type="submit" title="Merge projects/items from config.yaml into the database">Import from YAML</button>
     </form>

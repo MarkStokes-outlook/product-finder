@@ -142,12 +142,14 @@ def cmd_catalogue_tidy(cfg: AppConfig) -> int:
     return 0
 
 
-def cmd_web(cfg: AppConfig, port: int) -> int:
+def cmd_web(cfg: AppConfig, port: int, debug: bool = False) -> int:
     from .web.app import create_app
 
     app = create_app(cfg)
     print(f"Product Finder UI: http://127.0.0.1:{port} (Ctrl-C to stop)")
-    app.run(host="127.0.0.1", port=port, debug=False)
+    if debug:
+        print("Debug mode: auto-reloads on code changes; do not expose beyond localhost.")
+    app.run(host="127.0.0.1", port=port, debug=debug)
     return 0
 
 
@@ -170,6 +172,12 @@ def main(argv: list[str] | None = None) -> int:
     )
     web = sub.add_parser("web", help="Run the local web UI (localhost only)")
     web.add_argument("-p", "--port", type=int, default=8765, help="Port (default 8765)")
+    web.add_argument(
+        "--debug", action="store_true",
+        help="Flask debug mode: auto-reloads on code changes, interactive in-browser "
+             "debugger on unhandled errors. Still localhost-only, but don't leave it "
+             "running on a shared/exposed host.",
+    )
     args = parser.parse_args(argv)
 
     logging.basicConfig(
@@ -184,7 +192,7 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     if args.command == "web":
-        return cmd_web(cfg, args.port)
+        return cmd_web(cfg, args.port, args.debug)
 
     commands = {
         "run-once": cmd_run_once,

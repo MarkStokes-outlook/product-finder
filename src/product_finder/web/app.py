@@ -16,7 +16,7 @@ from flask import (
     url_for,
 )
 
-from .. import db, retailer_price, runner, sources
+from .. import db, project_import, retailer_price, runner, sources
 from ..config import AppConfig, ItemConfig
 
 # Deals scoring at or above this are "hot" — matches the excellent/hi score
@@ -447,6 +447,77 @@ def create_app(cfg: AppConfig) -> Flask:
         count = db.import_config(_get_conn(cfg), cfg)
         flash(f"Imported {count} item(s) from YAML config.")
         return redirect(url_for("projects"))
+
+    # --- Project JSON/YAML import & export ----------------------------------
+
+    def _import_raw_text() -> str:
+        """Prefer an uploaded file's content; fall back to the pasted textarea."""
+        upload = request.files.get("file")
+        if upload and upload.filename:
+            return upload.read().decode("utf-8", errors="replace")
+        return request.form.get("payload") or request.form.get("raw_text") or ""
+
+    @app.route("/projects/import", methods=["GET", "POST"])
+    def project_import_form():
+        if request.method == "GET":
+            return render_template("project_import.html", plan=None, raw_text="", dry_run_checked=False)
+        conn = _get_conn(cfg)
+        raw_text = _import_raw_text()
+        dry_run_checked = bool(request.form.get("dry_run"))
+        plan = project_import.build_plan(
+            conn, _effective_cfg(cfg), raw_text, dry_run_override=True if dry_run_checked else None
+        )
+        return render_template(
+            "project_import.html", plan=plan, raw_text=raw_text, dry_run_checked=dry_run_checked
+        )
+
+    @app.route("/projects/import/commit", methods=["POST"])
+    def project_import_commit():
+        conn = _get_conn(cfg)
+        raw_text = request.form.get("raw_text") or ""
+        dry_run_checked = bool(request.form.get("dry_run"))
+        # Re-validate against current database state rather than trusting the
+        # plan implied by an earlier preview render — the target project (or
+        # an item within it) may have changed since then.
+        plan = project_import.build_plan(
+            conn, _effective_cfg(cfg), raw_text, dry_run_override=True if dry_run_checked else None
+        )
+        if not plan.valid:
+            flash("Import could not be validated — see errors below.")
+            return render_template(
+                "project_import.html", plan=plan, raw_text=raw_text, dry_run_checked=dry_run_checked
+            )
+        result = project_import.apply_plan(conn, plan)
+        if result.dry_run:
+            flash(
+                f"Dry run complete — {len(result.created_items)} item(s) would be created, "
+                f"{len(result.updated_items)} would be updated. Nothing was written."
+            )
+            return render_template(
+                "project_import.html", plan=plan, raw_text=raw_text,
+                dry_run_checked=dry_run_checked, result=result,
+            )
+        flash(
+            f"Imported into '{plan.project_name}': {len(result.created_items)} item(s) created, "
+            f"{len(result.updated_items)} updated."
+        )
+        return redirect(url_for("project_detail", project_id=result.project_id))
+
+    @app.route("/projects/<int:project_id>/export")
+    def project_export(project_id):
+        conn = _get_conn(cfg)
+        project = db.get_project(conn, project_id)
+        if project is None:
+            abort(404)
+        doc = project_import.export_project(conn, project_id)
+        fmt = request.args.get("format", "yaml")
+        if fmt == "json":
+            body, mimetype, ext = project_import.to_json(doc), "application/json", "json"
+        else:
+            body, mimetype, ext = project_import.to_yaml(doc), "application/x-yaml", "yaml"
+        response = app.response_class(body, mimetype=mimetype)
+        response.headers["Content-Disposition"] = f'attachment; filename="{project["slug"]}.{ext}"'
+        return response
 
     # --- Items (managed inline on the project detail page) -----------------------
 
