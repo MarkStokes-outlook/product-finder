@@ -4,6 +4,8 @@ and capability-driven behaviour in the runner (no marketplace special cases).
 
 from datetime import datetime, timedelta, timezone
 
+import pytest
+
 from product_finder import db, runner, sources
 from product_finder.config import AppConfig, EbayConfig, ExtraSourceConfig, ItemConfig, SourcesConfig
 from product_finder.models import Listing
@@ -142,6 +144,135 @@ def test_source_runs_pruned_beyond_retention(tmp_path):
 
 
 # --- Capability-driven enrichment (no marketplace special cases) -------------------
+
+
+# --- Risk / compliance model (Coverage phase) -------------------------------------
+
+
+def test_all_builtin_connectors_declare_none_risk_today(tmp_path):
+    # No connector in this repo is scraping-based or user-session-based
+    # today - this pins that down so a future PR can't silently regress it.
+    for name, connector in sources.build_all(_cfg(tmp_path)).items():
+        caps = connector.capabilities()
+        assert caps.account_risk == "none", name
+        assert caps.is_scraping_based is False, name
+        assert caps.requires_user_auth is False, name
+
+
+def test_capabilities_declare_can_run_unattended_consistently_with_automated(tmp_path):
+    connectors = sources.build_all(_cfg(tmp_path))
+    # ebay + rss-type extras are automated and can run unattended; the two
+    # manual-assisted built-ins cannot.
+    assert connectors["ebay"].capabilities().can_run_unattended is True
+    assert connectors["gumtree"].capabilities().can_run_unattended is False
+    assert connectors["facebook"].capabilities().can_run_unattended is False
+
+
+def test_invalid_account_risk_rejected():
+    with pytest.raises(ValueError):
+        SourceCapabilities(automated=True, compliance="x", account_risk="extreme")
+
+
+def test_invalid_compliance_mode_rejected():
+    with pytest.raises(ValueError):
+        SourceCapabilities(automated=True, compliance="x", compliance_mode="telepathy")
+
+
+def test_scraping_based_cannot_claim_low_risk():
+    with pytest.raises(ValueError):
+        SourceCapabilities(
+            automated=True, compliance="x", is_scraping_based=True, account_risk="low",
+        )
+
+
+def test_scraping_based_can_claim_medium_or_high_risk():
+    # This must NOT raise - it's exactly the case the risk model exists to allow.
+    SourceCapabilities(
+        automated=True, compliance="x", is_scraping_based=True, account_risk="medium",
+        compliance_mode="scraping",
+    )
+    SourceCapabilities(
+        automated=True, compliance="x", is_scraping_based=True, account_risk="high",
+        compliance_mode="scraping",
+    )
+
+
+def test_requires_user_auth_cannot_claim_none_risk():
+    with pytest.raises(ValueError):
+        SourceCapabilities(automated=True, compliance="x", requires_user_auth=True, account_risk="none")
+
+
+def test_requires_user_auth_can_claim_low_risk():
+    SourceCapabilities(
+        automated=True, compliance="x", requires_user_auth=True, account_risk="low",
+        compliance_mode="user_session",
+    )
+
+
+# --- Scheduler risk gate ------------------------------------------------------------
+
+
+class _RiskyFake(Source):
+    def __init__(self, cfg, name, risk):
+        super().__init__(cfg)
+        self.name = name
+        self._risk = risk
+
+    def capabilities(self):
+        return SourceCapabilities(
+            automated=True, compliance="test fake", account_risk=self._risk,
+            compliance_mode="scraping" if self._risk in ("medium", "high") else "manual",
+            is_scraping_based=self._risk in ("medium", "high"),
+        )
+
+    def search(self, term, item):
+        return []
+
+
+def test_build_registry_excludes_medium_and_high_risk_by_default(tmp_path):
+    # No built-in/config-defined source can declare risk today, so this
+    # exercises the gate function directly against fake capabilities -
+    # what build_registry() itself calls per candidate.
+    cfg = _cfg(tmp_path)
+    assert sources._risk_allowed(cfg, "anything", _RiskyFake(cfg, "x", "none").capabilities())
+    assert sources._risk_allowed(cfg, "anything", _RiskyFake(cfg, "x", "low").capabilities())
+    assert not sources._risk_allowed(cfg, "anything", _RiskyFake(cfg, "x", "medium").capabilities())
+    assert not sources._risk_allowed(cfg, "anything", _RiskyFake(cfg, "x", "high").capabilities())
+
+
+def test_build_registry_includes_medium_risk_when_explicitly_acknowledged(tmp_path):
+    cfg = _cfg(tmp_path)
+    cfg.sources.risk_acknowledged = ["scary-source"]
+    caps = _RiskyFake(cfg, "scary-source", "medium").capabilities()
+    assert sources._risk_allowed(cfg, "scary-source", caps) is True
+    # A *different* unacknowledged source of the same risk level is still excluded.
+    assert sources._risk_allowed(cfg, "other-source", caps) is False
+
+
+def test_build_registry_includes_high_risk_only_when_explicitly_acknowledged(tmp_path):
+    cfg = _cfg(tmp_path)
+    caps = _RiskyFake(cfg, "scary-source", "high").capabilities()
+    assert sources._risk_allowed(cfg, "scary-source", caps) is False  # never silent
+    cfg.sources.risk_acknowledged = ["scary-source"]
+    assert sources._risk_allowed(cfg, "scary-source", caps) is True
+
+
+def test_risk_acknowledged_loaded_from_config_yaml(tmp_path):
+    from product_finder.config import load_config
+
+    path = tmp_path / "config.yaml"
+    path.write_text(
+        "sources:\n"
+        "  risk_acknowledged:\n"
+        "    - Scary-Source\n"
+        "projects:\n"
+        "  - name: P\n"
+        "    items:\n"
+        "      - name: Widget\n"
+        "        terms: [widget]\n"
+    )
+    cfg = load_config(path)
+    assert cfg.sources.risk_acknowledged == ["scary-source"]  # normalised lowercase
 
 
 def test_enrichment_not_attempted_for_connector_without_capability(tmp_path):

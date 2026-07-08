@@ -21,6 +21,19 @@ class FacebookSource(Source):
             automated=False,
             compliance="manual-assisted links only (login-walled; no "
                        "compliant automation route)",
+            account_risk="none",
+            compliance_mode="manual",
+            can_run_unattended=False,
+            # This connector only builds a URL — it never uses a session
+            # itself. Whether the human happens to be logged in when they
+            # click it is their own browser, not this connector's concern.
+            # A future browser/session-based Facebook connector (see Phase 7
+            # options paper) would declare requires_user_auth=True and its
+            # own non-"none" account_risk — it would not reuse this class.
+            requires_user_auth=False,
+            requires_manual_input=True,
+            recommended_schedule="manual only",
+            freshness="unknown",
         )
 
     def manual_links(self, item: ItemConfig) -> list[ManualLink]:

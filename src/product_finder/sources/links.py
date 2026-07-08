@@ -25,6 +25,11 @@ class UrlTemplateSource(Source):
         return SourceCapabilities(
             automated=False,
             compliance="manual-assisted search links only",
+            account_risk="none",
+            compliance_mode="manual",
+            can_run_unattended=False,
+            requires_manual_input=True,
+            recommended_schedule="manual only",
         )
 
     def manual_links(self, item: ItemConfig) -> list[ManualLink]:

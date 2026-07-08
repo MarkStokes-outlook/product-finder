@@ -22,6 +22,12 @@ class GumtreeSource(Source):
             automated=False,
             compliance="manual-assisted links only (terms prohibit scraping; "
                        "no official public API)",
+            account_risk="none",
+            compliance_mode="manual",
+            can_run_unattended=False,
+            requires_manual_input=True,
+            recommended_schedule="manual only",
+            freshness="unknown",
         )
 
     def manual_links(self, item: ItemConfig) -> list[ManualLink]:

@@ -67,10 +67,23 @@ class EbaySource(Source):
         return SourceCapabilities(
             automated=True,
             compliance="official eBay Browse API (application token)",
+            account_risk="none",
+            compliance_mode="official",
+            can_run_unattended=True,
+            requires_user_auth=False,
+            requires_manual_input=False,
+            is_official_api=True,
+            rate_limit_class="official-api-standard",
+            recommended_schedule="every watch cycle",
+            freshness="realtime",
             supports_enrichment=True,
             provides_images=True,
             provides_end_time=True,
             provides_structured_attributes=True,
+            provides_auction_snapshot=True,
+            provides_offers=True,
+            provides_seller_identity=False,  # seller data exists in raw payloads, not mapped yet
+            provides_location=True,
             notes="Auction current bids are captured but never treated as "
                   "committed prices; getItem enrichment supplies brand/MPN.",
         )

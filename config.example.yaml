@@ -24,6 +24,15 @@ sources:
   facebook:
     enabled: true            # manual-assisted links only (login-walled)
 
+  # Explicit opt-in for any source that declares account_risk medium/high
+  # (see sources/base.py SourceCapabilities). Being "enabled" above is never
+  # enough on its own for a risky source — it must also be named here.
+  # No built-in or config-defined source declares medium/high risk today;
+  # this exists for connectors that don't exist yet (e.g. a future
+  # scraping/user-session/licensed-provider connector).
+  risk_acknowledged: []
+  #   - some-risky-source-name
+
   # Config-defined sources — add new sites with zero code.
   # Templates may use {term}, {max_price}, {postcode}, {radius}.
   #   type: rss   — automated: per-term RSS/Atom feed, listings scored like eBay

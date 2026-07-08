@@ -144,6 +144,15 @@ class RssSource(Source):
         return SourceCapabilities(
             automated=True,
             compliance="open RSS/Atom feed intended for syndication",
+            account_risk="none",
+            compliance_mode="indexed",
+            can_run_unattended=True,
+            requires_user_auth=False,
+            requires_manual_input=False,
+            is_indexed_search_based=True,
+            rate_limit_class="third-party-feed-conservative",
+            recommended_schedule="every watch cycle",
+            freshness="minutes",
             provides_images=True,
             notes="Prices parsed from entry text (entries without a £ amount "
                   "are skipped); images best-effort from media:thumbnail or "

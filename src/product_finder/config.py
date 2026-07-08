@@ -111,6 +111,14 @@ class SourcesConfig:
     gumtree_enabled: bool = True
     facebook_enabled: bool = True
     extra: list[ExtraSourceConfig] = field(default_factory=list)
+    # Explicit per-source risk acknowledgement. A source declaring
+    # account_risk medium/high (see sources/base.py SourceCapabilities) is
+    # excluded from scheduled background runs (sources.build_registry)
+    # unless its name appears here — being "enabled" is never enough on its
+    # own. Never auto-populated; always a deliberate operator action. No
+    # built-in or config-defined source declares medium/high risk today —
+    # this exists for connectors that don't exist yet.
+    risk_acknowledged: list[str] = field(default_factory=list)
 
     def enabled_names(self) -> list[str]:
         names = []
@@ -248,6 +256,7 @@ def load_config(path: str | Path) -> AppConfig:
         gumtree_enabled=bool((sources_raw.get("gumtree") or {}).get("enabled", True)),
         facebook_enabled=bool((sources_raw.get("facebook") or {}).get("enabled", True)),
         extra=extra,
+        risk_acknowledged=[str(n).strip().lower() for n in (sources_raw.get("risk_acknowledged") or [])],
     )
 
     ollama_raw = raw.get("ollama") or {}
