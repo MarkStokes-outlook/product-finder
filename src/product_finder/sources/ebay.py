@@ -109,6 +109,7 @@ class EbaySource(Source):
             provides_images=True,
             provides_end_time=True,
             provides_structured_attributes=True,
+            provides_auctions=True,
             provides_auction_snapshot=True,
             provides_offers=True,
             provides_seller_identity=False,  # seller data exists in raw payloads, not mapped yet

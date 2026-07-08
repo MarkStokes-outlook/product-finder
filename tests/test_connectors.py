@@ -273,6 +273,70 @@ def test_run_once_records_duplicates_for_secondary_cross_source_sighting(tmp_pat
     assert health["rss"]["avg_duplicates"] == 1.0
 
 
+# --- Connector Capability Explorer: capability_checklist() -------------------------
+
+
+def test_ebay_capability_checklist_reflects_declared_fields(tmp_path):
+    caps = sources.build_all(_cfg(tmp_path))["ebay"].capabilities()
+    checklist = dict(caps.capability_checklist())
+    # eBay is automated, so listing-shape fields are real supported/
+    # unsupported claims, never "na".
+    assert checklist["Auctions"] == "supported"
+    assert checklist["Auction snapshots"] == "supported"
+    assert checklist["Offers"] == "supported"
+    assert checklist["Images"] == "supported"
+    assert checklist["Seller identity"] == "unsupported"  # declared False today
+    assert checklist["Official API"] == "supported"
+    assert checklist["Scraping based"] == "unsupported"
+    assert checklist["Requires user auth"] == "unsupported"
+
+
+def test_manual_assisted_connector_reports_na_for_listing_shape_fields(tmp_path):
+    caps = sources.build_all(_cfg(tmp_path))["gumtree"].capabilities()
+    checklist = dict(caps.capability_checklist())
+    # Gumtree only ever produces ManualLink objects (see models.ManualLink),
+    # never a Listing - "does it provide images" is a category error, not a
+    # false claim, so these must be "na" rather than "unsupported".
+    for label in ("Images", "Auctions", "Auction snapshots", "Offers",
+                  "Seller identity", "Location", "End time",
+                  "Structured attributes", "Enrichment support"):
+        assert checklist[label] == "na", label
+    # Operating-model fields are still real declared values, not "na".
+    assert checklist["Requires manual input"] == "supported"
+    assert checklist["Unattended / background capable"] == "unsupported"
+
+
+def test_automated_non_ebay_connector_reports_unsupported_not_na(tmp_path):
+    # An automated connector (RSS) that simply doesn't declare a field is a
+    # real "unsupported" claim (it does produce Listings), not "na".
+    cfg = _cfg(tmp_path, extra=[
+        ExtraSourceConfig(name="hukd", type="rss", url="https://example.com/rss?q={term}"),
+    ])
+    caps = sources.build_all(cfg)["hukd"].capabilities()
+    checklist = dict(caps.capability_checklist())
+    assert checklist["Images"] == "supported"
+    assert checklist["Auctions"] == "unsupported"
+    assert checklist["Seller identity"] == "unsupported"
+
+
+def test_capability_checklist_covers_every_requested_capability_area(tmp_path):
+    caps = sources.build_all(_cfg(tmp_path))["ebay"].capabilities()
+    labels = {label for label, _ in caps.capability_checklist()}
+    assert labels == {
+        "Unattended / background capable", "Requires user auth",
+        "Requires manual input", "Official API", "Indexed search",
+        "Scraping based", "Third-party provider", "Images", "Auctions",
+        "Auction snapshots", "Offers", "Seller identity", "Location",
+        "End time", "Structured attributes", "Enrichment support",
+    }
+
+
+def test_capability_checklist_status_values_are_always_one_of_three(tmp_path):
+    for connector in sources.build_all(_cfg(tmp_path)).values():
+        for label, status in connector.capabilities().capability_checklist():
+            assert status in ("supported", "unsupported", "na"), (connector.name, label)
+
+
 # --- Capability-driven enrichment (no marketplace special cases) -------------------
 
 

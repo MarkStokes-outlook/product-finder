@@ -50,6 +50,47 @@ COMPLIANCE_MODES = (
     "licensed_provider",  # a third-party data provider under its own terms
 )
 
+#: Ordered (display label, field name) pairs for the Sources page's
+#: Capabilities checklist (SourceCapabilities.capability_checklist) — the
+#: single source of truth for what's shown and in what order. A new
+#: capability only needs adding here (plus the dataclass field itself) to
+#: appear correctly; nothing in app.py or the template hard-codes a label
+#: or field name.
+_CAPABILITY_FIELDS: tuple[tuple[str, str], ...] = (
+    ("Unattended / background capable", "can_run_unattended"),
+    ("Requires user auth", "requires_user_auth"),
+    ("Requires manual input", "requires_manual_input"),
+    ("Official API", "is_official_api"),
+    ("Indexed search", "is_indexed_search_based"),
+    ("Scraping based", "is_scraping_based"),
+    ("Third-party provider", "is_third_party_provider"),
+    ("Images", "provides_images"),
+    ("Auctions", "provides_auctions"),
+    ("Auction snapshots", "provides_auction_snapshot"),
+    ("Offers", "provides_offers"),
+    ("Seller identity", "provides_seller_identity"),
+    ("Location", "provides_location"),
+    ("End time", "provides_end_time"),
+    ("Structured attributes", "provides_structured_attributes"),
+    ("Enrichment support", "supports_enrichment"),
+)
+
+#: Fields describing the *shape* of a Listing this connector can produce.
+#: Meaningless for a manual-assisted connector (automated=False): it only
+#: ever produces ManualLink (source/label/url — see models.ManualLink),
+#: never a Listing, so "does it provide images" isn't a false claim for
+#: those connectors, it's a category error - there's no listing to have an
+#: image. capability_checklist() reports these as "na" rather than
+#: "unsupported" for exactly that reason, not as a stand-in for genuine
+#: uncertainty (this class's whole design is "declared not inferred" — see
+#: class docstring - so a fabricated "we don't know" bucket would misrepresent
+#: a deliberate False as missing information).
+_LISTING_SHAPE_FIELDS = frozenset({
+    "provides_images", "provides_end_time", "provides_structured_attributes",
+    "provides_auctions", "provides_auction_snapshot", "provides_offers",
+    "provides_seller_identity", "provides_location", "supports_enrichment",
+})
+
 
 @dataclass(frozen=True)
 class SourceCapabilities:
@@ -122,6 +163,11 @@ class SourceCapabilities:
     provides_end_time: bool = False
     #: Structured product attributes (brand/MPN etc.) are available.
     provides_structured_attributes: bool = False
+    #: Listings can be auction-type with bid data (buying_options/bid_count/
+    #: current_bid_price meaningfully populated) — distinct from
+    #: provides_auction_snapshot, which is about *time-series history* of
+    #: those bids, not merely whether a listing can be an auction at all.
+    provides_auctions: bool = False
     #: Per-listing auction observation history is available (see
     #: db.record_auction_snapshot / auction_watch.py).
     provides_auction_snapshot: bool = False
@@ -157,6 +203,26 @@ class SourceCapabilities:
                 "account_risk='none' — using a personal session always "
                 "carries some account risk"
             )
+
+    def capability_checklist(self) -> list[tuple[str, str]]:
+        """The Sources page's Capabilities section, in display order: a
+        (label, status) pair per _CAPABILITY_FIELDS entry, status one of
+        "supported" / "unsupported" / "na". Reads straight off this
+        instance's own fields — the template never hard-codes a field name
+        or label, so this is the *only* place a new capability needs adding
+        to appear correctly everywhere.
+
+        "na" (not "unknown") for a listing-shape field on a manual-assisted
+        connector — see _LISTING_SHAPE_FIELDS for why that's a real
+        distinction, not a fabricated third state."""
+        checklist = []
+        for label, field in _CAPABILITY_FIELDS:
+            if not self.automated and field in _LISTING_SHAPE_FIELDS:
+                status = "na"
+            else:
+                status = "supported" if getattr(self, field) else "unsupported"
+            checklist.append((label, status))
+        return checklist
 
 
 class Source(ABC):
