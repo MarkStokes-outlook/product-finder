@@ -75,6 +75,9 @@ _CAPABILITY_FIELDS: tuple[tuple[str, str], ...] = (
     ("Enrichment support", "supports_enrichment"),
 )
 
+#: maturity values for ConnectorKnowledge.maturity.
+MATURITY_LEVELS = ("experimental", "beta", "production")
+
 #: Fields describing the *shape* of a Listing this connector can produce.
 #: Meaningless for a manual-assisted connector (automated=False): it only
 #: ever produces ManualLink (source/label/url — see models.ManualLink),
@@ -225,6 +228,80 @@ class SourceCapabilities:
         return checklist
 
 
+@dataclass(frozen=True)
+class ConnectorKnowledge:
+    """A connector's self-description for the Sources page's Capabilities
+    reference — identity, current functionality, and forward-looking notes.
+    Declared alongside capability_checklist() (SourceCapabilities), not
+    duplicating it: operational characteristics that already exist as
+    SourceCapabilities fields (recommended_schedule, freshness,
+    rate_limit_class, requires_user_auth, requires_manual_input,
+    account_risk, compliance_mode) are read from `capabilities()` directly
+    wherever the UI shows them — this class only holds fields that don't
+    exist anywhere else (identity/description, functional summaries, known
+    limitations, and roadmap notes).
+
+    Every tuple field defaults to empty rather than a placeholder string
+    like "none known" — an empty list of limitations means exactly that,
+    nothing invented to fill a UI gap."""
+
+    # --- Identity ---
+    #: Human-readable name for the Sources page (was previously hard-coded
+    #: per-row in app.py's source_list() — now lives with the connector).
+    display_name: str
+    #: One or two plain-English sentences: what this connector is and why
+    #: it exists in this shape.
+    description: str
+    #: The engineering mechanism, e.g. "Official REST API client (OAuth
+    #: client-credentials)", "Generic RSS/Atom feed parser (config-driven)",
+    #: "Static search-link generator (no fetch/parse)". Distinct from
+    #: SourceCapabilities.compliance_mode, which is about legitimacy basis,
+    #: not implementation shape.
+    implementation_type: str
+    #: experimental | beta | production — see MATURITY_LEVELS. A judgement
+    #: call on how battle-tested this connector's *mechanism* is, not
+    #: whether any single configured instance of it has been individually
+    #: vetted (e.g. a config-driven RSS connector can be "beta" as a
+    #: mechanism even though the parsing logic itself is stable, because
+    #: any given feed's real-world reliability is unverified per-feed).
+    maturity: str
+
+    # --- Current functionality ---
+    #: What kinds of listing this connector can surface, e.g. "Fixed
+    #: price", "Auction". Empty for a manual-assisted connector that never
+    #: sees a listing at all (only builds a URL) — not a false claim of
+    #: zero support, a category error the same way capability_checklist()'s
+    #: "na" status is (see _LISTING_SHAPE_FIELDS).
+    supported_listing_types: tuple[str, ...] = ()
+    #: Which real-world marketplace(s)/region(s) this connector actually
+    #: reaches, e.g. "eBay UK (EBAY_GB)" — not assumed from the display name.
+    supported_marketplaces: tuple[str, ...] = ()
+    #: Query/filter features this connector's search (or generated link)
+    #: actually supports, e.g. "Postcode + radius filter".
+    supported_search_features: tuple[str, ...] = ()
+
+    # --- Operational characteristics: known limitations only ---
+    #: Concrete, specific gaps — not vague hedging. Each entry should be
+    #: something a future engineer could act on (fix, or knowingly accept).
+    known_limitations: tuple[str, ...] = ()
+
+    # --- Future / enhancement notes ---
+    #: Work that's genuinely intended, not just imaginable.
+    planned_work: tuple[str, ...] = ()
+    #: Deliberately not built, with the reason implied or cross-referenced —
+    #: distinct from known_limitations, which are gaps in what's built, not
+    #: decisions not to build something.
+    intentionally_unsupported: tuple[str, ...] = ()
+    #: Open questions worth someone's time to look into, not yet a plan.
+    investigation_items: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        if self.maturity not in MATURITY_LEVELS:
+            raise ValueError(
+                f"maturity must be one of {MATURITY_LEVELS}, got {self.maturity!r}"
+            )
+
+
 class Source(ABC):
     #: Unique key. Used for listing dedup, per-item source filters, and config.
     name: str
@@ -235,6 +312,27 @@ class Source(ABC):
     @abstractmethod
     def capabilities(self) -> SourceCapabilities:
         """Declared capabilities — every connector must state what it is."""
+
+    def knowledge(self) -> ConnectorKnowledge:
+        """Declared self-description for the Sources page's Capabilities
+        reference. Not abstract, unlike capabilities() — making this
+        mandatory would force every Source subclass across the test suite
+        (fakes standing in for a connector in unrelated tests) to declare
+        full roadmap prose just to keep constructing, for no benefit to
+        what those tests actually verify. The five real connectors
+        (ebay.py/gumtree.py/facebook.py/rss.py/links.py) all override this
+        with hand-authored detail; this default only exists so a Source
+        that doesn't is still valid, and says plainly that nothing's been
+        written up yet rather than inventing detail to fill the gap."""
+        caps = self.capabilities()
+        return ConnectorKnowledge(
+            display_name=self.name,
+            description="No connector-specific description declared yet.",
+            implementation_type=(
+                "Automated (search)" if caps.automated else "Manual-assisted (links only)"
+            ),
+            maturity="experimental",
+        )
 
     def is_automated(self) -> bool:
         """True if search() does the work; False for manual-assisted sources."""

@@ -22,7 +22,7 @@ import requests
 from .. import rate_limit
 from ..config import ExtraSourceConfig, ItemConfig
 from ..models import Listing
-from .base import Source, SourceCapabilities
+from .base import ConnectorKnowledge, Source, SourceCapabilities
 
 log = logging.getLogger(__name__)
 
@@ -157,6 +157,47 @@ class RssSource(Source):
             notes="Prices parsed from entry text (entries without a £ amount "
                   "are skipped); images best-effort from media:thumbnail or "
                   "image enclosures.",
+        )
+
+    def knowledge(self) -> ConnectorKnowledge:
+        label = self.spec.label or self.spec.name
+        return ConnectorKnowledge(
+            display_name=label,
+            description=f"Generic RSS/Atom feed connector, configured for "
+                        f"{label} ({self.spec.url}). Parses entries directly "
+                        f"from the feed - no marketplace-specific API, no "
+                        f"structured listing fields beyond what a price-"
+                        f"extraction regex can find in the entry text.",
+            implementation_type="Generic RSS/Atom feed parser (config-driven, "
+                                "no per-site code)",
+            # The parsing mechanism is stable and shared across every
+            # configured feed, but any *specific* feed's real-world
+            # reliability/compliance is unverified per-instance - "beta"
+            # reflects that, not a claim the code itself is unfinished.
+            maturity="beta",
+            supported_listing_types=("Fixed price",),
+            supported_marketplaces=(label,),
+            supported_search_features=(
+                "Feed-defined query templating ({term}/{max_price}/{postcode}"
+                "/{radius} substituted into the configured URL - see "
+                "format_url()); actual filtering behaviour depends entirely "
+                "on what the target feed itself supports.",
+            ),
+            known_limitations=(
+                "No structured price/condition/location fields - price is "
+                "regex-extracted from entry title/description text and "
+                "entries without a detectable £ amount are silently skipped.",
+                "No auction/offer/end-time semantics - RSS entries are "
+                "treated as plain fixed-price listings.",
+                "Feed reliability (uptime, rate limits, whether it stays "
+                "genuinely open for syndication) is entirely dependent on "
+                "the configured site and not verified by this connector.",
+            ),
+            investigation_items=(
+                "SearXNG-indexed search as a more structured alternative to "
+                "ad-hoc per-site RSS feeds for sites without one - see "
+                "docs/strategy/facebook-gumtree-connector-options.md.",
+            ),
         )
 
     def search(self, term: str, item: ItemConfig) -> list[Listing]:

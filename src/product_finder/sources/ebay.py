@@ -17,7 +17,7 @@ import requests
 from .. import rate_limit
 from ..config import ItemConfig
 from ..models import AuctionSnapshot, Listing, ManualLink
-from .base import Source, SourceCapabilities
+from .base import ConnectorKnowledge, Source, SourceCapabilities
 
 log = logging.getLogger(__name__)
 
@@ -116,6 +116,49 @@ class EbaySource(Source):
             provides_location=True,
             notes="Auction current bids are captured but never treated as "
                   "committed prices; getItem enrichment supplies brand/MPN.",
+        )
+
+    def knowledge(self) -> ConnectorKnowledge:
+        return ConnectorKnowledge(
+            display_name="eBay",
+            description="Official eBay Browse API client for UK listings - "
+                        "the project's primary automated source, covering "
+                        "fixed-price, auction, and Best-Offer listings with "
+                        "structured brand/model enrichment.",
+            implementation_type="Official REST API client (eBay Browse API, "
+                                "OAuth client-credentials)",
+            maturity="production",
+            supported_listing_types=(
+                "Fixed price", "Auction", "Auction with Buy It Now", "Best Offer",
+            ),
+            supported_marketplaces=("eBay UK (EBAY_GB)",),
+            supported_search_features=(
+                "Free-text keyword search", "Max price filter",
+                "GB item location + GBP currency filter (always applied)",
+            ),
+            known_limitations=(
+                "Only the first 50 results per search term per cycle are "
+                "fetched - no pagination beyond the Browse API's default "
+                "page size.",
+                "Seller identity/reputation exists in the raw API payload "
+                "but isn't mapped to a Listing field yet "
+                "(provides_seller_identity=False).",
+                "No location-radius filter - only a hard GB-only item-"
+                "location filter, unlike Gumtree/Facebook's postcode+radius.",
+            ),
+            planned_work=(
+                "Map seller identity/reputation fields once a real use for "
+                "them exists.",
+            ),
+            intentionally_unsupported=(
+                "Listing-page HTML enrichment for watch-count/view-count "
+                "signals the official API doesn't expose - parked "
+                "2026-07-08, disabled by default and opt-in only if ever "
+                "built (compliance_mode='scraping', account_risk medium-"
+                "high). See docs/strategy/roadmap.md, 'Future ideas "
+                "(deliberately unscheduled)'.",
+            ),
+            investigation_items=(),
         )
 
     def is_automated(self) -> bool:

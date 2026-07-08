@@ -10,7 +10,7 @@ from urllib.parse import urlencode
 
 from ..config import ItemConfig
 from ..models import ManualLink
-from .base import Source, SourceCapabilities
+from .base import ConnectorKnowledge, Source, SourceCapabilities
 
 
 class FacebookSource(Source):
@@ -34,6 +34,39 @@ class FacebookSource(Source):
             requires_manual_input=True,
             recommended_schedule="manual only",
             freshness="unknown",
+        )
+
+    def knowledge(self) -> ConnectorKnowledge:
+        return ConnectorKnowledge(
+            display_name="Facebook Marketplace",
+            description="Generates pre-filled Facebook Marketplace search links "
+                        "for a human to open. Marketplace is login-walled with "
+                        "no compliant automation route, so this connector never "
+                        "fetches or parses a listing itself.",
+            implementation_type="Static search-link generator (URL templating only, no fetch/parse)",
+            maturity="production",
+            supported_marketplaces=("Facebook Marketplace",),
+            supported_search_features=("Free-text keyword search", "Max price filter"),
+            known_limitations=(
+                "No location/radius parameter — relies entirely on the "
+                "marketplace's own logged-in session location; this "
+                "connector never supplies one.",
+                "Never sees an actual listing, only builds a URL - "
+                "supported_listing_types is empty and every listing-shape "
+                "field in the Capabilities checklist reports 'na'.",
+            ),
+            intentionally_unsupported=(
+                "Any session/browser-automation-based access - see "
+                "docs/strategy/facebook-gumtree-connector-options.md. Ruled "
+                "out as *required* architecture even if a future opt-in "
+                "connector is ever built for this; it would not reuse this "
+                "class, and it must never be schedulable regardless.",
+            ),
+            investigation_items=(
+                "Third-party data provider (Apify-style) as the most "
+                "realistic path to real Facebook coverage without risking "
+                "the operator's own account - see options paper.",
+            ),
         )
 
     def manual_links(self, item: ItemConfig) -> list[ManualLink]:

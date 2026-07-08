@@ -9,7 +9,7 @@ import pytest
 from product_finder import db, runner, sources
 from product_finder.config import AppConfig, EbayConfig, ExtraSourceConfig, ItemConfig, SourcesConfig
 from product_finder.models import Listing
-from product_finder.sources.base import Source, SourceCapabilities
+from product_finder.sources.base import ConnectorKnowledge, MATURITY_LEVELS, Source, SourceCapabilities
 
 
 def _cfg(tmp_path, extra=None):
@@ -361,6 +361,86 @@ def test_capability_checklist_status_values_are_always_one_of_three(tmp_path):
     for connector in sources.build_all(_cfg(tmp_path)).values():
         for label, status in connector.capabilities().capability_checklist():
             assert status in ("supported", "unsupported", "na"), (connector.name, label)
+
+
+# --- Connector Knowledge: identity, functionality, roadmap notes -------------------
+
+
+def test_invalid_maturity_rejected():
+    with pytest.raises(ValueError):
+        ConnectorKnowledge(
+            display_name="x", description="x", implementation_type="x", maturity="ancient",
+        )
+
+
+def test_every_builtin_connector_declares_knowledge(tmp_path):
+    cfg = _cfg(tmp_path, extra=[
+        ExtraSourceConfig(name="hukd", type="rss", url="https://example.com/rss?q={term}"),
+        ExtraSourceConfig(name="johnpye", type="links", url="https://example.com/?s={term}"),
+    ])
+    for name, connector in sources.build_all(cfg).items():
+        info = connector.knowledge()
+        assert isinstance(info, ConnectorKnowledge), name
+        assert info.display_name, name
+        assert info.description.strip(), name
+        assert info.implementation_type.strip(), name
+        assert info.maturity in MATURITY_LEVELS, name
+
+
+def test_default_knowledge_is_honest_about_being_undeclared(tmp_path):
+    # A Source subclass that never overrides knowledge() (e.g. a test fake
+    # standing in for a connector elsewhere) gets a plain, non-invented
+    # default - not fabricated identity/roadmap detail.
+    class Bare(Source):
+        name = "bare"
+
+        def capabilities(self):
+            return SourceCapabilities(automated=True, compliance="test fake")
+
+    info = Bare(_cfg(tmp_path)).knowledge()
+    assert info.display_name == "bare"
+    assert "not declared" in info.description.lower() or "no connector-specific" in info.description.lower()
+    assert info.maturity == "experimental"
+    assert info.known_limitations == ()
+    assert info.planned_work == ()
+
+
+def test_ebay_knowledge_reflects_real_marketplace_scope(tmp_path):
+    info = sources.build_all(_cfg(tmp_path))["ebay"].knowledge()
+    assert info.maturity == "production"
+    assert any("EBAY_GB" in m or "UK" in m for m in info.supported_marketplaces)
+    assert "Auction" in info.supported_listing_types
+    assert "Fixed price" in info.supported_listing_types
+    # A real, checkable limitation - not vague hedging.
+    assert any("50" in lim or "pagination" in lim.lower() for lim in info.known_limitations)
+
+
+def test_manual_assisted_connectors_report_no_listing_types(tmp_path):
+    # Gumtree/Facebook never see a listing at all - only build a URL - so
+    # supported_listing_types should be empty, not a guessed value.
+    for name in ("gumtree", "facebook"):
+        info = sources.build_all(_cfg(tmp_path))[name].knowledge()
+        assert info.supported_listing_types == (), name
+
+
+def test_rss_and_links_knowledge_use_configured_label(tmp_path):
+    cfg = _cfg(tmp_path, extra=[
+        ExtraSourceConfig(name="hukd", type="rss", url="https://x/{term}", label="HotUKDeals"),
+        ExtraSourceConfig(name="johnpye", type="links", url="https://x/{term}"),
+    ])
+    connectors = sources.build_all(cfg)
+    assert connectors["hukd"].knowledge().display_name == "HotUKDeals"
+    assert connectors["johnpye"].knowledge().display_name == connectors["johnpye"].knowledge().display_name
+    assert connectors["johnpye"].knowledge().display_name  # falls back to name-derived label
+
+
+def test_intentionally_unsupported_distinct_from_known_limitations(tmp_path):
+    # eBay's HTML-enrichment idea is a deliberate non-build, not a gap in
+    # what's implemented - must live in intentionally_unsupported, not
+    # known_limitations.
+    info = sources.build_all(_cfg(tmp_path))["ebay"].knowledge()
+    assert any("HTML" in n for n in info.intentionally_unsupported)
+    assert not any("HTML" in n for n in info.known_limitations)
 
 
 # --- Capability-driven enrichment (no marketplace special cases) -------------------
