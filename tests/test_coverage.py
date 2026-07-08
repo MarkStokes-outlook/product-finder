@@ -211,6 +211,36 @@ def test_sources_page_connector_stats_empty_state_for_unrun_source(cfg, client):
     assert b"not yet run" in resp.data
 
 
+def test_sources_page_renders_coverage_analytics_table(cfg, client):
+    conn = db.connect(cfg.db_path)
+    item_id = _seed_item(conn)
+    listing_id = _add_listing(conn, "ebay", "a")
+    _add_match(conn, listing_id, item_id, product_id=1)  # under_target=True by default
+    conn.close()
+    resp = client.get("/sources")
+    assert resp.status_code == 200
+    assert b"Coverage Analytics" in resp.data
+    assert b"100%" in resp.data  # deal rate: the one primary listing was a deal
+
+
+def test_sources_page_explains_time_to_first_match_unavailable(cfg, client):
+    conn = db.connect(cfg.db_path)
+    item_id = _seed_item(conn)
+    listing_id = _add_listing(conn, "ebay", "a")
+    _add_match(conn, listing_id, item_id, product_id=1)
+    conn.close()
+    resp = client.get("/sources")
+    assert b"not tracked" in resp.data.lower()
+    assert db.TIME_TO_FIRST_MATCH_UNAVAILABLE.encode() in resp.data
+
+
+def test_sources_page_coverage_analytics_empty_state(cfg, client):
+    resp = client.get("/sources")
+    assert resp.status_code == 200
+    assert b"Coverage Analytics" in resp.data
+    assert b"no listings yet" in resp.data
+
+
 def test_sources_page_connector_stats_no_health_status_shown(cfg, client):
     # Phase A ships raw metrics only; the Healthy/Warning/Degraded/Offline
     # status model is Phase D. The hint text may explain that in prose, but

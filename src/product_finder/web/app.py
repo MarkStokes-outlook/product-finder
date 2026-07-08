@@ -390,6 +390,7 @@ def create_app(cfg: AppConfig) -> Flask:
         conn = _get_conn(cfg)
         health = db.source_health(conn)
         coverage = db.source_coverage(conn)
+        analytics = db.source_coverage_analytics(conn)
         rows = [
             {"name": "ebay", "kind": "builtin", "label": "eBay",
              "enabled": sc.ebay.enabled,
@@ -413,6 +414,7 @@ def create_app(cfg: AppConfig) -> Flask:
             row["caps"] = connectors[row["name"]].capabilities()
             row["health"] = health.get(row["name"])
             row["coverage"] = coverage.get(row["name"])
+            row["analytics"] = analytics.get(row["name"])
         return render_template("sources.html", rows=rows, ebay=sc.ebay)
 
     @app.route("/sources/<name>/toggle", methods=["POST"])

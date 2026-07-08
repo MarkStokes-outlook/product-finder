@@ -82,6 +82,53 @@
 </table>
 </div>
 
+<h2>Coverage Analytics</h2>
+<p class="hint">
+  Rates, not raw counts — answers "which source actually finds useful deals"
+  rather than "which returns the most listings". Deal rate and duplicate
+  suppression only count a source's <em>primary</em> sightings, so a
+  cross-source duplicate can't inflate either figure. Average lifetime only
+  includes listings that have actually ended or gone stale (48h unseen) —
+  still-live listings are excluded because their lifetime hasn't concluded
+  yet, and including it would understate the average and drift it every
+  cycle.
+</p>
+<div class="card table-card">
+<table>
+<thead><tr>
+  <th>Source</th><th>Total sightings</th><th>Unique listings</th>
+  <th>Duplicate suppression</th><th>Catalogue match rate</th><th>Deal rate</th>
+  <th>Stale rate</th><th>Avg lifetime</th><th>Price history coverage</th>
+  <th>Time to first match</th>
+</tr></thead>
+<tbody>
+{% for s in rows %}{% if s.caps.automated or s.analytics %}
+  <tr>
+    <td><strong>{{ s.label }}</strong></td>
+    {% if s.analytics and s.analytics.total_sightings %}
+    <td>{{ s.analytics.total_sightings }}</td>
+    <td>{{ s.analytics.unique_listings }}</td>
+    <td>{% if s.analytics.duplicate_suppression_pct is not none %}{{ s.analytics.duplicate_suppression_pct }}%{% else %}&mdash;{% endif %}</td>
+    <td>{% if s.analytics.catalogue_match_pct is not none %}{{ s.analytics.catalogue_match_pct }}%{% else %}<span class="meta">no matches yet</span>{% endif %}</td>
+    <td>{% if s.analytics.deal_rate_pct is not none %}{{ s.analytics.deal_rate_pct }}%{% else %}<span class="meta">not evaluated yet</span>{% endif %}</td>
+    <td>{% if s.analytics.stale_rate_pct is not none %}{{ s.analytics.stale_rate_pct }}%{% else %}&mdash;{% endif %}</td>
+    <td>
+      {% if s.analytics.avg_lifetime_days is not none %}
+        {{ s.analytics.avg_lifetime_days }}d
+        <span class="meta">(n={{ s.analytics.lifetime_sample_size }})</span>
+      {% else %}<span class="meta">no resolved listings yet</span>{% endif %}
+    </td>
+    <td>{% if s.analytics.price_history_coverage_pct is not none %}{{ s.analytics.price_history_coverage_pct }}%{% else %}<span class="meta">no catalogue matches yet</span>{% endif %}</td>
+    <td><span class="meta" title="{{ s.analytics.time_to_first_match_unavailable_reason }}">not tracked</span></td>
+    {% else %}
+    <td colspan="8"><span class="meta">no listings yet</span></td>
+    {% endif %}
+  </tr>
+{% endif %}{% endfor %}
+</tbody>
+</table>
+</div>
+
 <h2>Connector Stats</h2>
 <p class="hint">
   Operational history rather than configuration: when each connector was first seen,
