@@ -1,0 +1,19 @@
+{
+  "id": "FEATURE-1002",
+  "epic_id": "EPIC-100",
+  "title": "Global price observation/history scope",
+  "description": "Confirm and document that product_price_observations, product_new_price_history, and product_price_candidates require no code changes to become correctly global once product_id refers to a shared product — record_price_observation() and _recompute_used_price() are already pure product_id-keyed functions with no item_id dependency.",
+  "status": "done",
+  "phase": "pre-3",
+  "domain": "web-api",
+  "area": "catalogue",
+  "tags": ["adr-0007", "price-history"],
+  "user_story_ids": [],
+  "acceptance_criteria": [
+    "record_price_observation, _recompute_used_price, record_new_price_history, record_price_candidates are reviewed and confirmed to need zero code changes for global scope (or any needed change is identified and made here, not assumed)",
+    "A test demonstrates two different projects' matched listings for the same global product both contribute to one shared typical_used_price median",
+    "price_trend.py's trend calculation is confirmed to operate correctly over the combined, larger observation set with no change needed",
+    "No new column or table is introduced by this feature — it is a verification/documentation feature confirming FEATURE-1000/1001's design has no hidden price-history coupling to item_id"
+  ],
+  "notes": "See docs/adr/0007-catalogue-globalization.md, 'How price history should be treated'. This feature exists to make explicit and test what the ADR asserts is already true, rather than leave it as an unverified claim."
+}

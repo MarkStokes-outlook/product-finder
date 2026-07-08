@@ -1,0 +1,15 @@
+{
+  "id": "EPIC-100",
+  "title": "Catalogue globalization",
+  "description": "Decouple the product catalogue from items so that products/manufacturer-model entries, and their price observations/history, are platform-owned and shared across every project/user, instead of the current item_id-scoped schema. Introduces a new item_products join table for item-specific overrides (match terms, per-item deal-price threshold, tracking/wanted state).",
+  "status": "done",
+  "phase": "pre-3",
+  "sequencing": {
+    "recommended_before": ["EPIC-103"],
+    "hard_blocks": ["EPIC-104", "EPIC-105"],
+    "depends_on": []
+  },
+  "feature_ids": ["FEATURE-1000", "FEATURE-1001", "FEATURE-1002", "FEATURE-1003", "FEATURE-1004", "FEATURE-1005"],
+  "tags": ["roadmap-2026-07", "catalogue", "data-model", "adr-0007"],
+  "notes": "See docs/adr/0007-catalogue-globalization.md and docs/implementation-notes/2026-07-08-2100-catalogue-globalization-epic-100.md. Shipped 2026-07-08: 665 tests passing (654 prior + 11 new), zero regressions. Migration dry-run proven against a copy of a real historical backup (data/product_finder.db.bak.20260705T200501), not just synthetic fixtures. Real data/product_finder.db was migrated mid-session by a live watch process picking up in-progress code (see implementation notes 'Data integrity incident' section) — verified zero data loss, one minor leftover column (products.wanted, harmless, deferred cleanup). Not one of the five numbered phases in ADR-0001 — a separate, independently-sequenced data-model fix that landed before EPIC-103 as recommended. Still a hard blocking dependency before EPIC-104/EPIC-105 shipping (those phases themselves not started)."
+}

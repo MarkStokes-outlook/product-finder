@@ -1,0 +1,19 @@
+{
+  "id": "FEATURE-1000",
+  "epic_id": "EPIC-100",
+  "title": "Global products table (drop item_id, keep market fields)",
+  "description": "Redefine products as a global, platform-owned table: manufacturer, model, msrp, typical_new_price, typical_used_price, canonical_price_url, price_search_checked, last_price_check_at/ok, price_trend_pct/confidence, archived. No item_id. Reuse catalogue.model_key() for identity, scoped globally instead of per-item.",
+  "status": "done",
+  "phase": "pre-3",
+  "domain": "web-api",
+  "area": "catalogue",
+  "tags": ["adr-0007", "schema"],
+  "user_story_ids": [],
+  "acceptance_criteria": [
+    "products retains exactly the market-fact columns listed in ADR-0007 (manufacturer, model, msrp, typical_new_price, typical_used_price, canonical_price_url, price_search_checked, last_price_check_at, last_price_check_ok, price_trend_pct, price_trend_confidence, archived) and no item-specific columns (match_terms, target_deal_price, wanted move to FEATURE-1001)",
+    "catalogue.model_key() is reused unchanged for identity; no new identity/fuzzy-matching scheme is introduced",
+    "The global lookup-or-create path (replacing create_product's current item-scoped lookup) finds an existing global product by (model_key(manufacturer), model_key(model)) before ever inserting a new row",
+    "This feature is schema/design only — the item_id retirement mechanics live in FEATURE-1003, not here"
+  ],
+  "notes": "See docs/adr/0007-catalogue-globalization.md, 'Proposed schema direction' and 'Dedupe/identity strategy' sections."
+}

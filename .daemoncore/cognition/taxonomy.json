@@ -1,6 +1,6 @@
 {
   "schema_version": "1.0",
-  "last_updated": "2026-01-28T00:00:00Z",
+  "last_updated": "2026-07-08T00:00:00Z",
   "domains": [
     {
       "id": "cognition",
@@ -150,6 +150,21 @@
           "id": "work-endpoints",
           "label": "Work Endpoints",
           "archived": false
+        },
+        {
+          "id": "affiliate",
+          "label": "Affiliate",
+          "archived": false
+        },
+        {
+          "id": "sharing",
+          "label": "Sharing",
+          "archived": false
+        },
+        {
+          "id": "catalogue",
+          "label": "Catalogue",
+          "archived": false
         }
       ],
       "archived": false
@@ -171,6 +186,11 @@
         {
           "id": "operator-console",
           "label": "Operator Console",
+          "archived": false
+        },
+        {
+          "id": "public-experience",
+          "label": "Public Experience",
           "archived": false
         }
       ],

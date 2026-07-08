@@ -24,7 +24,19 @@ from typing import Sequence
 
 @dataclass
 class Product:
-    """A known manufacturer/model tracked under one item.
+    """The effective, item-contextualised view of a catalogue product (see
+    docs/adr/0007-catalogue-globalization.md): a product's identity and
+    market data are platform-owned/global, shared by every item tracking
+    it; match_terms/target_deal_price/archived/wanted are this item's own
+    tracking of it, never shared.
+
+    `id` is always the *global* products.id — the value listing_matches
+    and price observations must reference (see db.record_match,
+    db.record_price_observation), and what `global_product_id` mirrors for
+    callers that want the name to be unambiguous. `item_product_id` is
+    this item's own item_products row id (None for a Product built without
+    item context, e.g. db._product_from_row) — what the web UI's per-item
+    edit/archive/delete/toggle-wanted actions act on.
 
     Three distinct reference prices, because "normal price" turned out to
     hide real differences:
@@ -35,7 +47,9 @@ class Product:
       for now (see catalogue-pricing roadmap for automating it).
     - `typical_used_price` — a rolling median of observed second-hand
       asking prices for this product, maintained automatically by
-      `db.record_price_observation()`. Never set by hand.
+      `db.record_price_observation()`. Never set by hand. Global: every
+      item tracking this product contributes to and benefits from the same
+      observation history.
 
     `price_trend_pct`/`price_trend_confidence` are the used-price trend
     (see price_trend.py) cached alongside `typical_used_price` by the same
@@ -59,8 +73,13 @@ class Product:
     # price history keep working, but never alerted or shown as a deal —
     # for products that are real but not what the item is after (e.g. old
     # CPU generations under a current-gen item). Archived stops matching
-    # entirely; wanted only stops surfacing.
+    # entirely; wanted only stops surfacing. Both are this item's own
+    # decision (item_products), never a global product-wide state.
     wanted: bool = True
+    # New in catalogue globalization — see class docstring. Optional so
+    # existing synthetic construction (e.g. tests) keeps working unchanged.
+    global_product_id: int | None = None
+    item_product_id: int | None = None
 
     @property
     def label(self) -> str:

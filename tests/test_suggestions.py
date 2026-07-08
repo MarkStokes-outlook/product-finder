@@ -1,3 +1,4 @@
+import json
 from unittest import mock
 
 from product_finder import auction_watch, db, runner, sources  # noqa: F401 (auction_watch unused, kept for parity)
@@ -68,12 +69,16 @@ def test_no_auto_approve_by_default(tmp_path):
 
 
 def test_approve_suggestion_creates_product_with_match_terms(tmp_path):
+    # Approving a suggestion creates/attaches a *global* product (see
+    # docs/adr/0007-catalogue-globalization.md); match_terms live on this
+    # item's item_products row, not the global products row.
     cfg, conn, item_id = _setup(tmp_path)
     row = db.record_suggestion_sighting(conn, item_id, "Makita", "LS0816F/2", "https://x/1")
     product_id = db.approve_suggestion(conn, row["id"])
-    product = db._product_from_row(db.get_product(conn, product_id))
-    assert product.manufacturer == "Makita"
-    assert product.match_terms == ["Makita LS0816F/2", "LS0816F/2"]
+    global_product = db.get_product(conn, product_id)
+    assert global_product["manufacturer"] == "Makita"
+    item_product = db.get_item_product(conn, item_id, product_id)
+    assert json.loads(item_product["match_terms"]) == ["Makita LS0816F/2", "LS0816F/2"]
     suggestion = db.get_product_suggestion(conn, row["id"])
     assert suggestion["status"] == "approved"
 
@@ -82,8 +87,8 @@ def test_approve_suggestion_without_model_uses_single_match_term(tmp_path):
     cfg, conn, item_id = _setup(tmp_path)
     row = db.record_suggestion_sighting(conn, item_id, "Makita", "", "https://x/1")
     product_id = db.approve_suggestion(conn, row["id"])
-    product = db._product_from_row(db.get_product(conn, product_id))
-    assert product.match_terms == ["Makita"]
+    item_product = db.get_item_product(conn, item_id, product_id)
+    assert json.loads(item_product["match_terms"]) == ["Makita"]
 
 
 def test_list_product_suggestions_filters_by_status(tmp_path):

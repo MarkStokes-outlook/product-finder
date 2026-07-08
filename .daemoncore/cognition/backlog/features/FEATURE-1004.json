@@ -1,0 +1,20 @@
+{
+  "id": "FEATURE-1004",
+  "epic_id": "EPIC-100",
+  "title": "Update read/write paths to item_products",
+  "description": "Repoint every product read/write path at the new global/item_products split: list_products_for_matching (runner.py's only entry point), create_product/update_product, the /catalogue-review and item-edit product CRUD routes and templates, and product-suggestion approval (must reuse the global find-or-create path, not create a second global product when two items independently suggest the same manufacturer/model).",
+  "status": "done",
+  "phase": "pre-3",
+  "domain": "web-api",
+  "area": "catalogue",
+  "tags": ["adr-0007", "refactor"],
+  "user_story_ids": [],
+  "acceptance_criteria": [
+    "list_products_for_matching queries item_products JOIN products WHERE item_products.item_id = ? instead of products WHERE item_id = ?; catalogue.match() itself requires no changes",
+    "create_product/update_product operate against the global lookup-or-create path (FEATURE-1000) plus an item_products row (FEATURE-1001), replacing the current single-table item-scoped insert/update",
+    "Product-suggestion approval resolves against the global identity key before creating a product, attaching an item_products row to an existing global product where one already exists",
+    "Web UI product CRUD (create/edit/archive/delete, wanted toggle) operates on the item's item_products row for local fields and the shared products row for market fields, with no template exposing an item-scoped 'edit' control for a field that is now global without making clear it affects every project tracking that product",
+    "merge_products, find_duplicate_products, find_suspect_products, dedupe_products are updated for the global scope per FEATURE-1003 and remain usable as maintenance tools"
+  ],
+  "notes": "See docs/adr/0007-catalogue-globalization.md, Context section ('what already exists and doesn't need reinvention') for exactly which functions change vs. don't."
+}

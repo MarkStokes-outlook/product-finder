@@ -1,0 +1,22 @@
+{
+  "id": "FEATURE-1005",
+  "epic_id": "EPIC-100",
+  "title": "Catalogue globalization test suite",
+  "description": "Dedicated tests for migration integrity, global dedupe correctness, the same-item double-tracking edge case, price-history aggregation across projects, item-override precedence, and suggestion-approval reuse of the global identity key, plus full regression of the existing catalogue/scoring/matching/web suites.",
+  "status": "done",
+  "phase": "pre-3",
+  "domain": "web-api",
+  "area": "catalogue",
+  "tags": ["adr-0007", "tests"],
+  "user_story_ids": [],
+  "acceptance_criteria": [
+    "Migration integrity test runs against a sanitised copy of the real data/product_finder.db, asserts zero data loss via row-count reconciliation, and asserts scoring/matching output for a fixed set of known listings is unchanged before/after",
+    "Global dedupe test: two items independently create the same product by identity key; after the dedupe pass, exactly one products row exists and both items retain independent item_products rows with their own match_terms/target_deal_price",
+    "Same-item double-tracking edge case test: an item with two pre-existing in-item duplicate products migrates to exactly one item_products row for that item",
+    "Price-history aggregation test: two projects' matched listings for the same global product combine into one shared typical_used_price median, using a fixture where each project alone would compute a different median",
+    "Item-override precedence test: an item with a target_deal_price override scores differently from an item with no override tracking the same global product",
+    "Suggestion-approval test: approving a suggestion for an already-globally-known manufacturer/model attaches to the existing product rather than creating a duplicate",
+    "Full existing test suite (test_catalogue.py, test_scoring.py, test_web.py, etc.) passes with no behavioural regression for a single-project database"
+  ],
+  "notes": "See docs/adr/0007-catalogue-globalization.md, 'Acceptance criteria' and 'Tests needed' sections — this feature operationalises both."
+}

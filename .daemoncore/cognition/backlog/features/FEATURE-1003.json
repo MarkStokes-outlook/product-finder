@@ -1,0 +1,21 @@
+{
+  "id": "FEATURE-1003",
+  "epic_id": "EPIC-100",
+  "title": "Migration, backfill, and global dedupe pass",
+  "description": "The four-step migration from ADR-0007: (1) create item_products additively, (2) backfill one item_products row per existing product with zero behaviour change, (3) run a globalized dedupe/merge pass across all products (extending merge_products to reconcile item_products, including the same-item-tracks-both edge case), (4) retire products.item_id — a table rebuild (SQLite has no in-place DROP COLUMN with a NOT NULL FK), the first non-additive migration in this codebase, gated on an explicit backup + dry-run + transaction.",
+  "status": "done",
+  "phase": "pre-3",
+  "domain": "web-api",
+  "area": "catalogue",
+  "tags": ["adr-0007", "migration", "high-risk"],
+  "user_story_ids": [],
+  "acceptance_criteria": [
+    "Step 2 (backfill) is independently shippable and verifiable before step 3 runs — every existing product has exactly one item_products row reproducing its current tracking relationship, zero data loss, zero behaviour change",
+    "Step 3 (global dedupe) groups by (model_key(manufacturer), model_key(model)) with no item_id in the key, and merge_products is extended to repoint/reconcile item_products rows on merge, including unioning two item_products rows when the same item already tracked both sides of a merge",
+    "Step 4's rebuild-vs-deprecate decision (ADR-0007, option A vs B) is explicitly confirmed before implementation begins, not defaulted silently",
+    "The full migration (all four steps) is dry-run against a sanitised copy of the real data/product_finder.db before being considered safe to ship, with before/after row counts reconciled across products, item_products, listing_matches, product_price_observations, product_new_price_history, product_price_candidates",
+    "The migration is wrapped in a transaction with a documented rollback path if any step fails partway",
+    "A mandatory backup step precedes the migration in any real deployment runbook produced alongside this feature"
+  ],
+  "notes": "See docs/adr/0007-catalogue-globalization.md, 'Migration strategy' and 'Risks and open questions'. This is the highest-risk feature in this epic — do not treat it as routine additive-migration work."
+}

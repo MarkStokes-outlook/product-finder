@@ -131,13 +131,17 @@ def run_once(
                         stats["duplicates"] += 1
                     match_id, is_new = db.record_match(
                         conn, listing_id, item_id, evaluation,
-                        product_id=product.id if product else None,
+                        product_id=product.global_product_id if product else None,
                     )
                     if is_new and is_primary and product and not scoring.is_live_auction(listing):
                         # One observation per distinct listing, at first
                         # sighting only — a long-unsold listing rescanned
-                        # every cycle shouldn't dominate the average.
-                        db.record_price_observation(conn, product.id, listing.price, listing.source)
+                        # every cycle shouldn't dominate the average. Global
+                        # product id: this observation feeds the shared
+                        # catalogue entry, not just this item's view of it.
+                        db.record_price_observation(
+                            conn, product.global_product_id, listing.price, listing.source
+                        )
                     if (
                         product is None
                         and item_id

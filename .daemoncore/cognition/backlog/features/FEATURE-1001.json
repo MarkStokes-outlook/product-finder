@@ -1,0 +1,20 @@
+{
+  "id": "FEATURE-1001",
+  "epic_id": "EPIC-100",
+  "title": "item_products join table and item-specific overrides",
+  "description": "New table: id, item_id NOT NULL REFERENCES items(id), product_id NOT NULL REFERENCES products(id), match_terms, target_deal_price (nullable override), archived, wanted, UNIQUE(item_id, product_id). Represents 'this item tracks this global product, with this local context' — the precise seam between platform-owned catalogue and project-owned intent.",
+  "status": "done",
+  "phase": "pre-3",
+  "domain": "web-api",
+  "area": "catalogue",
+  "tags": ["adr-0007", "schema"],
+  "user_story_ids": [],
+  "acceptance_criteria": [
+    "item_products added via the existing additive _MIGRATIONS pattern, UNIQUE(item_id, product_id) enforced",
+    "match_terms, target_deal_price, archived, wanted move from products to item_products, preserving their existing semantics but now scoped per (item, product) rather than assumed 1:1 with a single item-owned product row",
+    "An item's effective view of a tracked product is item_products JOIN products, with item_products fields never overriding manufacturer/model/msrp/typical_new_price/typical_used_price/canonical_price_url/trend fields",
+    "target_deal_price on item_products is nullable; NULL falls back to the item's own blanket target_deal_price exactly as today's fallback behaviour for a product with no override",
+    "Two different items can each have their own item_products row against the same product.id with independently different match_terms/target_deal_price/wanted/archived values, with no cross-item interference"
+  ],
+  "notes": "See docs/adr/0007-catalogue-globalization.md, 'How item-specific overrides should work'."
+}

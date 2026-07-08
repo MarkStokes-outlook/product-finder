@@ -21,6 +21,30 @@ def _setup(tmp_path):
     return cfg, conn, item_id
 
 
+def _insert_global_product(conn, manufacturer, model, typical_new_price=None):
+    """Insert directly into the global products table, bypassing
+    create_product's identity-key guard — simulates a pre-guard duplicate
+    (see docs/adr/0007-catalogue-globalization.md)."""
+    cur = conn.execute(
+        "INSERT INTO products (manufacturer, model, typical_new_price) VALUES (?, ?, ?)",
+        (manufacturer, model, typical_new_price),
+    )
+    return cur.lastrowid
+
+
+def _track(conn, item_id, product_id):
+    conn.execute(
+        "INSERT INTO item_products (item_id, product_id) VALUES (?, ?)",
+        (item_id, product_id),
+    )
+
+
+def _item_product_id(conn, item_id, product_id):
+    """This item's item_products row id for a global product — what the
+    web UI's per-item edit/archive/delete/toggle-wanted routes act on."""
+    return db.get_item_product(conn, item_id, product_id)["id"]
+
+
 # --- Suggestion normalisation -------------------------------------------------
 
 
@@ -105,10 +129,8 @@ def test_create_product_heals_spacing_duplicate(tmp_path):
 def test_dedupe_sweeps_spacing_duplicates(tmp_path):
     cfg, conn, item_id = _setup(tmp_path)
     for model in ("CT15", "CT 15", "ct-15"):
-        conn.execute(
-            "INSERT INTO products (item_id, manufacturer, model, match_terms) "
-            "VALUES (?, 'Festool', ?, '[]')", (item_id, model),
-        )
+        pid = _insert_global_product(conn, "Festool", model)
+        _track(conn, item_id, pid)
     conn.commit()
     assert db.dedupe_products(conn) == 2
     assert len(db.list_products(conn, item_id)) == 1
@@ -137,14 +159,26 @@ def test_create_product_returns_existing_on_case_insensitive_duplicate(tmp_path)
     assert len(db.list_products(conn, item_id)) == 1
 
 
-def test_create_product_allows_same_model_on_different_item(tmp_path):
+def test_create_product_converges_same_model_across_items(tmp_path):
+    # Catalogue globalization (see docs/adr/0007-catalogue-globalization.md):
+    # two items naming "the same" product now resolve to one global
+    # product, each with its own independent item_products tracking —
+    # replaces the old per-item-scoped behaviour this test used to assert
+    # (two items used to mint two unrelated product rows; that fragmentation
+    # is exactly what this epic fixes).
     cfg, conn, item_id = _setup(tmp_path)
     other_item = db.create_item(
         conn, db.create_project(conn, "Other"), ItemConfig(name="Laser", terms=["laser"])
     )
     a = db.create_product(conn, item_id, "DEWALT", "DW088K", ["dw088k"], None, None, None)
-    b = db.create_product(conn, other_item, "DEWALT", "DW088K", ["dw088k"], None, None, None)
-    assert a != b
+    b = db.create_product(conn, other_item, "DEWALT", "DW088K", ["dw088k-other"], None, None, None)
+    assert a == b  # same global product
+    # But each item's own tracking (match_terms etc.) is independent.
+    item_a = db.get_item_product(conn, item_id, a)
+    item_b = db.get_item_product(conn, other_item, b)
+    assert item_a["id"] != item_b["id"]
+    assert json.loads(item_a["match_terms"]) == ["dw088k"]
+    assert json.loads(item_b["match_terms"]) == ["dw088k-other"]
 
 
 # --- Duplicate products: merging ----------------------------------------------
@@ -175,10 +209,14 @@ def test_merge_products_repoints_everything_and_unions_terms(tmp_path):
 
     assert db.get_product(conn, dup) is None
     kept = db.get_product(conn, keep)
-    assert json.loads(kept["match_terms"]) == ["dw088k", "dw088k-xj"]  # union, no dupes
     assert kept["typical_new_price"] == 120.0  # NULL filled from duplicate
-    assert kept["target_deal_price"] == 60.0
     assert kept["typical_used_price"] == 45.0  # recomputed over moved observations
+    # This item's tracking of the duplicate reconciles into its tracking of
+    # the keeper — match terms unioned, target_deal_price coalesced (see
+    # db._merge_products_impl / docs/adr/0007-catalogue-globalization.md).
+    item_product = db.get_item_product(conn, item_id, keep)
+    assert json.loads(item_product["match_terms"]) == ["dw088k", "dw088k-xj"]
+    assert item_product["target_deal_price"] == 60.0
     match = conn.execute("SELECT product_id FROM listing_matches WHERE listing_id = ?",
                          (listing_id,)).fetchone()
     assert match["product_id"] == keep
@@ -189,10 +227,7 @@ def test_merge_products_repoints_everything_and_unions_terms(tmp_path):
 def test_merge_products_keeps_existing_prices_over_duplicates(tmp_path):
     cfg, conn, item_id = _setup(tmp_path)
     keep = db.create_product(conn, item_id, "NILFISK", "128500724", [], None, 150.0, 80.0)
-    dup_id = conn.execute(
-        "INSERT INTO products (item_id, manufacturer, model, match_terms, typical_new_price) "
-        "VALUES (?, 'Nilfisk', '128500724', '[]', 999.0)", (item_id,)
-    ).lastrowid
+    dup_id = _insert_global_product(conn, "Nilfisk", "128500724", typical_new_price=999.0)
     db.merge_products(conn, keep, dup_id)
     kept = db.get_product(conn, keep)
     assert kept["typical_new_price"] == 150.0  # keeper's value wins
@@ -211,10 +246,8 @@ def test_dedupe_products_sweeps_pre_guard_duplicates(tmp_path):
     # Simulate a pre-guard database: insert duplicates directly.
     cfg, conn, item_id = _setup(tmp_path)
     for manufacturer in ("DEWALT", "DeWalt", "Dewalt"):
-        conn.execute(
-            "INSERT INTO products (item_id, manufacturer, model, match_terms) "
-            "VALUES (?, ?, 'DW088K-XJ', '[]')", (item_id, manufacturer),
-        )
+        pid = _insert_global_product(conn, manufacturer, "DW088K-XJ")
+        _track(conn, item_id, pid)
     conn.commit()
     assert db.dedupe_products(conn) == 2
     products = db.list_products(conn, item_id)
@@ -225,11 +258,10 @@ def test_dedupe_products_sweeps_pre_guard_duplicates(tmp_path):
 
 def test_catalogue_tidy_cli(tmp_path, capsys):
     cfg, conn, item_id = _setup(tmp_path)
-    conn.execute(
-        "INSERT INTO products (item_id, manufacturer, model, match_terms) "
-        "VALUES (?, 'HARIBO', '465137', '[]'), (?, 'Haribo', '465137', '[]')",
-        (item_id, item_id),
-    )
+    p1 = _insert_global_product(conn, "HARIBO", "465137")
+    p2 = _insert_global_product(conn, "Haribo", "465137")
+    _track(conn, item_id, p1)
+    _track(conn, item_id, p2)
     conn.commit()
     conn.close()
     config_path = tmp_path / "config.yaml"
@@ -272,7 +304,7 @@ def test_accessory_priced_product_is_suspect(tmp_path):
     _listing_match(conn, item_id, product, "E2", "204308 for Festool CT MINI", 15.0)
     suspects = db.find_suspect_products(conn)
     assert len(suspects) == 1
-    assert suspects[0]["id"] == product
+    assert suspects[0]["product_id"] == product  # id is the item_products row id
     assert any("average" in r for r in suspects[0]["reasons"])
 
 
@@ -310,7 +342,7 @@ def test_archived_product_not_listed(tmp_path):
     product = db.create_product(conn, item_id, "Festool", "204308", [], None, None, None)
     _listing_match(conn, item_id, product, "E1", "Festool dust bags", 12.0)
     _listing_match(conn, item_id, product, "E2", "Festool dust bags again", 14.0)
-    db.set_product_archived(conn, product, True)
+    db.set_product_archived(conn, _item_product_id(conn, item_id, product), True)
     assert db.find_suspect_products(conn) == []
 
 
@@ -398,7 +430,10 @@ def test_approve_with_corrected_model_keeps_article_number_as_alias(tmp_path):
 
     product = db.get_product(conn, product_id)
     assert product["model"] == "KGS 216 M"
-    terms = json.loads(product["match_terms"])
+    # match_terms is this item's own tracking (item_products), not the
+    # global products row — see docs/adr/0007-catalogue-globalization.md.
+    item_product = db.get_item_product(conn, item_id, product_id)
+    terms = json.loads(item_product["match_terms"])
     assert terms == ["Metabo KGS 216 M", "KGS 216 M", "613216380"]
     # The article number still earns matches; the real model now does too.
     matchable = db.list_products_for_matching(conn, item_id)
@@ -444,14 +479,15 @@ def test_unwanted_product_match_hidden_from_all_deal_surfaces(tmp_path):
     _listing_match(conn, item_id, product, "E1", "Intel i7-4790K CPU", 59.0)
     assert len(db.query_matches(conn)) == 1
 
-    db.set_product_wanted(conn, product, False)
+    item_product_id = _item_product_id(conn, item_id, product)
+    db.set_product_wanted(conn, item_product_id, False)
     # Read-time gating: effect is immediate, no rescan required.
     assert db.query_matches(conn) == []
     assert db.project_top_picks(conn) == {}
     assert db.dashboard_stats(conn)["clean_matches"] == 0
     assert db.project_summaries(conn)[0]["match_count"] == 0
 
-    db.set_product_wanted(conn, product, True)
+    db.set_product_wanted(conn, item_product_id, True)
     assert len(db.query_matches(conn)) == 1  # fully reversible
 
 
@@ -459,7 +495,7 @@ def test_unwanted_product_still_matches_and_accumulates_price_history(tmp_path):
     # The whole point: identification and pricing knowledge continue.
     cfg, conn, item_id = _setup(tmp_path)
     product = db.create_product(conn, item_id, "Intel", "i7-4790K", ["i7-4790k"], None, None, None)
-    db.set_product_wanted(conn, product, False)
+    db.set_product_wanted(conn, _item_product_id(conn, item_id, product), False)
 
     products = db.list_products_for_matching(conn, item_id)
     assert len(products) == 1  # unlike archived, still offered to catalogue.match
@@ -490,7 +526,7 @@ def test_runner_skips_alert_for_unwanted_product(tmp_path, monkeypatch):
     item_id = db.create_item(conn, project_id, ItemConfig(name="CPU", terms=["cpu"],
                                                           normal_price=250))
     product = db.create_product(conn, item_id, "Intel", "i7-4790K", ["i7-4790k"], None, None, None)
-    db.set_product_wanted(conn, product, False)
+    db.set_product_wanted(conn, _item_product_id(conn, item_id, product), False)
     monkeypatch.setattr(sources, "build_registry", lambda eff_cfg: {"fake": Fake(cfg)})
 
     alerts = runner.run_once(cfg, conn)
@@ -508,7 +544,7 @@ def test_unwanted_product_no_longer_accused_as_suspect(tmp_path):
     _listing_match(conn, item_id, product, "E1", "Intel SR00B CPU", 17.0)
     _listing_match(conn, item_id, product, "E2", "Intel SR00B processor", 18.0)
     assert len(db.find_suspect_products(conn)) == 1
-    db.set_product_wanted(conn, product, False)
+    db.set_product_wanted(conn, _item_product_id(conn, item_id, product), False)
     assert db.find_suspect_products(conn) == []  # decision made, stop asking
 
 
@@ -615,11 +651,14 @@ def test_catalogue_page_shows_suspects_and_bulk_archive_works(web):
     assert b"Suspect products" in resp.data
     assert b"Festool" in resp.data
 
+    # find_suspect_products' id is the item_products row id — what the
+    # bulk-archive route (and this suspects table's checkboxes) act on.
+    item_product_id = db.find_suspect_products(conn)[0]["id"]
     resp = client.post("/products/bulk-archive", data={
-        "product_ids": [str(product)], "next": "/catalogue",
+        "product_ids": [str(item_product_id)], "next": "/catalogue",
     }, follow_redirects=True)
     assert b"Archived 1 product(s)" in resp.data
-    assert db.get_product(conn, product)["archived"] == 1
+    assert db.get_item_product_by_id(conn, item_product_id)["archived"] == 1
     # Archived: no longer offered to catalogue.match, no longer accused.
     assert db.list_products_for_matching(conn, item_id) == []
     assert b"Suspect products" not in client.get("/catalogue").data
@@ -629,21 +668,22 @@ def test_bulk_knowledge_only_and_toggle_route(web):
     cfg, conn, item_id, client = web
     conn.execute("UPDATE items SET normal_price = 400 WHERE id = ?", (item_id,))
     product = db.create_product(conn, item_id, "Intel", "SR00B", [], None, None, None)
+    item_product_id = _item_product_id(conn, item_id, product)
     resp = client.post("/products/bulk-knowledge-only", data={
-        "product_ids": [str(product)], "next": "/catalogue",
+        "product_ids": [str(item_product_id)], "next": "/catalogue",
     }, follow_redirects=True)
     assert b"knowledge-only" in resp.data
-    assert db.get_product(conn, product)["wanted"] == 0
+    assert db.get_item_product_by_id(conn, item_product_id)["wanted"] == 0
 
-    resp = client.post(f"/products/{product}/toggle-wanted", follow_redirects=False)
-    assert db.get_product(conn, product)["wanted"] == 1
+    resp = client.post(f"/products/{item_product_id}/toggle-wanted", follow_redirects=False)
+    assert db.get_item_product_by_id(conn, item_product_id)["wanted"] == 1
     assert f"/items/{item_id}/edit" in resp.headers["Location"]
 
 
 def test_item_form_shows_knowledge_only_badge(web):
     cfg, conn, item_id, client = web
     product = db.create_product(conn, item_id, "Intel", "SR00B", [], None, None, None)
-    db.set_product_wanted(conn, product, False)
+    db.set_product_wanted(conn, _item_product_id(conn, item_id, product), False)
     resp = client.get(f"/items/{item_id}/edit")
     assert b"knowledge only" in resp.data
     assert b"Surface deals" in resp.data  # the un-toggle action
