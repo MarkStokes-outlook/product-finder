@@ -143,6 +143,136 @@ def test_source_runs_pruned_beyond_retention(tmp_path):
     assert rows["n"] == 1  # the 40-day-old row is gone
 
 
+# --- Connector maturity: run-level stats and aggregation ---------------------------
+
+
+def test_record_source_run_persists_new_stats_fields(tmp_path):
+    cfg = _cfg(tmp_path)
+    conn = db.connect(cfg.db_path)
+    db.record_source_run(
+        conn, "s", searches=2, listings=5, duration_ms=1234,
+        new_listings=3, duplicates=1, catalogue_matches=2, deals_found=1,
+    )
+    row = conn.execute("SELECT * FROM source_runs WHERE source = 's'").fetchone()
+    assert row["duration_ms"] == 1234
+    assert row["new_listings"] == 3
+    assert row["duplicates"] == 1
+    assert row["catalogue_matches"] == 2
+    assert row["deals_found"] == 1
+
+
+def test_first_seen_set_on_first_run_and_never_overwritten(tmp_path):
+    cfg = _cfg(tmp_path)
+    conn = db.connect(cfg.db_path)
+    conn.execute(
+        "INSERT INTO source_settings (name, first_seen) VALUES ('s', '2020-01-01T00:00:00+00:00')"
+    )
+    conn.commit()
+    db.record_source_run(conn, "s", searches=1)
+    row = conn.execute("SELECT first_seen FROM source_settings WHERE name = 's'").fetchone()
+    assert row["first_seen"] == "2020-01-01T00:00:00+00:00"
+    assert db.source_health(conn)["s"]["first_seen"] == "2020-01-01T00:00:00+00:00"
+
+
+def test_first_seen_recorded_for_source_with_no_prior_settings_row(tmp_path):
+    cfg = _cfg(tmp_path)
+    conn = db.connect(cfg.db_path)
+    db.record_source_run(conn, "s", searches=1)
+    row = conn.execute("SELECT first_seen FROM source_settings WHERE name = 's'").fetchone()
+    assert row["first_seen"] is not None
+
+
+def test_source_health_reports_success_rate_and_averages(tmp_path):
+    cfg = _cfg(tmp_path)
+    conn = db.connect(cfg.db_path)
+    db.record_source_run(
+        conn, "s", searches=1, listings=4, duration_ms=100,
+        new_listings=2, duplicates=1, catalogue_matches=1, deals_found=1,
+    )
+    db.record_source_run(
+        conn, "s", searches=1, listings=6, errors=1, last_error="boom", duration_ms=300,
+        new_listings=0, duplicates=1, catalogue_matches=1, deals_found=0,
+    )
+    h = db.source_health(conn)["s"]
+    assert h["total_runs"] == 2
+    assert h["ok_runs"] == 1
+    assert h["success_rate"] == 50
+    assert h["avg_duration_ms"] == 200
+    assert h["avg_listings_found"] == 5.0
+    assert h["avg_new_listings"] == 1.0
+    assert h["avg_duplicates"] == 1.0
+    assert h["avg_catalogue_matches"] == 1.0
+    assert h["avg_deals_found"] == 0.5
+    assert h["last_failed_at"] is not None
+
+
+def test_source_health_has_no_score_or_status_field(tmp_path):
+    # Phase A is raw metrics only — health scoring/status is a separate,
+    # explainable model (roadmap Phase D), not decided here.
+    cfg = _cfg(tmp_path)
+    conn = db.connect(cfg.db_path)
+    db.record_source_run(conn, "s", searches=1, listings=1)
+    h = db.source_health(conn)["s"]
+    assert "health_score" not in h
+    assert "status" not in h
+
+
+def test_run_once_records_new_listings_catalogue_matches_and_deals(tmp_path):
+    cfg = _cfg(tmp_path, extra=[
+        ExtraSourceConfig(name="good", type="rss", url="https://x/{term}"),
+    ])
+    conn = db.connect(cfg.db_path)
+    project_id = db.create_project(conn, "Workshop")
+    item_id = db.create_item(
+        conn, project_id,
+        ItemConfig(name="Track Saw", terms=["track saw"], normal_price=350,
+                   target_deal_price=200),
+    )
+    db.create_product(
+        conn, item_id, "Makita", "LS1019L", ["Makita LS1019L"],
+        msrp=None, typical_new_price=None, target_deal_price=200,
+    )
+    listing = Listing(source="good", external_id="g1", title="Makita LS1019L track saw",
+                      price=150.0, url="https://x/g1")
+    _run_with(cfg, conn, {"good": HealthyFake(cfg, "good", [listing])})
+    run_row = conn.execute(
+        "SELECT * FROM source_runs WHERE source = 'good'"
+    ).fetchone()
+    assert run_row["new_listings"] == 1
+    assert run_row["catalogue_matches"] == 1
+    assert run_row["deals_found"] == 1  # 150 <= target_deal_price 200
+
+    # Rescanning the same listing again: no longer "new".
+    _run_with(cfg, conn, {"good": HealthyFake(cfg, "good", [listing])})
+    second_run_row = conn.execute(
+        "SELECT * FROM source_runs WHERE source = 'good' ORDER BY id DESC LIMIT 1"
+    ).fetchone()
+    assert second_run_row["new_listings"] == 0
+
+
+def test_run_once_records_duplicates_for_secondary_cross_source_sighting(tmp_path):
+    cfg = _cfg(tmp_path, extra=[
+        ExtraSourceConfig(name="rss", type="rss", url="https://x/{term}"),
+    ])
+    conn = db.connect(cfg.db_path)
+    _seed_item(conn)
+    url = "https://www.ebay.co.uk/itm/195012345678"
+    ebay_listing = Listing(source="ebay", external_id="195012345678",
+                           title="Makita track saw", price=250.0, url=url)
+    rss_listing = Listing(source="rss", external_id="rss-guid-1",
+                          title="Makita track saw (RSS)", price=245.0, url=url)
+    _run_with(cfg, conn, {
+        "ebay": HealthyFake(cfg, "ebay", [ebay_listing]),
+        "rss": HealthyFake(cfg, "rss", [rss_listing]),
+    })
+    health = db.source_health(conn)
+    # eBay is the native platform for this URL and is processed first
+    # (built-in before extras) - it stays primary. The RSS proxy sighting
+    # is the confirmed duplicate.
+    assert health["ebay"]["avg_duplicates"] == 0.0
+    assert health["rss"]["avg_duplicates"] == 1.0
+
+
 # --- Capability-driven enrichment (no marketplace special cases) -------------------
 
 

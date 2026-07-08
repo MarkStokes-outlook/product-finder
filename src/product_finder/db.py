@@ -238,6 +238,20 @@ _MIGRATIONS = [
     # currentBidPrice separately until the auction-close poller reached it.
     ("listings", "current_bid_price", "REAL"),
     ("listings", "buy_it_now_price", "REAL"),
+    # Connector Maturity phase (roadmap: "Become the best acquisition
+    # platform..." Phase A) — per-run stats beyond the original
+    # searches/listings/errors, so the Sources page can report averages and
+    # per-run yield (new listings, cross-source duplicates suppressed,
+    # catalogue matches, deals found) rather than only pass/fail health.
+    ("source_runs", "duration_ms", "INTEGER NOT NULL DEFAULT 0"),
+    ("source_runs", "new_listings", "INTEGER NOT NULL DEFAULT 0"),
+    ("source_runs", "duplicates", "INTEGER NOT NULL DEFAULT 0"),
+    ("source_runs", "catalogue_matches", "INTEGER NOT NULL DEFAULT 0"),
+    ("source_runs", "deals_found", "INTEGER NOT NULL DEFAULT 0"),
+    # Durable per-source metadata that must survive source_runs' 30-day
+    # retention pruning — set once on a source's first recorded run, never
+    # overwritten (see record_source_run).
+    ("source_settings", "first_seen", "TEXT"),
 ]
 
 
@@ -2137,16 +2151,41 @@ def record_source_run(
     listings: int = 0,
     errors: int = 0,
     last_error: str | None = None,
+    duration_ms: int = 0,
+    new_listings: int = 0,
+    duplicates: int = 0,
+    catalogue_matches: int = 0,
+    deals_found: int = 0,
 ) -> None:
     """One connector's outcome for one search cycle (see runner.run_once) —
     the raw material for the Sources page health column and the roadmap's
     coverage metrics. Rows older than the retention window are pruned on
     write so the table can't grow unboundedly (roadmap: "Keeping the system
-    healthy" — retention handled opportunistically where data is created)."""
+    healthy" — retention handled opportunistically where data is created).
+
+    duration_ms is wall-clock time spent inside this connector's search()
+    calls only (not the DB/matching work per listing) — the number an
+    orchestrator would actually want for scheduling/back-off decisions.
+    new_listings/duplicates/catalogue_matches/deals_found are this cycle's
+    counts of, respectively: listings not seen before (db.upsert_listing),
+    listings resolved as a non-primary cross-source sighting of a listing
+    already known (db.resolve_identity), listings that matched a catalogue
+    product, and listings that met evaluation.under_target."""
     conn.execute(
-        "INSERT INTO source_runs (source, run_at, ok, searches, listings, errors, last_error) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?)",
-        (source, _now(), 1 if errors == 0 else 0, searches, listings, errors, last_error),
+        "INSERT INTO source_runs (source, run_at, ok, searches, listings, errors, "
+        "last_error, duration_ms, new_listings, duplicates, catalogue_matches, deals_found) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (source, _now(), 1 if errors == 0 else 0, searches, listings, errors, last_error,
+         duration_ms, new_listings, duplicates, catalogue_matches, deals_found),
+    )
+    # first_seen is durable per-source metadata, not run telemetry — it must
+    # survive the retention pruning below, so it lives in source_settings
+    # (see _MIGRATIONS) and is set once, on this source's first-ever run.
+    conn.execute(
+        "INSERT INTO source_settings (name, first_seen) VALUES (?, ?) "
+        "ON CONFLICT(name) DO UPDATE SET "
+        "first_seen = COALESCE(source_settings.first_seen, excluded.first_seen)",
+        (source, _now()),
     )
     cutoff = (
         datetime.now(timezone.utc) - timedelta(days=_SOURCE_RUN_RETENTION_DAYS)
@@ -2157,14 +2196,36 @@ def record_source_run(
 
 
 def source_health(conn: sqlite3.Connection) -> dict[str, dict]:
-    """Per-connector health, keyed by source name: last run and whether it
-    was clean, last successful run, consecutive failing runs (0 for a
-    healthy source), and 24-hour ingest volume. Sources with no recorded
-    runs simply aren't present — the UI shows them as "not yet run"."""
+    """Per-connector health, keyed by source name.
+
+    Two different kinds of number here, deliberately not blended:
+    - snapshot facts: last run, whether it was clean, first_seen, last
+      success/failure, consecutive failing runs (0 for a healthy source),
+      24-hour ingest volume.
+    - averages/rates over every run still inside the retention window (see
+      _SOURCE_RUN_RETENTION_DAYS) — success_rate and the average_* fields.
+      Bounded by the same 30-day window as last_success_at always was; a
+      connector with no runs in the window has no history to average, same
+      as it already had no last_success_at.
+
+    No health score or status here — raw telemetry only. Turning this into
+    an explainable Healthy/Warning/Degraded/Offline model is a separate
+    scoring step (roadmap Phase D), built on top of these numbers rather
+    than duplicating them.
+
+    Sources with no recorded runs simply aren't present — the UI shows them
+    as "not yet run"."""
     rows = conn.execute(
-        "SELECT source, run_at, ok, listings, errors, last_error "
+        "SELECT source, run_at, ok, listings, errors, last_error, duration_ms, "
+        "new_listings, duplicates, catalogue_matches, deals_found "
         "FROM source_runs ORDER BY source, run_at DESC, id DESC"
     ).fetchall()
+    first_seen = {
+        row["name"]: row["first_seen"]
+        for row in conn.execute(
+            "SELECT name, first_seen FROM source_settings WHERE first_seen IS NOT NULL"
+        )
+    }
     cutoff_24h = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat(
         timespec="seconds"
     )
@@ -2173,18 +2234,40 @@ def source_health(conn: sqlite3.Connection) -> dict[str, dict]:
         h = health.setdefault(
             row["source"],
             {
+                "first_seen": first_seen.get(row["source"]),
                 "last_run_at": row["run_at"],
                 "last_ok": bool(row["ok"]),
                 "last_error": row["last_error"],
                 "last_success_at": None,
+                "last_failed_at": None,
                 "consecutive_failures": 0,
                 "listings_24h": 0,
                 "errors_24h": 0,
+                "total_runs": 0,
+                "ok_runs": 0,
+                "success_rate": None,
+                "avg_duration_ms": None,
+                "avg_listings_found": None,
+                "avg_new_listings": None,
+                "avg_duplicates": None,
+                "avg_catalogue_matches": None,
+                "avg_deals_found": None,
                 "_streak_open": True,
+                "_sum_duration_ms": 0,
+                "_sum_listings": 0,
+                "_sum_new_listings": 0,
+                "_sum_duplicates": 0,
+                "_sum_catalogue_matches": 0,
+                "_sum_deals_found": 0,
             },
         )
-        if row["ok"] and h["last_success_at"] is None:
-            h["last_success_at"] = row["run_at"]
+        h["total_runs"] += 1
+        if row["ok"]:
+            h["ok_runs"] += 1
+            if h["last_success_at"] is None:
+                h["last_success_at"] = row["run_at"]
+        elif h["last_failed_at"] is None:
+            h["last_failed_at"] = row["run_at"]
         if h["_streak_open"]:
             if row["ok"]:
                 h["_streak_open"] = False
@@ -2193,8 +2276,25 @@ def source_health(conn: sqlite3.Connection) -> dict[str, dict]:
         if row["run_at"] >= cutoff_24h:
             h["listings_24h"] += row["listings"]
             h["errors_24h"] += row["errors"]
+        h["_sum_duration_ms"] += row["duration_ms"]
+        h["_sum_listings"] += row["listings"]
+        h["_sum_new_listings"] += row["new_listings"]
+        h["_sum_duplicates"] += row["duplicates"]
+        h["_sum_catalogue_matches"] += row["catalogue_matches"]
+        h["_sum_deals_found"] += row["deals_found"]
     for h in health.values():
         del h["_streak_open"]
+        n = h["total_runs"]
+        h["success_rate"] = round(100 * h["ok_runs"] / n) if n else None
+        h["avg_duration_ms"] = round(h["_sum_duration_ms"] / n) if n else None
+        h["avg_listings_found"] = round(h["_sum_listings"] / n, 1) if n else None
+        h["avg_new_listings"] = round(h["_sum_new_listings"] / n, 1) if n else None
+        h["avg_duplicates"] = round(h["_sum_duplicates"] / n, 1) if n else None
+        h["avg_catalogue_matches"] = round(h["_sum_catalogue_matches"] / n, 1) if n else None
+        h["avg_deals_found"] = round(h["_sum_deals_found"] / n, 1) if n else None
+        for key in ("_sum_duration_ms", "_sum_listings", "_sum_new_listings",
+                    "_sum_duplicates", "_sum_catalogue_matches", "_sum_deals_found"):
+            del h[key]
     return health
 
 

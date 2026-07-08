@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import sqlite3
+import time
 
 from . import catalogue, db, extraction, retailer_price, scoring, sources
 from .alerts import console as console_alerts
@@ -70,18 +71,26 @@ def run_once(cfg: AppConfig, conn: sqlite3.Connection) -> list[MatchAlert]:
                 if source is None or not source.is_automated():
                     continue
                 stats = health.setdefault(
-                    name, {"searches": 0, "listings": 0, "errors": 0, "last_error": None}
+                    name,
+                    {
+                        "searches": 0, "listings": 0, "errors": 0, "last_error": None,
+                        "duration_ms": 0, "new_listings": 0, "duplicates": 0,
+                        "catalogue_matches": 0, "deals_found": 0,
+                    },
                 )
                 for term in item.terms:
                     stats["searches"] += 1
+                    started = time.perf_counter()
                     try:
                         listings = source.search(term, item)
                     except Exception as exc:
                         # Source failures must never crash the run.
+                        stats["duration_ms"] += round((time.perf_counter() - started) * 1000)
                         log.warning("%s search failed for %r: %s", name, term, exc)
                         stats["errors"] += 1
                         stats["last_error"] = str(exc)
                         continue
+                    stats["duration_ms"] += round((time.perf_counter() - started) * 1000)
                     stats["listings"] += len(listings)
                     for listing in listings:
                         if scoring.excluded(listing, item):
@@ -90,7 +99,13 @@ def run_once(cfg: AppConfig, conn: sqlite3.Connection) -> list[MatchAlert]:
                             continue
                         product = catalogue.match(listing.text, products) if products else None
                         evaluation = scoring.evaluate(listing, item, product)
-                        listing_id, _ = db.upsert_listing(conn, listing)
+                        if product is not None:
+                            stats["catalogue_matches"] += 1
+                        if evaluation.under_target:
+                            stats["deals_found"] += 1
+                        listing_id, is_new_listing = db.upsert_listing(conn, listing)
+                        if is_new_listing:
+                            stats["new_listings"] += 1
                         # Cross-source identity resolution (v1: canonical-URL
                         # matching only — see identity.py/resolve_identity()).
                         # is_primary is False only for a confirmed duplicate
@@ -98,6 +113,8 @@ def run_once(cfg: AppConfig, conn: sqlite3.Connection) -> list[MatchAlert]:
                         # gets its own listing_matches row below (full
                         # provenance), just no alert/observation/list surface.
                         _, is_primary = db.resolve_identity(conn, listing_id, listing)
+                        if not is_primary:
+                            stats["duplicates"] += 1
                         match_id, is_new = db.record_match(
                             conn, listing_id, item_id, evaluation,
                             product_id=product.id if product else None,
