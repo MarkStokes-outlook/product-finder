@@ -1,5 +1,7 @@
+import json
 from datetime import datetime, timedelta, timezone
 from email.utils import format_datetime
+from pathlib import Path
 from unittest import mock
 
 import pytest
@@ -559,3 +561,88 @@ def test_ebay_get_item_details_none_on_fetch_failure():
     with mock.patch("product_finder.sources.ebay.requests.post", return_value=_mock_token_response()):
         with mock.patch("product_finder.sources.ebay.requests.get", return_value=item_resp):
             assert source.get_item_details("v1|1|0") is None
+
+
+# --- eBay real-response fixtures (captured evidence, see fixtures/ebay/README.md) --
+#
+# The tests above prove the mapping logic against minimal hand-written dicts.
+# These prove it against real (sanitised) API responses captured from eBay's
+# production Browse API using this project's own credentials — evidence that
+# currentBidPrice/bidCount/buyingOptions/estimatedAvailabilities really are
+# present and named exactly this way, not assumed from documentation.
+
+_FIXTURES = Path(__file__).parent / "fixtures" / "ebay"
+
+
+def _load_fixture(name: str) -> dict:
+    return json.loads((_FIXTURES / name).read_text())
+
+
+def test_ebay_search_maps_real_auction_response():
+    from product_finder.sources.ebay import EbaySource
+
+    search_resp = mock.Mock()
+    search_resp.raise_for_status = mock.Mock()
+    search_resp.json.return_value = _load_fixture("search_auction_no_bin.json")
+    source = EbaySource(_ebay_cfg())
+    with mock.patch("product_finder.sources.ebay.requests.post", return_value=_mock_token_response()):
+        with mock.patch("product_finder.sources.ebay.requests.get", return_value=search_resp):
+            listings = source.search("rtx 3080", make_item(name="RTX 3080", terms=["rtx 3080"]))
+
+    assert len(listings) == 1
+    listing = listings[0]
+    # Real capture has no top-level "price" (pure auction) — current bid is the
+    # only price signal, exactly the null-price case the fallback exists for.
+    assert listing.price == 235.00
+    assert listing.buying_options == ["AUCTION"]
+    assert listing.bid_count == 13
+    assert listing.end_time == "2026-07-08T17:00:01.000Z"
+    assert listing.image_url == "https://i.ebayimg.com/images/g/EXAMPLE1/s-l1600.jpg"
+
+
+def test_ebay_search_maps_real_fixed_price_response():
+    from product_finder.sources.ebay import EbaySource
+
+    search_resp = mock.Mock()
+    search_resp.raise_for_status = mock.Mock()
+    search_resp.json.return_value = _load_fixture("search_fixed_price.json")
+    source = EbaySource(_ebay_cfg())
+    with mock.patch("product_finder.sources.ebay.requests.post", return_value=_mock_token_response()):
+        with mock.patch("product_finder.sources.ebay.requests.get", return_value=search_resp):
+            listings = source.search("mitre saw", make_item())
+
+    assert len(listings) == 1
+    listing = listings[0]
+    assert listing.price == 45.99
+    assert listing.buying_options == ["FIXED_PRICE"]
+    assert listing.bid_count is None
+
+
+def test_ebay_get_item_real_active_auction_not_ended():
+    from product_finder.sources.ebay import EbaySource
+
+    item_resp = mock.Mock()
+    item_resp.status_code = 200
+    item_resp.json.return_value = _load_fixture("getitem_auction_active.json")
+    source = EbaySource(_ebay_cfg())
+    with mock.patch("product_finder.sources.ebay.requests.post", return_value=_mock_token_response()):
+        with mock.patch("product_finder.sources.ebay.requests.get", return_value=item_resp):
+            snapshot = source.get_item("v1|123456789012|0")
+
+    assert snapshot.price == 235.00
+    assert snapshot.bid_count == 13
+    assert snapshot.ended is False
+
+
+def test_ebay_get_item_real_ended_auction_detected():
+    from product_finder.sources.ebay import EbaySource
+
+    item_resp = mock.Mock()
+    item_resp.status_code = 200
+    item_resp.json.return_value = _load_fixture("getitem_auction_ended.json")
+    source = EbaySource(_ebay_cfg())
+    with mock.patch("product_finder.sources.ebay.requests.post", return_value=_mock_token_response()):
+        with mock.patch("product_finder.sources.ebay.requests.get", return_value=item_resp):
+            snapshot = source.get_item("v1|123456789012|0")
+
+    assert snapshot.ended is True

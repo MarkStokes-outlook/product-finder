@@ -1,0 +1,228 @@
+{
+  "itemId": "v1|123456789012|0",
+  "title": "GeForce RTX 3080 12GB GDDR6 PCIe4.0 ",
+  "price": {
+    "value": "235.00",
+    "currency": "GBP"
+  },
+  "categoryPath": "Computers/Tablets & Networking|Computer Components & Parts|Graphics/Video Cards",
+  "categoryIdPath": "58058|175673|27386",
+  "condition": "Used",
+  "conditionId": "3000",
+  "conditionDescription": "REmoved from working workstation",
+  "itemLocation": {
+    "city": "Example City",
+    "postalCode": "AB12***",
+    "country": "GB"
+  },
+  "image": {
+    "imageUrl": "https://i.ebayimg.com/images/g/EXAMPLE1/s-l225.jpg"
+  },
+  "additionalImages": [
+    {
+      "imageUrl": "https://i.ebayimg.com/images/g/EXAMPLE1b/s-l225.jpg"
+    }
+  ],
+  "currentBidPrice": {
+    "value": "235.00",
+    "currency": "GBP"
+  },
+  "brand": "Geforce",
+  "itemCreationDate": "2026-07-05T17:00:01.000Z",
+  "itemEndDate": "2026-07-08T17:00:01.000Z",
+  "seller": {
+    "username": "example_seller",
+    "feedbackPercentage": "99.5",
+    "feedbackScore": 500,
+    "sellerAccountType": "BUSINESS"
+  },
+  "estimatedAvailabilities": [
+    {
+      "deliveryOptions": [
+        "SHIP_TO_HOME",
+        "SELLER_ARRANGED_LOCAL_PICKUP"
+      ],
+      "estimatedAvailabilityStatus": "IN_STOCK",
+      "estimatedAvailableQuantity": 1,
+      "estimatedSoldQuantity": 0,
+      "estimatedRemainingQuantity": 1
+    }
+  ],
+  "shippingOptions": [
+    {
+      "shippingServiceCode": "Flat Rate Freight",
+      "type": "Courier",
+      "shippingCost": {
+        "value": "0.00",
+        "currency": "GBP"
+      },
+      "quantityUsedForEstimate": 1,
+      "minEstimatedDeliveryDate": "2026-07-10T10:00:00.000Z",
+      "maxEstimatedDeliveryDate": "2026-07-14T10:00:00.000Z",
+      "additionalShippingCostPerUnit": {
+        "value": "0.00",
+        "currency": "GBP"
+      },
+      "shippingCostType": "FIXED"
+    }
+  ],
+  "shipToLocations": {
+    "regionIncluded": [
+      {
+        "regionName": "United Kingdom",
+        "regionType": "COUNTRY",
+        "regionId": "GB"
+      }
+    ],
+    "regionExcluded": [
+      {
+        "regionName": "Afghanistan",
+        "regionType": "COUNTRY",
+        "regionId": "AF"
+      },
+      {
+        "regionName": "Libya",
+        "regionType": "COUNTRY",
+        "regionId": "LY"
+      },
+      {
+        "regionName": "Nauru",
+        "regionType": "COUNTRY",
+        "regionId": "NR"
+      },
+      {
+        "regionName": "Somalia",
+        "regionType": "COUNTRY",
+        "regionId": "SO"
+      },
+      {
+        "regionName": "Yemen",
+        "regionType": "COUNTRY",
+        "regionId": "YE"
+      },
+      {
+        "regionName": "Ukraine",
+        "regionType": "COUNTRY",
+        "regionId": "UA"
+      },
+      {
+        "regionName": "Iran",
+        "regionType": "COUNTRY",
+        "regionId": "IR"
+      },
+      {
+        "regionName": "Russian Federation",
+        "regionType": "COUNTRY",
+        "regionId": "RU"
+      }
+    ]
+  },
+  "returnTerms": {
+    "returnsAccepted": true,
+    "returnShippingCostPayer": "BUYER",
+    "returnPeriod": {
+      "value": 14,
+      "unit": "CALENDAR_DAY"
+    }
+  },
+  "taxes": [
+    {
+      "taxType": "VAT",
+      "taxPercentage": "20.0",
+      "includedInPrice": false,
+      "ebayCollectAndRemitTax": false
+    }
+  ],
+  "localizedAspects": [
+    {
+      "type": "STRING",
+      "name": "Brand",
+      "value": "Geforce"
+    },
+    {
+      "type": "STRING",
+      "name": "Connectors",
+      "value": "DisplayPort, HDMI"
+    },
+    {
+      "type": "STRING",
+      "name": "Chipset Manufacturer",
+      "value": "NVIDIA"
+    },
+    {
+      "type": "STRING",
+      "name": "Memory Size",
+      "value": "12 GB"
+    },
+    {
+      "type": "STRING",
+      "name": "Compatible Slot",
+      "value": "PCI Express 4.0 x16"
+    },
+    {
+      "type": "STRING",
+      "name": "Cooling Component Included",
+      "value": "Fan with Heatsink"
+    },
+    {
+      "type": "STRING",
+      "name": "Memory Type",
+      "value": "GDDR6X"
+    },
+    {
+      "type": "STRING",
+      "name": "Chipset/GPU Model",
+      "value": "NVIDIA GeForce RTX 3080"
+    }
+  ],
+  "topRatedBuyingExperience": false,
+  "buyingOptions": [
+    "AUCTION"
+  ],
+  "bidCount": 13,
+  "itemWebUrl": "https://www.ebay.co.uk/itm/123456789012?_skw=search&hash=item000000000:g:EXAMPLE1",
+  "paymentMethods": [
+    {
+      "paymentMethodType": "OTHER"
+    },
+    {
+      "paymentMethodType": "WALLET",
+      "paymentMethodBrands": [
+        {
+          "paymentMethodBrandType": "PAYPAL"
+        },
+        {
+          "paymentMethodBrandType": "APPLE_PAY"
+        }
+      ]
+    },
+    {
+      "paymentMethodType": "CREDIT_CARD",
+      "paymentMethodBrands": [
+        {
+          "paymentMethodBrandType": "VISA"
+        },
+        {
+          "paymentMethodBrandType": "MASTERCARD"
+        },
+        {
+          "paymentMethodBrandType": "DINERS_CLUB"
+        }
+      ]
+    }
+  ],
+  "immediatePay": true,
+  "minimumPriceToBid": {
+    "value": "240.00",
+    "currency": "GBP"
+  },
+  "uniqueBidderCount": 5,
+  "enabledForGuestCheckout": true,
+  "eligibleForInlineCheckout": true,
+  "lotSize": 0,
+  "legacyItemId": "123456789012",
+  "priorityListing": false,
+  "adultOnly": false,
+  "categoryId": "27386",
+  "listingMarketplaceId": "EBAY_GB"
+}

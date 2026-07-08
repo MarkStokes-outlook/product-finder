@@ -1,0 +1,120 @@
+{
+  "itemSummaries": [
+    {
+      "itemId": "v1|987654321098|0",
+      "title": "Titan Mitre Saw Electric TTB795MSW Compound Single 210mm Dust Bag Compact 1400W",
+      "leafCategoryIds": [
+        "260172",
+        "106000"
+      ],
+      "categories": [
+        {
+          "categoryId": "260172",
+          "categoryName": "Mitre Saws"
+        },
+        {
+          "categoryId": "106000",
+          "categoryName": "Mitre Saws"
+        },
+        {
+          "categoryId": "631",
+          "categoryName": "DIY Tools & Workshop Equipment"
+        },
+        {
+          "categoryId": "3247",
+          "categoryName": "Power Tools"
+        },
+        {
+          "categoryId": "11700",
+          "categoryName": "Home, Furniture & DIY"
+        },
+        {
+          "categoryId": "12576",
+          "categoryName": "Business, Office & Industrial"
+        },
+        {
+          "categoryId": "20783",
+          "categoryName": "Saws"
+        },
+        {
+          "categoryId": "61573",
+          "categoryName": "Power Tools"
+        },
+        {
+          "categoryId": "149313",
+          "categoryName": "Saws"
+        },
+        {
+          "categoryId": "260169",
+          "categoryName": "Power Saws"
+        }
+      ],
+      "image": {
+        "imageUrl": "https://i.ebayimg.com/images/g/EXAMPLE2/s-l225.jpg"
+      },
+      "price": {
+        "value": "45.99",
+        "currency": "GBP"
+      },
+      "itemHref": "https://api.ebay.com/buy/browse/v1/item/v1%7C987654321098%7C0",
+      "seller": {
+        "username": "example_seller",
+        "feedbackPercentage": "99.5",
+        "feedbackScore": 500,
+        "sellerAccountType": "BUSINESS"
+      },
+      "marketingPrice": {
+        "originalPrice": {
+          "value": "69.99",
+          "currency": "GBP"
+        },
+        "discountPercentage": "34",
+        "discountAmount": {
+          "value": "24.00",
+          "currency": "GBP"
+        },
+        "priceTreatment": "LIST_PRICE"
+      },
+      "condition": "Good - Refurbished",
+      "conditionId": "2030",
+      "thumbnailImages": [
+        {
+          "imageUrl": "https://i.ebayimg.com/images/g/EXAMPLE2/s-l1600.jpg"
+        }
+      ],
+      "shippingOptions": [
+        {
+          "shippingCostType": "FIXED",
+          "shippingCost": {
+            "value": "0.00",
+            "currency": "GBP"
+          },
+          "minEstimatedDeliveryDate": "2026-07-08T23:00:00.000Z",
+          "maxEstimatedDeliveryDate": "2026-07-09T23:00:00.000Z"
+        }
+      ],
+      "buyingOptions": [
+        "FIXED_PRICE"
+      ],
+      "epid": "17053048397",
+      "itemWebUrl": "https://www.ebay.co.uk/itm/987654321098?_skw=mitre+saw&hash=item000000000:g:EXAMPLE2",
+      "itemLocation": {
+        "postalCode": "AB12***",
+        "country": "GB"
+      },
+      "additionalImages": [
+        {
+          "imageUrl": "https://i.ebayimg.com/images/g/EXAMPLE2b/s-l225.jpg"
+        }
+      ],
+      "adultOnly": false,
+      "legacyItemId": "987654321098",
+      "availableCoupons": true,
+      "itemOriginDate": "2025-09-25T09:11:59.000Z",
+      "itemCreationDate": "2026-07-02T16:58:38.000Z",
+      "topRatedBuyingExperience": false,
+      "priorityListing": false,
+      "listingMarketplaceId": "EBAY_GB"
+    }
+  ]
+}
