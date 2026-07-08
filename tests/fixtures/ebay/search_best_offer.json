@@ -1,0 +1,77 @@
+{
+  "itemSummaries": [
+    {
+      "itemId": "v1|111222333444|0",
+      "title": "Palit GeForce RTX 3080 GameRock OC 10GB GDDR6X Graphics Card",
+      "leafCategoryIds": [
+        "27386"
+      ],
+      "categories": [
+        {
+          "categoryId": "27386",
+          "categoryName": "Graphics/Video Cards"
+        },
+        {
+          "categoryId": "58058",
+          "categoryName": "Computers/Tablets & Networking"
+        },
+        {
+          "categoryId": "175673",
+          "categoryName": "Computer Components & Parts"
+        }
+      ],
+      "image": {
+        "imageUrl": "https://i.ebayimg.com/images/g/EXAMPLE4/s-l225.jpg"
+      },
+      "price": {
+        "value": "290.00",
+        "currency": "GBP"
+      },
+      "itemHref": "https://api.ebay.com/buy/browse/v1/item/v1%7C111222333444%7C0",
+      "seller": {
+        "username": "example_seller",
+        "feedbackPercentage": "99.5",
+        "feedbackScore": 500,
+        "sellerAccountType": "INDIVIDUAL"
+      },
+      "condition": "Used",
+      "conditionId": "3000",
+      "thumbnailImages": [
+        {
+          "imageUrl": "https://i.ebayimg.com/images/g/EXAMPLE4/s-l1600.jpg"
+        }
+      ],
+      "shippingOptions": [
+        {
+          "shippingCostType": "FIXED",
+          "shippingCost": {
+            "value": "5.88",
+            "currency": "GBP"
+          }
+        }
+      ],
+      "buyingOptions": [
+        "FIXED_PRICE",
+        "BEST_OFFER"
+      ],
+      "itemWebUrl": "https://www.ebay.co.uk/itm/111222333444?_skw=rtx+3080&hash=item000000000:g:EXAMPLE4",
+      "itemLocation": {
+        "postalCode": "AB12***",
+        "country": "GB"
+      },
+      "additionalImages": [
+        {
+          "imageUrl": "https://i.ebayimg.com/images/g/EXAMPLE4b/s-l225.jpg"
+        }
+      ],
+      "adultOnly": false,
+      "legacyItemId": "111222333444",
+      "availableCoupons": false,
+      "itemOriginDate": "2026-07-07T19:52:12.000Z",
+      "itemCreationDate": "2026-07-07T19:52:12.000Z",
+      "topRatedBuyingExperience": false,
+      "priorityListing": false,
+      "listingMarketplaceId": "EBAY_GB"
+    }
+  ]
+}

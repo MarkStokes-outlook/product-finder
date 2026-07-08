@@ -68,9 +68,17 @@ def due_for_poll(end_time: datetime, last_poll_at: datetime | None, now: datetim
 
 
 def poll_and_capture(cfg: AppConfig, conn: sqlite3.Connection) -> int:
-    """Poll auctions due for a check and record the closing price for any
-    that have ended since we last looked. Returns how many closes were
-    captured this call. Safe to call often — most calls find nothing due."""
+    """Poll auctions due for a check, record every poll as a snapshot
+    observation (see db.record_auction_snapshot), and record the closing
+    price for any that have ended since we last looked. Returns how many
+    closes were captured this call (snapshot recording itself isn't counted
+    — this return value is what callers already use for close-capture
+    logging). Safe to call often — most calls find nothing due.
+
+    Tracking no longer requires a catalogue-product match (db.list_tracked_auctions
+    was broadened) — every live auction gets its snapshot history recorded.
+    The product's used-price observation on close still only happens for
+    listings actually matched to a product (product_id is None otherwise)."""
     eff_cfg = db.effective_config(conn, cfg)
     source = sources.build_registry(eff_cfg).get("ebay")
     if not isinstance(source, EbaySource) or not source.is_automated():
@@ -93,10 +101,29 @@ def poll_and_capture(cfg: AppConfig, conn: sqlite3.Connection) -> int:
             continue
 
         db.mark_listing_polled(conn, row["id"])
-        if snapshot is not None and snapshot.ended:
-            db.record_price_observation(
-                conn, row["product_id"], snapshot.price, source=f"{source.name}-close"
+        if snapshot is not None:
+            # Record this observation regardless of ended/not-ended — this is
+            # what builds the snapshot history for trajectory scoring, not
+            # just the closing capture below.
+            db.record_auction_snapshot(
+                conn,
+                row["id"],
+                source=source.name,
+                current_bid_price=snapshot.current_bid,
+                currency=snapshot.currency,
+                bid_count=snapshot.bid_count,
+                buy_it_now_price=snapshot.buy_it_now_price,
+                shipping_price=snapshot.shipping_price,
+                end_time=row["end_time"],
+                watch_count=snapshot.watch_count,
+                view_count=snapshot.view_count,
+                raw_payload=snapshot.raw,
             )
+        if snapshot is not None and snapshot.ended:
+            if row["product_id"] is not None:
+                db.record_price_observation(
+                    conn, row["product_id"], snapshot.price, source=f"{source.name}-close"
+                )
             db.mark_sold_captured(conn, row["id"])
             captured += 1
         elif now - end_time > GIVE_UP_AFTER:

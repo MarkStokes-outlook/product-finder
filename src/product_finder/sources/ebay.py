@@ -176,7 +176,8 @@ class EbaySource(Source):
 
     def get_item(self, external_id: str) -> AuctionSnapshot | None:
         """Single-item lookup for tracking an auction toward its close (see
-        auction_watch.py) — `external_id` is the same eBay itemId stored on
+        auction_watch.py) and, now, for recording each poll as a snapshot
+        observation — `external_id` is the same eBay itemId stored on
         Listing.external_id from search()."""
         data = self._fetch_item(external_id)
         if data is None:
@@ -189,7 +190,50 @@ class EbaySource(Source):
             a.get("estimatedAvailabilityStatus") == "OUT_OF_STOCK"
             for a in data.get("estimatedAvailabilities", [])
         )
-        return AuctionSnapshot(price=price, currency=currency, bid_count=data.get("bidCount"), ended=ended)
+        buying_options = data.get("buyingOptions") or []
+        # currentBidPrice specifically, never falling back to price/BIN —
+        # see AuctionSnapshot.current_bid docstring for why this must stay
+        # distinct from the price= fallback used just above.
+        current_bid = None
+        bid_info = data.get("currentBidPrice")
+        if bid_info:
+            try:
+                current_bid = float(bid_info["value"])
+            except (TypeError, ValueError, KeyError):
+                current_bid = None
+        # Real captures confirm `price` is the Buy It Now price, distinct
+        # from `currentBidPrice`, when both AUCTION and FIXED_PRICE are
+        # active simultaneously (tests/fixtures/ebay/getitem_auction_with_bin.json)
+        # — not a fallback of one for the other like _price_value()'s use.
+        buy_it_now_price = None
+        if "FIXED_PRICE" in buying_options:
+            bin_info = data.get("price") or {}
+            try:
+                buy_it_now_price = float(bin_info["value"])
+            except (TypeError, ValueError, KeyError):
+                buy_it_now_price = None
+        shipping_price = None
+        shipping_opts = data.get("shippingOptions") or []
+        if shipping_opts:
+            cost = shipping_opts[0].get("shippingCost") or {}
+            try:
+                shipping_price = float(cost["value"])
+            except (TypeError, ValueError, KeyError):
+                shipping_price = None
+        return AuctionSnapshot(
+            price=price,
+            currency=currency,
+            bid_count=data.get("bidCount"),
+            ended=ended,
+            current_bid=current_bid,
+            buy_it_now_price=buy_it_now_price,
+            shipping_price=shipping_price,
+            # Not exposed by the Browse API on any endpoint we have access to
+            # — confirmed absent from real captures, not guessed as missing.
+            watch_count=None,
+            view_count=None,
+            raw=data,
+        )
 
     def get_item_details(self, external_id: str) -> dict | None:
         """Seller-declared brand/model, when eBay's own structured item

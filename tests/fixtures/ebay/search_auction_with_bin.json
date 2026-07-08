@@ -1,0 +1,79 @@
+{
+  "itemSummaries": [
+    {
+      "itemId": "v1|555666777888|0",
+      "title": "Sony PlayStation 5 PS5 Digital Edition 825GB 4K White Console + DualSense",
+      "leafCategoryIds": [
+        "139971"
+      ],
+      "categories": [
+        {
+          "categoryId": "139971",
+          "categoryName": "Video Game Consoles"
+        },
+        {
+          "categoryId": "1249",
+          "categoryName": "Video Games & Consoles"
+        }
+      ],
+      "image": {
+        "imageUrl": "https://i.ebayimg.com/images/g/EXAMPLE3/s-l225.jpg"
+      },
+      "price": {
+        "value": "229.50",
+        "currency": "GBP"
+      },
+      "itemHref": "https://api.ebay.com/buy/browse/v1/item/v1%7C555666777888%7C0",
+      "seller": {
+        "username": "example_seller",
+        "feedbackPercentage": "99.5",
+        "feedbackScore": 500,
+        "sellerAccountType": "INDIVIDUAL"
+      },
+      "condition": "Used",
+      "conditionId": "3000",
+      "thumbnailImages": [
+        {
+          "imageUrl": "https://i.ebayimg.com/images/g/EXAMPLE3/s-l1600.jpg"
+        }
+      ],
+      "shippingOptions": [
+        {
+          "shippingCostType": "FIXED",
+          "shippingCost": {
+            "value": "5.88",
+            "currency": "GBP"
+          }
+        }
+      ],
+      "buyingOptions": [
+        "FIXED_PRICE",
+        "AUCTION"
+      ],
+      "bidCount": 0,
+      "currentBidPrice": {
+        "value": "156.70",
+        "currency": "GBP"
+      },
+      "itemWebUrl": "https://www.ebay.co.uk/itm/555666777888?_skw=playstation+5&hash=item000000000:g:EXAMPLE3",
+      "itemLocation": {
+        "postalCode": "AB12***",
+        "country": "GB"
+      },
+      "additionalImages": [
+        {
+          "imageUrl": "https://i.ebayimg.com/images/g/EXAMPLE3b/s-l225.jpg"
+        }
+      ],
+      "adultOnly": false,
+      "legacyItemId": "555666777888",
+      "availableCoupons": false,
+      "itemOriginDate": "2026-07-07T20:34:17.000Z",
+      "itemCreationDate": "2026-07-07T20:34:17.000Z",
+      "itemEndDate": "2026-07-14T20:34:17.000Z",
+      "topRatedBuyingExperience": false,
+      "priorityListing": false,
+      "listingMarketplaceId": "EBAY_GB"
+    }
+  ]
+}

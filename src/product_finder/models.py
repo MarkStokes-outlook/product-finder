@@ -39,16 +39,42 @@ class Listing:
 @dataclass
 class AuctionSnapshot:
     """A single-item price check, for tracking an auction toward its close
-    (see auction_watch.py). `ended` is derived from the source's stock/
+    (see auction_watch.py) and, since every poll is now recorded (not just
+    the closing one), for building a per-listing observation history (see
+    db.record_auction_snapshot). `ended` is derived from the source's stock/
     availability status, not just the clock — eBay's Browse API keeps
     reporting the last bid price for a little while after itemEndDate
     passes, so waiting for the availability flip (rather than just the
-    timestamp) avoids capturing a split-second-too-early read."""
+    timestamp) avoids capturing a split-second-too-early read.
+
+    `price` keeps its original meaning and fallback behaviour (BIN price if
+    present, else current bid) — the "what would closing right now cost"
+    signal already relied on by auction_watch.py's close-price capture.
+    `current_bid` is a distinct, unambiguous field added for snapshot
+    history: always `currentBidPrice` specifically, never falling back to
+    the BIN price. This distinction matters in practice — real captures
+    confirm eBay returns `price` (BIN) and `currentBidPrice` (current bid)
+    simultaneously when a listing has both AUCTION and FIXED_PRICE buying
+    options, and they can differ a lot (see
+    tests/fixtures/ebay/getitem_auction_with_bin.json: BIN 229.50 vs current
+    bid 156.70) — collapsing them into one field would hide exactly the
+    "bid climbing toward BIN" signal trajectory scoring needs.
+    `watch_count`/`view_count` are always None today: confirmed absent from
+    every real Browse API response captured for this project (checked the
+    full key set, not just the fields expected) — recorded as unknown with
+    provenance rather than guessed, per an explicit project rule to never
+    fake unsupported source data."""
 
     price: float
     currency: str = "GBP"
     bid_count: int | None = None
     ended: bool = False
+    current_bid: float | None = None
+    buy_it_now_price: float | None = None
+    shipping_price: float | None = None
+    watch_count: int | None = None
+    view_count: int | None = None
+    raw: dict | None = None
 
 
 @dataclass

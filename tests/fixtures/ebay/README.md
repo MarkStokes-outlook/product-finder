@@ -33,6 +33,22 @@ localized aspects, shipping/tax/return terms) are untouched real API output.
   docstring) — this fixture documents that already-verified shape, it does
   not re-derive it from documentation alone.
 
-No fixture for a `BEST_OFFER`-enabled listing exists yet — none appeared in
-this capture session. Needed before/when offer-intelligence work reads
-`buyingOptions` for `BEST_OFFER`.
+- `search_auction_with_bin.json` — real capture, `item_summary/search` for a
+  listing with **both** `AUCTION` and `FIXED_PRICE` (PS5 console): `price`
+  (229.50, the Buy It Now price) and `currentBidPrice` (156.70, the current
+  bid) both present simultaneously and distinctly — confirms the two are
+  independent fields, not a fallback of one for the other, when both buying
+  options are active.
+- `getitem_auction_with_bin.json` — real capture, single-item `getItem` for
+  the same listing. `shippingOptions[0].shippingCost.value` confirmed present
+  here (`"5.88"`) — the real shape used for auction-snapshot shipping price.
+- `search_best_offer.json` — real capture, `item_summary/search` for a
+  `["FIXED_PRICE", "BEST_OFFER"]` listing — evidence that `BEST_OFFER` is a
+  real, distinctly-appearing value in `buyingOptions` (used by offer
+  intelligence work).
+
+**Confirmed absent from every real capture above** (checked the full key set
+of both `getItem` responses, not just the fields we expected):
+no `watchCount`/`viewCount`/equivalent field exists anywhere in eBay's Browse
+API `item_summary` or `getItem` response. Auction snapshot fields for these
+are always recorded as `None`/unknown with provenance, never guessed.

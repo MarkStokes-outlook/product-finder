@@ -172,6 +172,22 @@ CREATE TABLE IF NOT EXISTS listing_duplicates (
     decided_at TEXT,
     UNIQUE(listing_a, listing_b)
 );
+CREATE TABLE IF NOT EXISTS auction_snapshots (
+    id INTEGER PRIMARY KEY,
+    listing_id INTEGER NOT NULL REFERENCES listings(id),
+    source TEXT NOT NULL,
+    observed_at TEXT NOT NULL,
+    current_bid_price REAL,
+    currency TEXT DEFAULT 'GBP',
+    bid_count INTEGER,
+    buy_it_now_price REAL,
+    shipping_price REAL,
+    end_time TEXT,
+    watch_count INTEGER,
+    view_count INTEGER,
+    raw_payload TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_auction_snapshots_listing ON auction_snapshots(listing_id, observed_at);
 CREATE TABLE IF NOT EXISTS source_runs (
     id INTEGER PRIMARY KEY,
     source TEXT NOT NULL,
@@ -1380,12 +1396,16 @@ def dismiss_suggestion(conn: sqlite3.Connection, suggestion_id: int) -> None:
 
 
 def list_tracked_auctions(conn: sqlite3.Connection, max_staleness_days: int = 1) -> list[sqlite3.Row]:
-    """Listings that are candidates for end-of-auction price capture: not yet
-    captured, matched to a catalogue product, with a known end time that
-    hasn't gone stale (in case the app was offline past its close). Filtered
-    further in Python (auction_watch.py) for "is this actually an auction"
-    and "is it actually due for a poll right now" — both awkward to express
-    over a JSON column and a variable cadence in SQL."""
+    """Listings that are candidates for auction polling: not yet closed, with
+    a known end time that hasn't gone stale (in case the app was offline past
+    its close). A catalogue-product match is no longer required — every live
+    auction now gets its snapshot history recorded (see
+    record_auction_snapshot), not only ones resolved to a product; `m.product_id`
+    is still exposed (NULL when unmatched) so callers can decide whether to
+    also feed the product's used-price observations on close. Filtered further
+    in Python (auction_watch.py) for "is this actually an auction" and "is it
+    actually due for a poll right now" — both awkward to express over a JSON
+    column and a variable cadence in SQL."""
     cutoff = (datetime.now(timezone.utc) - timedelta(days=max_staleness_days)).isoformat(
         timespec="seconds"
     )
@@ -1393,11 +1413,10 @@ def list_tracked_auctions(conn: sqlite3.Connection, max_staleness_days: int = 1)
         """
         SELECT DISTINCT l.*, m.product_id
         FROM listings l
-        JOIN listing_matches m ON m.listing_id = l.id
+        LEFT JOIN listing_matches m ON m.listing_id = l.id
         WHERE l.sold_captured = 0
           AND l.end_time IS NOT NULL
           AND l.end_time >= ?
-          AND m.product_id IS NOT NULL
         """,
         (cutoff,),
     ).fetchall()
@@ -1411,6 +1430,59 @@ def mark_listing_polled(conn: sqlite3.Connection, listing_id: int) -> None:
 def mark_sold_captured(conn: sqlite3.Connection, listing_id: int) -> None:
     conn.execute("UPDATE listings SET sold_captured = 1 WHERE id = ?", (listing_id,))
     conn.commit()
+
+
+def record_auction_snapshot(
+    conn: sqlite3.Connection,
+    listing_id: int,
+    *,
+    source: str,
+    current_bid_price: float | None = None,
+    currency: str = "GBP",
+    bid_count: int | None = None,
+    buy_it_now_price: float | None = None,
+    shipping_price: float | None = None,
+    end_time: str | None = None,
+    watch_count: int | None = None,
+    view_count: int | None = None,
+    raw_payload: dict | None = None,
+) -> int:
+    """Append one point-in-time auction observation. Never overwrites a prior
+    observation — this is a history, not a cache — so bid velocity and
+    trajectory scoring (see auction_trajectory.py) have real data to work
+    from. The `listings` row itself still tracks only the latest known state
+    for simple display; this table is what remembers everything in between."""
+    cur = conn.execute(
+        "INSERT INTO auction_snapshots (listing_id, source, observed_at, "
+        "current_bid_price, currency, bid_count, buy_it_now_price, "
+        "shipping_price, end_time, watch_count, view_count, raw_payload) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (
+            listing_id,
+            source,
+            _now(),
+            current_bid_price,
+            currency,
+            bid_count,
+            buy_it_now_price,
+            shipping_price,
+            end_time,
+            watch_count,
+            view_count,
+            json.dumps(raw_payload) if raw_payload is not None else None,
+        ),
+    )
+    conn.commit()
+    return cur.lastrowid
+
+
+def list_auction_snapshots(conn: sqlite3.Connection, listing_id: int) -> list[sqlite3.Row]:
+    """Full observation history for one listing, oldest first — the input to
+    bid-velocity/trajectory scoring."""
+    return conn.execute(
+        "SELECT * FROM auction_snapshots WHERE listing_id = ? ORDER BY observed_at ASC",
+        (listing_id,),
+    ).fetchall()
 
 
 # --- Listings, matches, alerts -------------------------------------------------

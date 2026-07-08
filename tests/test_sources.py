@@ -646,3 +646,42 @@ def test_ebay_get_item_real_ended_auction_detected():
             snapshot = source.get_item("v1|123456789012|0")
 
     assert snapshot.ended is True
+
+
+def test_ebay_get_item_real_auction_no_bin_has_no_buy_it_now_price():
+    """Pure auction (no FIXED_PRICE in buyingOptions) — buy_it_now_price
+    must be None, not accidentally populated from currentBidPrice."""
+    from product_finder.sources.ebay import EbaySource
+
+    item_resp = mock.Mock()
+    item_resp.status_code = 200
+    item_resp.json.return_value = _load_fixture("getitem_auction_active.json")
+    source = EbaySource(_ebay_cfg())
+    with mock.patch("product_finder.sources.ebay.requests.post", return_value=_mock_token_response()):
+        with mock.patch("product_finder.sources.ebay.requests.get", return_value=item_resp):
+            snapshot = source.get_item("v1|123456789012|0")
+
+    assert snapshot.buy_it_now_price is None
+    assert snapshot.watch_count is None  # not exposed by the Browse API — confirmed, not guessed
+    assert snapshot.view_count is None
+    assert snapshot.raw["itemId"] == "v1|123456789012|0"
+
+
+def test_ebay_get_item_real_auction_with_bin_maps_both_prices_and_shipping():
+    """Real capture: a listing with both AUCTION and FIXED_PRICE returns
+    `price` (BIN) and `currentBidPrice` (current bid) simultaneously and
+    distinctly — see tests/fixtures/ebay/README.md."""
+    from product_finder.sources.ebay import EbaySource
+
+    item_resp = mock.Mock()
+    item_resp.status_code = 200
+    item_resp.json.return_value = _load_fixture("getitem_auction_with_bin.json")
+    source = EbaySource(_ebay_cfg())
+    with mock.patch("product_finder.sources.ebay.requests.post", return_value=_mock_token_response()):
+        with mock.patch("product_finder.sources.ebay.requests.get", return_value=item_resp):
+            snapshot = source.get_item("v1|555666777888|0")
+
+    assert snapshot.price == 229.50  # unchanged fallback: BIN wins when both present
+    assert snapshot.current_bid == 156.70  # distinct field, never falls back to BIN
+    assert snapshot.buy_it_now_price == 229.50
+    assert snapshot.shipping_price == 5.88

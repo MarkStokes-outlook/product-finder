@@ -184,3 +184,72 @@ def test_poll_and_capture_noop_when_ebay_not_configured(tmp_path):
     cfg = AppConfig(db_path=str(tmp_path / "t.db"))  # no ebay credentials
     conn = db.connect(cfg.db_path)
     assert auction_watch.poll_and_capture(cfg, conn) == 0
+
+
+# --- snapshot history (Coverage phase) --------------------------------------------
+
+
+def test_poll_and_capture_records_snapshot_even_when_not_yet_ended(tmp_path):
+    """The core new behaviour: every due poll is recorded as an observation,
+    not just the final closing one."""
+    cfg, conn, item_id, product_id = _setup(tmp_path)
+    end = (datetime.now(timezone.utc) + timedelta(minutes=1)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+    listing_id = _seed_auction_listing(conn, item_id, end)
+    _attach_product(conn, listing_id, item_id, product_id)
+
+    with mock.patch(
+        "product_finder.sources.ebay.EbaySource.get_item",
+        return_value=AuctionSnapshot(price=22.0, current_bid=22.0, bid_count=5, ended=False, buy_it_now_price=None),
+    ):
+        captured = auction_watch.poll_and_capture(cfg, conn)
+
+    assert captured == 0  # not a close, still in progress
+    rows = db.list_auction_snapshots(conn, listing_id)
+    assert len(rows) == 1
+    assert rows[0]["current_bid_price"] == 22.0
+    assert rows[0]["bid_count"] == 5
+    # No close yet, so the product's used-price observations are untouched.
+    assert db.list_price_observations(conn, product_id) == []
+
+
+def test_poll_and_capture_builds_history_across_multiple_polls(tmp_path):
+    cfg, conn, item_id, product_id = _setup(tmp_path)
+    end = (datetime.now(timezone.utc) + timedelta(hours=2)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+    listing_id = _seed_auction_listing(conn, item_id, end)
+    _attach_product(conn, listing_id, item_id, product_id)
+
+    for bid in (20.0, 25.0, 31.0):
+        with mock.patch(
+            "product_finder.sources.ebay.EbaySource.get_item",
+            return_value=AuctionSnapshot(price=bid, current_bid=bid, bid_count=1, ended=False),
+        ):
+            auction_watch.poll_and_capture(cfg, conn)
+        conn.execute("UPDATE listings SET last_poll_at = NULL WHERE id = ?", (listing_id,))
+        conn.commit()  # force each iteration to be "due" regardless of cadence
+
+    rows = db.list_auction_snapshots(conn, listing_id)
+    assert [r["current_bid_price"] for r in rows] == [20.0, 25.0, 31.0]  # nothing overwritten
+
+
+def test_poll_and_capture_tracks_auctions_with_no_catalogue_match(tmp_path):
+    """Snapshot history no longer requires a catalogue-product match — only
+    the product-specific used-price observation feed does."""
+    cfg, conn, item_id, product_id = _setup(tmp_path)
+    end = (datetime.now(timezone.utc) - timedelta(seconds=5)).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+    listing_id = _seed_auction_listing(conn, item_id, end)
+    # deliberately not calling _attach_product — this listing has no product match
+
+    with mock.patch(
+        "product_finder.sources.ebay.EbaySource.get_item",
+        return_value=AuctionSnapshot(price=40.0, current_bid=40.0, bid_count=2, ended=True),
+    ):
+        captured = auction_watch.poll_and_capture(cfg, conn)
+
+    assert captured == 1
+    rows = db.list_auction_snapshots(conn, listing_id)
+    assert len(rows) == 1
+    assert rows[0]["current_bid_price"] == 40.0
+    # No product to attribute a used-price observation to.
+    assert db.list_price_observations(conn, product_id) == []
+    listing = conn.execute("SELECT sold_captured FROM listings WHERE id = ?", (listing_id,)).fetchone()
+    assert listing["sold_captured"] == 1
