@@ -4,13 +4,13 @@ from __future__ import annotations
 
 import logging
 import sqlite3
-import time
 
 from . import catalogue, db, extraction, retailer_price, scoring, sources
 from .alerts import console as console_alerts
 from .alerts import webhook as webhook_alerts
 from .config import AppConfig, ItemConfig, OllamaConfig, ProjectConfig
 from .models import ManualLink, MatchAlert
+from .orchestrator import SearchOrchestrator, WorkItem
 
 log = logging.getLogger(__name__)
 
@@ -51,11 +51,25 @@ def collect_manual_links(
     return links
 
 
-def run_once(cfg: AppConfig, conn: sqlite3.Connection) -> list[MatchAlert]:
-    """Run one full cycle. Returns the new (not previously alerted) matches."""
+def run_once(
+    cfg: AppConfig,
+    conn: sqlite3.Connection,
+    orchestrator: SearchOrchestrator | None = None,
+) -> list[MatchAlert]:
+    """Run one full cycle. Returns the new (not previously alerted) matches.
+
+    `orchestrator` defaults to a SearchOrchestrator wrapping the built
+    registry with DefaultExecutionPolicy — today's exact sequential,
+    single-attempt, always-run behaviour (see orchestrator.py). This
+    function no longer calls Source.search() directly; it builds the
+    cycle's WorkItems and asks the orchestrator to execute them. Accepting
+    one as a parameter is the seam a future scheduler/policy plugs into —
+    without this function changing again."""
     cfg = db.effective_config(conn, cfg)
     projects = load_projects(cfg, conn)
     registry = sources.build_registry(cfg)
+    if orchestrator is None:
+        orchestrator = SearchOrchestrator(registry)
     new_alerts: list[MatchAlert] = []
     # Per-connector outcome for this cycle, recorded via record_source_run()
     # at the end — feeds the Sources page's health column and the coverage
@@ -66,10 +80,14 @@ def run_once(cfg: AppConfig, conn: sqlite3.Connection) -> list[MatchAlert]:
         for item in project.items:
             item_id = item.id
             products = db.list_products_for_matching(conn, item_id) if item_id else []
-            for name in item_sources(item, cfg, project):
-                source = registry.get(name)
-                if source is None or not source.is_automated():
-                    continue
+            work_items = [
+                WorkItem(source_name=name, term=term, item=item)
+                for name in item_sources(item, cfg, project)
+                if (source := registry.get(name)) is not None and source.is_automated()
+                for term in item.terms
+            ]
+            for outcome in orchestrator.run(work_items):
+                name = outcome.source_name
                 stats = health.setdefault(
                     name,
                     {
@@ -78,75 +96,71 @@ def run_once(cfg: AppConfig, conn: sqlite3.Connection) -> list[MatchAlert]:
                         "catalogue_matches": 0, "deals_found": 0,
                     },
                 )
-                for term in item.terms:
-                    stats["searches"] += 1
-                    started = time.perf_counter()
-                    try:
-                        listings = source.search(term, item)
-                    except Exception as exc:
-                        # Source failures must never crash the run.
-                        stats["duration_ms"] += round((time.perf_counter() - started) * 1000)
-                        log.warning("%s search failed for %r: %s", name, term, exc)
-                        stats["errors"] += 1
-                        stats["last_error"] = str(exc)
+                stats["searches"] += 1
+                stats["duration_ms"] += outcome.duration_ms
+                if outcome.error is not None:
+                    # Source failures must never crash the run — the
+                    # orchestrator already logged this; just record it.
+                    stats["errors"] += 1
+                    stats["last_error"] = str(outcome.error)
+                    continue
+                stats["listings"] += len(outcome.listings)
+                source = registry[name]
+                for listing in outcome.listings:
+                    if scoring.excluded(listing, item):
                         continue
-                    stats["duration_ms"] += round((time.perf_counter() - started) * 1000)
-                    stats["listings"] += len(listings)
-                    for listing in listings:
-                        if scoring.excluded(listing, item):
-                            continue
-                        if item.max_price and listing.price > item.max_price:
-                            continue
-                        product = catalogue.match(listing.text, products) if products else None
-                        evaluation = scoring.evaluate(listing, item, product)
-                        if product is not None:
-                            stats["catalogue_matches"] += 1
-                        if evaluation.under_target:
-                            stats["deals_found"] += 1
-                        listing_id, is_new_listing = db.upsert_listing(conn, listing)
-                        if is_new_listing:
-                            stats["new_listings"] += 1
-                        # Cross-source identity resolution (v1: canonical-URL
-                        # matching only — see identity.py/resolve_identity()).
-                        # is_primary is False only for a confirmed duplicate
-                        # of a listing already counted elsewhere; it still
-                        # gets its own listing_matches row below (full
-                        # provenance), just no alert/observation/list surface.
-                        _, is_primary = db.resolve_identity(conn, listing_id, listing)
-                        if not is_primary:
-                            stats["duplicates"] += 1
-                        match_id, is_new = db.record_match(
-                            conn, listing_id, item_id, evaluation,
-                            product_id=product.id if product else None,
-                        )
-                        if is_new and is_primary and product and not scoring.is_live_auction(listing):
-                            # One observation per distinct listing, at first
-                            # sighting only — a long-unsold listing rescanned
-                            # every cycle shouldn't dominate the average.
-                            db.record_price_observation(conn, product.id, listing.price, listing.source)
-                        if (
-                            product is None
-                            and item_id
-                            and source.capabilities().supports_enrichment
-                        ):
-                            _maybe_suggest_product(conn, source, listing_id, item_id, cfg.ollama)
-                        # Knowledge-only products (wanted=False) are
-                        # identification, not endorsement: price history above
-                        # still accumulates, but no alert fires and read-time
-                        # gating (db._WANTED) keeps the match off deal surfaces.
-                        if is_new and is_primary and (product is None or product.wanted):
-                            normal_price, target_deal_price, _ = scoring.effective_prices(item, product)
-                            new_alerts.append(
-                                MatchAlert(
-                                    project_name=project.name,
-                                    item_name=item.name,
-                                    listing=listing,
-                                    evaluation=evaluation,
-                                    normal_price=normal_price,
-                                    target_deal_price=target_deal_price,
-                                    extras={"match_id": match_id},
-                                )
+                    if item.max_price and listing.price > item.max_price:
+                        continue
+                    product = catalogue.match(listing.text, products) if products else None
+                    evaluation = scoring.evaluate(listing, item, product)
+                    if product is not None:
+                        stats["catalogue_matches"] += 1
+                    if evaluation.under_target:
+                        stats["deals_found"] += 1
+                    listing_id, is_new_listing = db.upsert_listing(conn, listing)
+                    if is_new_listing:
+                        stats["new_listings"] += 1
+                    # Cross-source identity resolution (v1: canonical-URL
+                    # matching only — see identity.py/resolve_identity()).
+                    # is_primary is False only for a confirmed duplicate
+                    # of a listing already counted elsewhere; it still
+                    # gets its own listing_matches row below (full
+                    # provenance), just no alert/observation/list surface.
+                    _, is_primary = db.resolve_identity(conn, listing_id, listing)
+                    if not is_primary:
+                        stats["duplicates"] += 1
+                    match_id, is_new = db.record_match(
+                        conn, listing_id, item_id, evaluation,
+                        product_id=product.id if product else None,
+                    )
+                    if is_new and is_primary and product and not scoring.is_live_auction(listing):
+                        # One observation per distinct listing, at first
+                        # sighting only — a long-unsold listing rescanned
+                        # every cycle shouldn't dominate the average.
+                        db.record_price_observation(conn, product.id, listing.price, listing.source)
+                    if (
+                        product is None
+                        and item_id
+                        and source.capabilities().supports_enrichment
+                    ):
+                        _maybe_suggest_product(conn, source, listing_id, item_id, cfg.ollama)
+                    # Knowledge-only products (wanted=False) are
+                    # identification, not endorsement: price history above
+                    # still accumulates, but no alert fires and read-time
+                    # gating (db._WANTED) keeps the match off deal surfaces.
+                    if is_new and is_primary and (product is None or product.wanted):
+                        normal_price, target_deal_price, _ = scoring.effective_prices(item, product)
+                        new_alerts.append(
+                            MatchAlert(
+                                project_name=project.name,
+                                item_name=item.name,
+                                listing=listing,
+                                evaluation=evaluation,
+                                normal_price=normal_price,
+                                target_deal_price=target_deal_price,
+                                extras={"match_id": match_id},
                             )
+                        )
     for name, stats in health.items():
         db.record_source_run(conn, name, **stats)
     retailer_price.run_discovery_and_refresh(conn, cfg)
