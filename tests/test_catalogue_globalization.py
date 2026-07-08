@@ -15,6 +15,8 @@ reference rather than a duplicated row.
 import json
 import shutil
 import sqlite3
+import threading
+import time
 from pathlib import Path
 
 from product_finder import db
@@ -129,6 +131,69 @@ def test_migration_is_idempotent_on_real_backup(tmp_path):
     after_second.close()
 
     assert counts_1 == counts_2
+
+
+def test_migration_survives_concurrent_connect_race(tmp_path):
+    """Regression test for a real production incident (2026-07-08): `watch`
+    and `web` both connecting to a not-yet-migrated database within moments
+    of each other. Both see `item_id` present (the pre-lock check) and both
+    decide to migrate; the loser blocks on BEGIN IMMEDIATE until the winner
+    commits, then — without the post-lock re-check this test guards —
+    would run step 1's SELECT against a `products` table the winner has
+    already rebuilt without `item_id`, crashing with "no such column:
+    item_id" on every subsequent watch tick (next_full_run never advances
+    past an exception, so it retried forever). Two real threads, each with
+    its own connection to the same file, racing as tightly as a Barrier
+    can make them — not just two sequential connect() calls, which
+    wouldn't exercise the lock-wait path at all.
+
+    A plain "database is locked" from the loser losing the BEGIN IMMEDIATE
+    race is tolerated and retried here (a handful of times, like a real
+    caller reconnecting on the next watch tick would) — that's pre-existing,
+    already-accepted SQLite-under-concurrent-writers behaviour this
+    codebase already has busy_timeout for for, and it's self-healing (the
+    very next attempt sees the now-completed migration and no-ops). What
+    this test must never tolerate is the schema-corruption class of error
+    (no such column / duplicate column name) the fix above eliminates —
+    that one doesn't self-heal, because next_full_run never advances past
+    an exception, so `watch` retries the *same* broken state forever."""
+    path = tmp_path / "race.db"
+    _make_pre_globalization_db(path)
+
+    barrier = threading.Barrier(2)
+    errors: list[BaseException] = []
+
+    def _connect():
+        barrier.wait()
+        for attempt in range(5):
+            try:
+                db.connect(path).close()
+                return
+            except sqlite3.OperationalError as exc:
+                if "locked" not in str(exc) or attempt == 4:
+                    errors.append(exc)
+                    return
+                time.sleep(0.05)
+            except BaseException as exc:  # noqa: BLE001 — the whole point is catching this
+                errors.append(exc)
+                return
+
+    threads = [threading.Thread(target=_connect) for _ in range(2)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert errors == [], f"migration race raised: {errors}"
+
+    conn = sqlite3.connect(path)
+    conn.row_factory = sqlite3.Row
+    cols = [r[1] for r in conn.execute("PRAGMA table_info(products)")]
+    assert "item_id" not in cols
+    # Exactly one migration's worth of data — a second, half-run attempt
+    # duplicating the backfill would show up here as extra rows.
+    assert conn.execute("SELECT COUNT(*) c FROM item_products").fetchone()["c"] == 2
+    conn.close()
 
 
 # --- Migration: synthetic cross-item duplicate (real backup had none) --------

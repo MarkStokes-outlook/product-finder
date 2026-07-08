@@ -297,17 +297,12 @@ def slugify(name: str) -> str:
     return slug or "project"
 
 
-def connect(db_path: str | Path) -> sqlite3.Connection:
-    path = Path(db_path) if db_path != ":memory:" else db_path
-    if isinstance(path, Path):
-        path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(path, timeout=10)
-    conn.row_factory = sqlite3.Row
-    # WAL lets the web UI (reader) and a background `watch`/run-once process
-    # (writer) hit the DB concurrently without "database is locked" errors.
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA busy_timeout=10000")
-    conn.executescript(_SCHEMA)
+def _pending_migrations(conn: sqlite3.Connection) -> list[tuple[str, str, str]]:
+    """_MIGRATIONS entries not yet applied, as of right now. A plain read —
+    callers decide whether/when to act on it, and must re-derive this
+    fresh after acquiring any lock rather than reusing an earlier result
+    (see connect()'s race-safety comment)."""
+    pending = []
     for table, column, decl in _MIGRATIONS:
         cols = [r[1] for r in conn.execute(f"PRAGMA table_info({table})")]
         if table == "products" and column == "wanted" and "item_id" not in cols:
@@ -319,26 +314,70 @@ def connect(db_path: str | Path) -> sqlite3.Connection:
             # rebuilt, must never regain this column here.
             continue
         if column not in cols:
-            conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
-            if table == "products" and column == "typical_new_price" and "normal_price" in cols:
-                # normal_price predates the msrp/typical_new_price split —
-                # carry forward any existing value, since it was
-                # functionally "the new price" before the split. Only runs
-                # the moment this column is added (i.e. once per database,
-                # ever) — this used to run unconditionally on every single
-                # connect(), which meant every web request and every watch
-                # tick took a write lock for a no-op UPDATE, and enough of
-                # them colliding produced "database is locked". `normal_price`
-                # itself was dropped from `products` by the catalogue
-                # globalization rebuild (see _migrate_catalogue_globalization)
-                # — a database created after that ADR never had the column at
-                # all, so this guard keeps that (now purely historical) path
-                # a no-op instead of erroring on a missing column.
-                conn.execute(
-                    "UPDATE products SET typical_new_price = normal_price "
-                    "WHERE typical_new_price IS NULL AND normal_price IS NOT NULL"
-                )
-    conn.commit()
+            pending.append((table, column, decl))
+    return pending
+
+
+def _apply_migrations(conn: sqlite3.Connection, pending: list[tuple[str, str, str]]) -> None:
+    for table, column, decl in pending:
+        cols = [r[1] for r in conn.execute(f"PRAGMA table_info({table})")]
+        if column in cols:
+            continue  # a racing connection already added this one — see connect()
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
+        if table == "products" and column == "typical_new_price" and "normal_price" in cols:
+            # normal_price predates the msrp/typical_new_price split —
+            # carry forward any existing value, since it was functionally
+            # "the new price" before the split. Only runs the moment this
+            # column is added (i.e. once per database, ever) — this used
+            # to run unconditionally on every single connect(), which
+            # meant every web request and every watch tick took a write
+            # lock for a no-op UPDATE, and enough of them colliding
+            # produced "database is locked". `normal_price` itself was
+            # dropped from `products` by the catalogue globalization
+            # rebuild (see _migrate_catalogue_globalization) — a database
+            # created after that ADR never had the column at all, so this
+            # guard keeps that (now purely historical) path a no-op
+            # instead of erroring on a missing column.
+            conn.execute(
+                "UPDATE products SET typical_new_price = normal_price "
+                "WHERE typical_new_price IS NULL AND normal_price IS NOT NULL"
+            )
+
+
+def connect(db_path: str | Path) -> sqlite3.Connection:
+    path = Path(db_path) if db_path != ":memory:" else db_path
+    if isinstance(path, Path):
+        path.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(path, timeout=10)
+    conn.row_factory = sqlite3.Row
+    # WAL lets the web UI (reader) and a background `watch`/run-once process
+    # (writer) hit the DB concurrently without "database is locked" errors.
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA busy_timeout=10000")
+    conn.executescript(_SCHEMA)
+    # Cheap, lock-free check first — the common case (already-migrated
+    # database, i.e. every connect() after the very first one ever) must
+    # stay lock-free, per the "database is locked" incident recorded in
+    # _apply_migrations' comment. Only escalate to a write lock when there
+    # is actually something to do.
+    if _pending_migrations(conn):
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            # Re-derive pending migrations *after* acquiring the write
+            # lock, not reuse the pre-lock check above — a second
+            # connection can reach this same "something's pending" branch
+            # at nearly the same moment (real production incident,
+            # 2026-07-08: `watch` and `web` both connecting within moments
+            # of each other); the loser blocks on BEGIN IMMEDIATE until
+            # the winner commits, then must only ALTER what's *still*
+            # actually missing, not blindly repeat the pre-lock list —
+            # otherwise it hits "duplicate column name" for every column
+            # the winner already added.
+            _apply_migrations(conn, _pending_migrations(conn))
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
     _migrate_catalogue_globalization(conn)
     return conn
 
@@ -375,6 +414,20 @@ def _migrate_catalogue_globalization(conn: sqlite3.Connection) -> None:
 
     conn.execute("BEGIN IMMEDIATE")
     try:
+        # Re-check after acquiring the write lock, not just before it. Two
+        # connections can both see "item_id present" and both decide to
+        # migrate before either has taken the lock — real production
+        # scenario: `watch` and `web` both connecting to a not-yet-migrated
+        # database within moments of each other. The loser blocks here on
+        # BEGIN IMMEDIATE until the winner commits, then must not proceed:
+        # without this re-check it would run step 1's SELECT against a
+        # `products` table the winner already rebuilt without `item_id`,
+        # crashing every caller with "no such column: item_id" (real
+        # incident, 2026-07-08 — see docs/implementation-notes/).
+        cols = [r[1] for r in conn.execute("PRAGMA table_info(products)")]
+        if "item_id" not in cols:
+            conn.execute("ROLLBACK")
+            return
         # Step 1: backfill — idempotent via the NOT IN guard, so re-running
         # after a partial failure never duplicates a row.
         conn.execute(
