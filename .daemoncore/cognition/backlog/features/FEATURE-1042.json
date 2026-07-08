@@ -1,0 +1,19 @@
+{
+  "id": "FEATURE-1042",
+  "epic_id": "EPIC-104",
+  "title": "Public-safe data filtering",
+  "description": "Ensure scraper diagnostics, connector/source internals and health, admin metadata, source_settings credentials, and private notes are excluded before serialization on every public-reachable route and API response, not merely hidden in templates.",
+  "status": "backlog",
+  "phase": 4,
+  "domain": "web-api",
+  "area": "public-experience",
+  "tags": ["adr-0005", "security"],
+  "user_story_ids": [],
+  "acceptance_criteria": [
+    "Public routes/responses never include source_settings credential fields (e.g. eBay app_id/cert_id), connector health/diagnostics, or admin metadata, verified at the response-payload level not just the rendered HTML",
+    "Private notes and candidate-listing data belonging to any user are absent from every public response",
+    "Filtering happens in the data-preparation layer before template rendering, not solely via Jinja conditionals",
+    "A test asserts the raw HTTP response body of every public route contains none of the excluded fields, using a fixture project seeded with credentials/notes/diagnostics to catch regressions"
+  ],
+  "notes": "See docs/adr/0005-public-vs-signed-in-experience-split.md, Alternatives Considered (template-level hiding rejected)."
+}

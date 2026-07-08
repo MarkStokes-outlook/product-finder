@@ -1,0 +1,22 @@
+{
+  "id": "FEATURE-1010",
+  "epic_id": "EPIC-101",
+  "title": "Outbound redirect endpoint with click tracking",
+  "description": "Add GET /out/<listing_id> that looks up the listing's stored URL, resolves the (possibly affiliate) destination, records a click event, and issues a 302. Repoint _ui.html, _match_table.html, and auctions.html at this endpoint instead of linking listing rows directly.",
+  "status": "done",
+  "phase": 1,
+  "domain": "web-api",
+  "area": "affiliate",
+  "tags": ["adr-0002", "redirect"],
+  "user_story_ids": [],
+  "acceptance_criteria": [
+    "GET /out/<listing_id> 302-redirects to the listing's resolved destination URL",
+    "Unknown/missing listing_id returns 404, not a redirect to an empty/garbage URL",
+    "_ui.html (spotlight, deal-card), _match_table.html, and auctions.html link to url_for('listing_out', listing_id=...) instead of row['url'] directly",
+    "target=\"_blank\" rel=\"noopener\" is preserved on all changed links",
+    "When no affiliate resolver applies to a source, the redirect target equals the original listings.url unchanged",
+    "listings.url column is never written to by this feature — read-only lookup",
+    "Existing tests covering listing card rendering are updated, not broken, by the href change"
+  ],
+  "notes": "See docs/adr/0002-affiliate-link-redirect-and-tracking.md. Manual-assisted search links (manual.html, _project_detail_live.html manual-search list) are out of scope — they have no listing_id. Shipped 2026-07-08: url_for('listing_out', listing_id=row['id']) in the acceptance criteria above was a spec bug — _MATCH_SELECT never selects a plain 'id' column, so row['listing_id'] is used throughout instead. Also repointed offers.html and the duplicate-review dup_side macro (_project_detail_live.html), beyond the three templates named here, per the broader 'no template ever emits a marketplace URL' brief this shipped under. See docs/implementation-notes/2026-07-08-2135-marketplace-outbound-gateway-epic-101.md."
+}

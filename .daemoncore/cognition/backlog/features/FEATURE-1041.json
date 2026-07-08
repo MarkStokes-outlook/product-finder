@@ -1,0 +1,19 @@
+{
+  "id": "FEATURE-1041",
+  "epic_id": "EPIC-104",
+  "title": "Gated-action prompts for anonymous users",
+  "description": "Render save/track/create-project/enable-alert actions as visible-but-disabled for anonymous users, prompting login/registration on interaction, with a single no-op entitlement hook point per gated action reserved for future subscription checks.",
+  "status": "backlog",
+  "phase": 4,
+  "domain": "web-ui",
+  "area": "public-experience",
+  "tags": ["adr-0005", "entitlement-hook"],
+  "user_story_ids": [],
+  "acceptance_criteria": [
+    "Save/track/create-project/alert controls are visible (not hidden) to anonymous users but disabled, with a clear login/registration prompt on click",
+    "Each gated action has a single documented requires_entitlement (or equivalent) check point that currently always evaluates to 'allowed once logged in' — no billing/subscription logic is implemented",
+    "No subscription, payment, or plan-tier concept is introduced in this feature — the hook is a no-op by design",
+    "Authenticated users see the same actions fully enabled, unaffected by the gating logic added for anonymous users"
+  ],
+  "notes": "See docs/adr/0005-public-vs-signed-in-experience-split.md. Explicitly: 'do not implement subscriptions yet, but leave entitlement hooks where they naturally belong' — this feature is where that hook lives."
+}

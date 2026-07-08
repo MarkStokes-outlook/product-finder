@@ -1,0 +1,21 @@
+{
+  "id": "FEATURE-1052",
+  "epic_id": "EPIC-105",
+  "title": "Project cloning (\"send project to\")",
+  "description": "On invite acceptance, create an independent copy of the source project owned by the recipient. Preferred path (EPIC-100 landed): items are deep-copied, and their tracked catalogue products are referenced via new item_products rows pointing at the same shared global products — no product row is duplicated. Fallback path (EPIC-100 not yet landed): items and their item-scoped products are deep-copied, matching today's schema. Listings, listing_matches, price observations, and auction snapshots are never copied in either path.",
+  "status": "backlog",
+  "phase": 5,
+  "domain": "web-api",
+  "area": "sharing",
+  "tags": ["adr-0006", "cloning", "depends-on-epic-100"],
+  "user_story_ids": [],
+  "acceptance_criteria": [
+    "Accepting an invite creates a new projects row owned by the recipient (owner_user_id = recipient), independent of the source project",
+    "Preferred path: items are deep-copied; for each source item_products row, a new item_products row is created for the recipient's cloned item pointing at the SAME global products.id (reference, not copy) — verified by asserting the cloned item's product row id equals the source's",
+    "Fallback path (only if EPIC-100 has not landed): items and their item-scoped products (terms, match_terms, prices, notes) are deep-copied into the new project/items, matching today's schema",
+    "Listings, listing_matches, product_price_observations, product_new_price_history, and auction_snapshots are explicitly NOT copied in either path — the clone starts with none and accumulates its own via its own watch cycle",
+    "Mutating the clone after creation never affects the source project, and vice versa (no shared foreign keys back to the original beyond an optional provenance pointer for display purposes); in the preferred path, both projects may legitimately point at the same shared product row without that counting as a violation of independence",
+    "Cloning a project the inviter no longer owns (e.g. deleted or transferred) fails cleanly rather than partially copying"
+  ],
+  "notes": "See docs/adr/0006-project-sharing-invites-and-cloning.md and docs/adr/0007-catalogue-globalization.md. EPIC-100 is a hard blocking dependency for this epic per ADR-0001 — the fallback path exists only to document what happens if that sequencing is not honoured, not as an equally-acceptable alternative."
+}

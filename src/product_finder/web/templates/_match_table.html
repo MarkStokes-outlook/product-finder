@@ -1,4 +1,4 @@
-{% macro match_table(rows, show_item=True, paginate=False, page_size=10) %}
+{% macro match_table(rows, show_item=True, paginate=False, page_size=10, context='dashboard') %}
 {% if paginate %}<div class="table-wrap" data-page-size="{{ page_size }}">{% endif %}
 <table>
 <thead><tr>
@@ -15,7 +15,7 @@
     <td class="num"><span class="score">{{ '%.0f' | format(row['deal_score'] or 0) }}</span></td>
     <td>{% if row['image_url'] %}<img class="row-thumb" src="{{ row['image_url'] }}" alt=""
           loading="lazy" referrerpolicy="no-referrer" onerror="this.remove()">{% endif %}
-      <a href="{{ row['url'] }}" target="_blank" rel="noopener">{{ row['title'] }}</a>
+      <a href="{{ listing_out_url(row['listing_id'], context, row['project_id']) }}" target="_blank" rel="noopener">{{ row['title'] }}</a>
       {% if row['product_manufacturer'] %}<br><span class="meta">{{ row['product_manufacturer'] }}{% if row['product_model'] %} {{ row['product_model'] }}{% endif %}</span>{% endif %}</td>
     {% if show_item %}<td class="meta">{{ row['project_name'] }} / {{ row['item_name'] }}</td>{% endif %}
     <td class="num">

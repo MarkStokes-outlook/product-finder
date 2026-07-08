@@ -1,0 +1,10 @@
+{
+  "id": "EPIC-103",
+  "title": "User-owned data & authorization",
+  "description": "Tie projects (and transitively items, listing matches, alerts, and candidate decisions/feedback) to an owning user, migrate existing single-user data to a legacy-owner record with zero manual steps, and add authorization checks so users cannot access or mutate another user's private data. The catalogue and listings (products, price observations/history, listings, identity/dedup, auction snapshots) remain platform-owned/shared and are explicitly NOT gated by owner_user_id in this phase.",
+  "status": "planned",
+  "phase": 3,
+  "feature_ids": ["FEATURE-1030", "FEATURE-1031", "FEATURE-1032", "FEATURE-1033", "FEATURE-1034"],
+  "tags": ["roadmap-2026-07", "phase-3", "authorization", "data-ownership", "adr-0004"],
+  "notes": "See docs/adr/0004-user-owned-data-model-and-migration.md (revised 2026-07-08 after a product-boundary sanity check). Ownership boundary: projects.owner_user_id is the only ownership column; items/listing_matches/alerts_sent/listing_decisions (FEATURE-1034) are owned transitively via existing FKs; products/product_price_observations/product_new_price_history/product_price_candidates/listings/listing_identities/listing_duplicates/auction_snapshots/source_runs get no ownership column and stay unrestricted by owner. Known gap (flagged, not fixed here): products is item_id-scoped in the schema today, not truly global — a real mismatch against 'catalogue = platform-owned', recommended as its own follow-up ADR/epic. Highest-risk phase for cross-user leaks of the data that IS user-owned — requires the heaviest authorization test investment of the five phases. Deferred: per-item sharing (EPIC-105), org/team ownership, soft-delete/undo, per-user source_settings, catalogue globalization."
+}

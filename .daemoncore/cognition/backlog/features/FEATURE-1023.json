@@ -1,0 +1,19 @@
+{
+  "id": "FEATURE-1023",
+  "epic_id": "EPIC-102",
+  "title": "Auth configuration docs and test coverage",
+  "description": "Document Authentik/OIDC setup (config fields, redirect URI registration, required Authentik-side application config) and add test coverage for the login/callback/logout flow, including failure paths.",
+  "status": "backlog",
+  "phase": 2,
+  "domain": "web-api",
+  "area": "auth",
+  "tags": ["adr-0003", "docs", "tests"],
+  "user_story_ids": [],
+  "acceptance_criteria": [
+    "config.example.yaml documents auth.enabled, auth.issuer, auth.client_id, auth.client_secret, auth.redirect_uri with comments",
+    "A setup doc (README section or docs/) walks through registering the app as an Authentik OIDC provider/application",
+    "Tests cover: successful login/callback, invalid ID token rejection, logout clearing session, auth.enabled=false leaving all routes unauthenticated",
+    "Tests do not require a live Authentik instance (mocked/stubbed OIDC responses, consistent with the existing test suite's approach to external HTTP dependencies like the eBay API)"
+  ],
+  "notes": "See docs/adr/0003-authentik-oidc-authentication-backend.md."
+}

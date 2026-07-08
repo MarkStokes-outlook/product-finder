@@ -1,0 +1,20 @@
+{
+  "id": "FEATURE-1021",
+  "epic_id": "EPIC-102",
+  "title": "Session and logout handling",
+  "description": "Establish a server-side session on successful login carrying the authenticated user's identity, and add POST /auth/logout to clear it (optionally redirecting to Authentik's end-session endpoint).",
+  "status": "backlog",
+  "phase": 2,
+  "domain": "web-api",
+  "area": "auth",
+  "tags": ["adr-0003", "session"],
+  "user_story_ids": [],
+  "acceptance_criteria": [
+    "A successful /auth/callback establishes a session such that current_user is available on subsequent requests",
+    "POST /auth/logout clears the local session unconditionally, regardless of whether the Authentik end-session call succeeds",
+    "Session cookie uses the existing Flask secret_key mechanism, with a documented requirement that it be a real secret (not a default placeholder) once auth.enabled=true",
+    "Flash-message session behaviour that exists today continues to work unchanged when combined with an authenticated session",
+    "current_user is nullable/absent for anonymous requests and does not raise when unset"
+  ],
+  "notes": "See docs/adr/0003-authentik-oidc-authentication-backend.md."
+}

@@ -1,0 +1,10 @@
+{
+  "id": "EPIC-102",
+  "title": "Authentik/OIDC authentication backend",
+  "description": "Add Authentik/OIDC login, logout, and session handling to the web app, with a users table for future ownership to attach to. Deliberately does not tie data ownership to identity in this phase. Local/dev installs keep working unauthenticated by default.",
+  "status": "planned",
+  "phase": 2,
+  "feature_ids": ["FEATURE-1020", "FEATURE-1021", "FEATURE-1022", "FEATURE-1023"],
+  "tags": ["roadmap-2026-07", "phase-2", "auth", "adr-0003"],
+  "notes": "See docs/adr/0003-authentik-oidc-authentication-backend.md. Depends only on EPIC-101 having shipped in sequence (no functional dependency). auth.enabled=false is the default and preserves current no-auth behaviour exactly. Deferred: MFA policy (owned by Authentik), SCIM provisioning, RBAC beyond authenticated/anonymous, any ownership/authorization change (EPIC-103)."
+}

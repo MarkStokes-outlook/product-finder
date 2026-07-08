@@ -1,0 +1,10 @@
+{
+  "id": "EPIC-105",
+  "title": "Project sharing, invites & cloning",
+  "description": "Let an owner share a project with an existing user by email, or create a pending invite if the email is not yet registered. Support cloning a project ('send project to') so a recipient gets their own independent copy rather than co-editing the original. Real-time collaborative editing is explicitly out of scope.",
+  "status": "planned",
+  "phase": 5,
+  "feature_ids": ["FEATURE-1050", "FEATURE-1051", "FEATURE-1052", "FEATURE-1053"],
+  "tags": ["roadmap-2026-07", "phase-5", "sharing", "adr-0006"],
+  "notes": "See docs/adr/0006-project-sharing-invites-and-cloning.md. Depends on EPIC-103 (ownership) and EPIC-102 (signup/login, for unregistered-email invite resolution). HARD BLOCKING DEPENDENCY: EPIC-100 (Catalogue globalization) must land first, per ADR-0001's revised sequencing — cloning should reference a shared global product, not deep-copy an item-scoped one; shipping this epic before EPIC-100 falls back to a deep-copy of item-scoped products, which ADR-0006/FEATURE-1052 both flag as a stopgap, not the intended end state. Clone copies items (and, only in the EPIC-100-not-yet-landed fallback, products) but never listings/matches/price history — the clone accumulates its own evidence. Deferred: real-time co-editing/multi-owner projects, granular per-item sharing, org/team sharing, pull-updates-from-original after clone."
+}

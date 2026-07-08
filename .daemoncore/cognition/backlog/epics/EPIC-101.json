@@ -1,0 +1,10 @@
+{
+  "id": "EPIC-101",
+  "title": "Affiliate link redirect & tracking",
+  "description": "Introduce an internal outbound redirect for listing clicks that injects per-source affiliate/referral parameters server-side and records click events, without changing the visible listing experience or exposing affiliate config to the client. First of five independently shippable phases toward public/commercial readiness.",
+  "status": "done",
+  "phase": 1,
+  "feature_ids": ["FEATURE-1010", "FEATURE-1011", "FEATURE-1012", "FEATURE-1013"],
+  "tags": ["roadmap-2026-07", "phase-1", "affiliate", "adr-0002"],
+  "notes": "See docs/adr/0001-phased-path-to-public-commercial-readiness.md and docs/adr/0002-affiliate-link-redirect-and-tracking.md. Shipped 2026-07-08 as a generalised 'Marketplace Outbound Gateway' (outbound.py) rather than an affiliate-only mechanism, per updated brief — see docs/implementation-notes/2026-07-08-2135-marketplace-outbound-gateway-epic-101.md and ARCHITECTURE.md section 9. 698 tests passing (665 prior + 33 new), zero regressions. No account/auth dependency — shipped standalone. Existing listing behaviour (destination, new-tab) unchanged in outcome; only the mechanism changed. Scope grew beyond the ADR's original 3 templates to also cover offers.html and the duplicate-review dup_side macro (same _MATCH_SELECT-backed rows, genuinely missed by the original ADR). Deferred: per-user attribution (needs EPIC-103), revenue reporting, multi-programme A/B testing, extending tracking to manual-assisted search links (Gumtree/Facebook/links-type sources have no listing_id), anonymous session identifiers (no session concept exists anywhere else in this app yet)."
+}

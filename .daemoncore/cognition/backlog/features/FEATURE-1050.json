@@ -1,0 +1,20 @@
+{
+  "id": "FEATURE-1050",
+  "epic_id": "EPIC-105",
+  "title": "Share project by email + pending invite for unregistered users",
+  "description": "Let a project owner initiate a share by entering a recipient email. Create a project_invites row associated with an existing user if the email matches one, or a pending invite (invitee_user_id NULL) if not, without ever silently dropping an invite to an unregistered address.",
+  "status": "backlog",
+  "phase": 5,
+  "domain": "web-api",
+  "area": "sharing",
+  "tags": ["adr-0006", "invites"],
+  "user_story_ids": [],
+  "acceptance_criteria": [
+    "project_invites table (id, project_id, inviter_user_id, invitee_email, invitee_user_id nullable, status, created_at, resolved_at) added via the additive migration pattern",
+    "Sharing to a registered user's email immediately sets invitee_user_id and the invite becomes visible to that user",
+    "Sharing to an unregistered email creates a pending invite with invitee_user_id NULL that is not lost or expired silently",
+    "Only the project owner can initiate a share for their own project (enforced by the ownership helper from FEATURE-1031/1033)",
+    "An invited-but-not-accepted recipient sees only the project name and a short summary, never full project contents, before accepting"
+  ],
+  "notes": "See docs/adr/0006-project-sharing-invites-and-cloning.md. Depends on EPIC-103 (ownership) and EPIC-102 (users table)."
+}

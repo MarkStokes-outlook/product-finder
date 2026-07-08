@@ -91,6 +91,21 @@ sources:
 #   timeout: 20
 #   minimum_confidence: 0.75
 
+# Server-side-only Marketplace Outbound Gateway config (see outbound.py,
+# ARCHITECTURE.md "Marketplace outbound gateway", and
+# docs/adr/0002-affiliate-link-redirect-and-tracking.md). Every outbound
+# listing click routes through GET /out/<listing_id>, which looks up the
+# listing's source here and injects the given query parameters into its
+# stored URL before redirecting. A source with no entry below redirects
+# unchanged — adding/removing a marketplace's affiliate programme is a
+# config-only change. Nothing here is ever rendered into a template, script,
+# or API response — only the final destination URL leaves the server.
+# outbound:
+#   affiliate_params:
+#     ebay:
+#       campid: "your-ebay-partner-network-campaign-id"
+#       customid: "product-finder"
+
 # Optional retailer price discovery via a self-hosted SearXNG instance (see
 # docs/strategy/roadmap.md, "Deal accuracy"). Stage 1 searches for retailer
 # pages and parses their own structured price data for you to review and

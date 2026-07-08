@@ -1,0 +1,20 @@
+{
+  "id": "FEATURE-1034",
+  "epic_id": "EPIC-103",
+  "title": "Project-scoped candidate decisions & feedback data model",
+  "description": "Introduce the project-owned data the target ownership boundary calls for but the current schema doesn't yet have: per (item, listing) saved/ignored/shortlisted decisions, and feedback tags such as wrong item/accessory/not relevant. Owned transitively via item_id -> project, exactly like listing_matches, which this table sits alongside.",
+  "status": "backlog",
+  "phase": 3,
+  "domain": "web-api",
+  "area": "projects",
+  "tags": ["adr-0004", "migration", "new-scope"],
+  "user_story_ids": [],
+  "acceptance_criteria": [
+    "New table (e.g. listing_decisions: id, listing_match_id or (listing_id, item_id), decision ['saved'|'ignored'|'shortlisted'|null], feedback_tag ['wrong_item'|'accessory'|'not_relevant'|null], decided_at, notes) added via the additive _MIGRATIONS pattern",
+    "Decisions are unique per (listing, item) pair, consistent with listing_matches' own uniqueness constraint",
+    "Ownership is resolved transitively via item_id -> project_id, exactly like listing_matches and alerts_sent — no separate user_id column",
+    "Setting/clearing a decision is covered by the same FEATURE-1031 ownership helper and FEATURE-1032 isolation tests as other project-scoped data",
+    "The underlying listing/product row referenced by a decision is unaffected by the decision — recording 'wrong item' feedback never mutates or hides the shared listing/product for other users' projects"
+  ],
+  "notes": "New feature added 2026-07-08 as a direct result of sanity-checking the ownership boundary against the product decision: 'saved/ignored/shortlisted decisions' and 'feedback such as wrong item/accessory/not relevant' were named as project-owned data the roadmap should model, but no such table exists in the schema today. Flagging here rather than silently building it without confirmation — confirm scope/shape before implementation."
+}

@@ -1,0 +1,20 @@
+{
+  "id": "FEATURE-1011",
+  "epic_id": "EPIC-101",
+  "title": "Per-source affiliate parameter injection",
+  "description": "A small per-source affiliate resolver, analogous to the existing Source contract (sources/base.py), that transforms a destination URL by injecting affiliate/referral parameters when a source has an affiliate programme configured. Driven entirely by server-side config.",
+  "status": "done",
+  "phase": 1,
+  "domain": "web-api",
+  "area": "affiliate",
+  "tags": ["adr-0002", "connectors"],
+  "user_story_ids": [],
+  "acceptance_criteria": [
+    "Each marketplace source can declare an optional affiliate resolver (config-driven, no code change needed for a simple query-param scheme)",
+    "Sources without an affiliate programme configured pass the URL through unchanged",
+    "Resolver logic is unit-testable independent of the Flask route (pure function: source + url + config -> destination url)",
+    "No affiliate partner ID, tag, or secret ever appears in a template, client-side script, or API response",
+    "Adding/removing a source's affiliate programme requires only a config change, not a schema migration or code change to existing listing rows"
+  ],
+  "notes": "See docs/adr/0002-affiliate-link-redirect-and-tracking.md. Deliberately mirrors sources/base.py's per-source contract style rather than inventing a new pattern. Shipped 2026-07-08 as outbound.py: MarketplaceAdapter (ABC) + PassthroughAdapter/QueryParamAffiliateAdapter, dispatched by MarketplaceOutboundService. Pure-function unit tests in tests/test_outbound.py (19 tests, no Flask/DB). See docs/implementation-notes/2026-07-08-2135-marketplace-outbound-gateway-epic-101.md."
+}

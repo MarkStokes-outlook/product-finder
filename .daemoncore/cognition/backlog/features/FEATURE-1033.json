@@ -1,0 +1,20 @@
+{
+  "id": "FEATURE-1033",
+  "epic_id": "EPIC-103",
+  "title": "Ownership-aware query helpers",
+  "description": "Extract the query-scoping logic (project lookups, item lookups, listing-match/decision lookups) used across web/app.py into ownership-aware helper functions in db.py, so ownership scoping is applied at the data-access layer rather than reconstructed per route. Catalogue/listing lookups (products, product_price_observations, listings) get a separate, deliberately unscoped set of helpers — they must never be routed through an owner-scoped function.",
+  "status": "backlog",
+  "phase": 3,
+  "domain": "web-api",
+  "area": "projects",
+  "tags": ["adr-0004", "refactor"],
+  "user_story_ids": [],
+  "acceptance_criteria": [
+    "db.py exposes owner-scoped variants of the existing project/item lookup functions used by web/app.py",
+    "web/app.py route handlers call the owner-scoped helpers rather than the previously unscoped lookups for any project-reachable data",
+    "Product/listing/price lookups keep their existing unscoped signatures — no owner_user_id parameter is added to them, and no call site is changed to pass one",
+    "Existing non-web callers (CLI commands) are reviewed for whether they need the same project/item scoping or are intentionally operator-level and exempt, with the decision documented",
+    "No behavioural change for auth.enabled=false beyond what FEATURE-1030/1031 already introduce"
+  ],
+  "notes": "See docs/adr/0004-user-owned-data-model-and-migration.md. Revised 2026-07-08: dropped 'product lookups' from the owner-scoped helper set — products/listings are platform-owned and must stay unscoped."
+}

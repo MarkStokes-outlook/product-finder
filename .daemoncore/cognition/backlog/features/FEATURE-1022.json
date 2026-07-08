@@ -1,0 +1,20 @@
+{
+  "id": "FEATURE-1022",
+  "epic_id": "EPIC-102",
+  "title": "Local/dev auth fallback (auth.enabled=false)",
+  "description": "Ensure existing local, single-user installs keep working with zero configuration and no login prompt when Authentik is not configured, as the only supported no-login mode.",
+  "status": "backlog",
+  "phase": 2,
+  "domain": "web-api",
+  "area": "auth",
+  "tags": ["adr-0003", "compatibility"],
+  "user_story_ids": [],
+  "acceptance_criteria": [
+    "auth.enabled defaults to false for existing config.yaml files with no auth section (no forced opt-in)",
+    "With auth.enabled=false, no route requires login and no /auth/* route is reachable/relevant",
+    "There is no bespoke username/password login path introduced anywhere as a permanent alternative to Authentik",
+    "Full existing test suite (170+ tests per architecture-briefing.md) passes unmodified in behaviour with auth.enabled=false",
+    "README/config docs clearly state auth.enabled=false is the supported default for local/dev usage"
+  ],
+  "notes": "See docs/adr/0003-authentik-oidc-authentication-backend.md. This is the concrete mechanism satisfying 'keep local/dev auth simple where useful' and 'existing behaviour must remain compatible'."
+}

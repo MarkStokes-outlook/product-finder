@@ -1,0 +1,21 @@
+{
+  "id": "FEATURE-1030",
+  "epic_id": "EPIC-103",
+  "title": "Ownership model, migration, and legacy-owner backfill",
+  "description": "Add projects.owner_user_id (nullable FK, additive migration). Items, listing_matches, alerts_sent, and the new project-scoped decision/feedback table (FEATURE-1034) remain owned transitively via their existing FK to projects/items. Catalogue and listing tables (products, product_price_observations, product_new_price_history, product_price_candidates, listings, listing_identities, listing_duplicates, auction_snapshots, source_runs) get NO ownership column and are not touched by this migration — they stay platform-owned/shared. On first boot after this migration, backfill existing projects to a single deterministically-created legacy-owner user.",
+  "status": "backlog",
+  "phase": 3,
+  "domain": "web-api",
+  "area": "projects",
+  "tags": ["adr-0004", "migration", "ownership"],
+  "user_story_ids": [],
+  "acceptance_criteria": [
+    "projects.owner_user_id added via the existing additive _MIGRATIONS pattern in db.py, idempotent on repeated connect()",
+    "No user_id/owner column is added to items, listing_matches, alerts_sent — ownership is resolved transitively via their existing FK chain to projects",
+    "No user_id/owner column is added to products, product_price_observations, product_new_price_history, product_price_candidates, listings, listing_identities, listing_duplicates, auction_snapshots, or source_runs — these remain platform-owned/shared with no ownership concept at all",
+    "Migration creates exactly one legacy-owner user record and assigns it as owner_user_id for all pre-existing projects, with no manual operator step required",
+    "Running the migration twice (idempotency) does not create a second legacy-owner user or reassign already-owned projects",
+    "A pre-migration database fixture, migrated in a test, ends up with zero NULL owner_user_id rows on projects afterward"
+  ],
+  "notes": "See docs/adr/0004-user-owned-data-model-and-migration.md (revised 2026-07-08 — catalogue/listing tables explicitly excluded from ownership after a product-boundary sanity check). owner_user_id IS NULL is not a supported steady state on projects after migration completes; it never exists on catalogue/listing tables at all."
+}

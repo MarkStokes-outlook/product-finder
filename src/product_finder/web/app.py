@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from datetime import datetime, timedelta, timezone
 
 from flask import (
@@ -21,6 +22,7 @@ from .. import (
     connector_health,
     db,
     offers,
+    outbound,
     project_import,
     retailer_price,
     runner,
@@ -28,9 +30,17 @@ from .. import (
 )
 from ..config import AppConfig, ItemConfig
 
+log = logging.getLogger(__name__)
+
 # Deals scoring at or above this are "hot" — matches the excellent/hi score
 # band used throughout the templates (score >= 70 -> green "hi" badge).
 HOT_DEAL_SCORE = 70
+
+# Surfaces the Marketplace Outbound Gateway (outbound.py) records a click
+# against — see listing_clicks.context. A request with any other value (or
+# none) is recorded as "unknown" rather than rejected: context is an audit
+# label, not something worth failing a redirect over.
+CLICK_CONTEXTS = ("dashboard", "project", "auctions", "offers", "duplicate_review")
 
 
 def _get_conn(cfg: AppConfig):
@@ -45,6 +55,17 @@ def _effective_cfg(cfg: AppConfig) -> AppConfig:
     if "effective_cfg" not in g:
         g.effective_cfg = db.effective_config(_get_conn(cfg), cfg)
     return g.effective_cfg
+
+
+def _outbound_service(cfg: AppConfig) -> outbound.MarketplaceOutboundService:
+    """Cached per-request like _effective_cfg() — affiliate config can only
+    change between requests (config.yaml / env), never mid-request, but
+    rebuilding once per request (not once per app start) keeps this
+    consistent with how every other effective-config-derived value here
+    behaves, and costs nothing measurable."""
+    if "outbound_service" not in g:
+        g.outbound_service = outbound.MarketplaceOutboundService(_effective_cfg(cfg))
+    return g.outbound_service
 
 
 def _selected_sources(form, source_names: list[str]) -> list[str] | None:
@@ -354,6 +375,15 @@ def create_app(cfg: AppConfig) -> Flask:
             then = then.replace(tzinfo=timezone.utc)
         return (datetime.now(timezone.utc) - then) <= timedelta(hours=24)
 
+    @app.template_global("listing_out_url")
+    def _listing_out_url(listing_id, context: str, project_id=None) -> str:
+        """Every listing link in every template calls this instead of
+        rendering a listings.url straight into an href — see outbound.py
+        and ARCHITECTURE.md ("Marketplace outbound gateway")."""
+        return url_for(
+            "listing_out", listing_id=listing_id, context=context, project_id=project_id
+        )
+
     # --- Dashboard -----------------------------------------------------------
 
     @app.route("/")
@@ -375,6 +405,51 @@ def create_app(cfg: AppConfig) -> Flask:
     @app.route("/api/status")
     def api_status():
         return {"last_activity": db.latest_activity(_get_conn(cfg))}
+
+    # --- Marketplace Outbound Gateway -----------------------------------------
+    # See outbound.py and ARCHITECTURE.md ("Marketplace outbound gateway").
+    # The only place this app emits a marketplace URL — every listing link
+    # in every template routes through here instead of rendering
+    # listings.url directly.
+
+    @app.route("/out/<int:listing_id>")
+    def listing_out(listing_id):
+        conn = _get_conn(cfg)
+        listing_row = db.get_listing(conn, listing_id)
+        if listing_row is None:
+            abort(404)
+
+        context = request.args.get("context", "")
+        if context not in CLICK_CONTEXTS:
+            context = "unknown"
+        project_id = request.args.get("project_id", type=int)
+
+        resolution = _outbound_service(cfg).resolve(listing_row["source"], listing_row["url"])
+        outcome = "success" if outbound.is_safe_redirect_url(resolution.url) else "failure"
+        if outcome == "failure":
+            log.warning(
+                "Unsafe outbound redirect destination for listing %s (source %r); refusing",
+                listing_id, listing_row["source"],
+            )
+
+        try:
+            db.record_listing_click(
+                conn,
+                listing_id=listing_id,
+                source=listing_row["source"],
+                context=context,
+                outcome=outcome,
+                affiliate_applied=resolution.affiliate_applied,
+                project_id=project_id,
+            )
+        except Exception:
+            # Analytics must never block the user's navigation — see
+            # db.record_listing_click and FEATURE-1012.
+            log.exception("Failed to record click for listing %s", listing_id)
+
+        if outcome == "failure":
+            abort(502)
+        return redirect(resolution.url, code=302)
 
     # --- Active Auctions / Offers ------------------------------------------------
 
@@ -718,10 +793,17 @@ def create_app(cfg: AppConfig) -> Flask:
                 return redirect(url_for("item_edit", item_id=item_id))
         return render_template("product_form.html", product=None, item=item, form=request.form)
 
+    # NOTE: product_id below identifies an item_products row (this item's own
+    # tracking of a catalogue product), not the global products row — see
+    # docs/adr/0007-catalogue-globalization.md. Editing manufacturer/model/
+    # msrp/typical_new_price here still edits the shared global product
+    # (affects every item tracking it); match_terms/target_deal_price/
+    # archived/wanted are this item's own. Retailer price-candidate routes
+    # further down key on the *global* product id instead.
     @app.route("/products/<int:product_id>/edit", methods=["GET", "POST"])
     def product_edit(product_id):
         conn = _get_conn(cfg)
-        row = db.get_product(conn, product_id)
+        row = db.get_item_product_by_id(conn, product_id)
         if row is None:
             abort(404)
         item = db.get_item(conn, row["item_id"])
@@ -738,7 +820,7 @@ def create_app(cfg: AppConfig) -> Flask:
             product=row,
             item=item,
             form=request.form,
-            price_candidates=db.list_price_candidates(conn, product_id),
+            price_candidates=db.list_price_candidates(conn, row["product_id"]),
             searxng_enabled=cfg.searxng.enabled,
             price_refresh_interval_hours=cfg.searxng.refresh_interval_hours,
         )
@@ -746,7 +828,7 @@ def create_app(cfg: AppConfig) -> Flask:
     @app.route("/products/<int:product_id>/archive", methods=["POST"])
     def product_archive(product_id):
         conn = _get_conn(cfg)
-        row = db.get_product(conn, product_id)
+        row = db.get_item_product_by_id(conn, product_id)
         if row is None:
             abort(404)
         db.set_product_archived(conn, product_id, not row["archived"])
@@ -756,26 +838,33 @@ def create_app(cfg: AppConfig) -> Flask:
     @app.route("/products/<int:product_id>/delete", methods=["POST"])
     def product_delete(product_id):
         conn = _get_conn(cfg)
-        row = db.get_product(conn, product_id)
+        row = db.get_item_product_by_id(conn, product_id)
         if row is None:
             abort(404)
-        db.delete_product(conn, product_id)
-        flash(f"Deleted product '{row['manufacturer']}'.")
+        # Stops this item tracking the product; the shared catalogue entry
+        # and its price history are kept (see db.delete_item_product).
+        db.delete_item_product(conn, product_id)
+        flash(f"Removed '{row['manufacturer']}' from this item's catalogue.")
         return redirect(url_for("item_edit", item_id=row["item_id"]))
 
     # --- Retailer price discovery (see retailer_price.py) -------------------------
+    #
+    # These key on the *global* product id (product_price_candidates and the
+    # canonical retailer URL are shared platform data, not per-item).
 
     @app.route("/products/<int:product_id>/price-candidates/search", methods=["POST"])
     def price_candidates_search(product_id):
         conn = _get_conn(cfg)
-        row = db.get_product(conn, product_id)
-        if row is None:
+        item_product = db.get_item_product_by_id(conn, product_id)
+        if item_product is None:
             abort(404)
+        global_id = item_product["product_id"]
+        row = db.get_product(conn, global_id)
         if not cfg.searxng.enabled:
             flash("Retailer price discovery is disabled (set searxng.enabled in config.yaml).")
             return redirect(url_for("product_edit", product_id=product_id))
         candidates = retailer_price.search_candidates(row["manufacturer"], row["model"] or "", cfg.searxng)
-        db.record_price_candidates(conn, product_id, candidates)
+        db.record_price_candidates(conn, global_id, candidates)
         flash(f"Found {len(candidates)} retailer price candidate(s)." if candidates
               else "No retailer price candidates found.")
         return redirect(url_for("product_edit", product_id=product_id))
@@ -789,15 +878,23 @@ def create_app(cfg: AppConfig) -> Flask:
         refreshed = retailer_price.fetch_price(candidate["url"], cfg.searxng.timeout)
         db.approve_price_candidate(conn, candidate_id, refreshed)
         flash(f"Retailer price set from {candidate['domain']}.")
-        return redirect(url_for("product_edit", product_id=candidate["product_id"]))
+        # The candidate only carries the global product id — resolve back to
+        # *an* item_products row tracking it so the edit-page redirect still
+        # resolves (any item tracking this product shows the same result).
+        item_product = conn.execute(
+            "SELECT id FROM item_products WHERE product_id = ? LIMIT 1", (candidate["product_id"],)
+        ).fetchone()
+        if item_product is None:
+            return redirect(url_for("catalogue_review"))
+        return redirect(url_for("product_edit", product_id=item_product["id"]))
 
     @app.route("/products/<int:product_id>/price-candidates/dismiss", methods=["POST"])
     def price_candidates_dismiss(product_id):
         conn = _get_conn(cfg)
-        row = db.get_product(conn, product_id)
-        if row is None:
+        item_product = db.get_item_product_by_id(conn, product_id)
+        if item_product is None:
             abort(404)
-        db.clear_price_candidates(conn, product_id)
+        db.clear_price_candidates(conn, item_product["product_id"])
         flash("Price candidates dismissed.")
         return redirect(url_for("product_edit", product_id=product_id))
 
@@ -832,7 +929,7 @@ def create_app(cfg: AppConfig) -> Flask:
         conn = _get_conn(cfg)
         count = 0
         for product_id in request.form.getlist("product_ids", type=int):
-            if db.get_product(conn, product_id) is not None:
+            if db.get_item_product_by_id(conn, product_id) is not None:
                 db.set_product_archived(conn, product_id, True)
                 count += 1
         flash(
@@ -847,7 +944,7 @@ def create_app(cfg: AppConfig) -> Flask:
         conn = _get_conn(cfg)
         count = 0
         for product_id in request.form.getlist("product_ids", type=int):
-            if db.get_product(conn, product_id) is not None:
+            if db.get_item_product_by_id(conn, product_id) is not None:
                 db.set_product_wanted(conn, product_id, False)
                 count += 1
         flash(
@@ -860,7 +957,7 @@ def create_app(cfg: AppConfig) -> Flask:
     @app.route("/products/<int:product_id>/toggle-wanted", methods=["POST"])
     def product_toggle_wanted(product_id):
         conn = _get_conn(cfg)
-        row = db.get_product(conn, product_id)
+        row = db.get_item_product_by_id(conn, product_id)
         if row is None:
             abort(404)
         db.set_product_wanted(conn, product_id, not row["wanted"])

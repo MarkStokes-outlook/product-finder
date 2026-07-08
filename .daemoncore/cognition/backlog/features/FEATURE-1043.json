@@ -1,0 +1,20 @@
+{
+  "id": "FEATURE-1043",
+  "epic_id": "EPIC-104",
+  "title": "Public vs authenticated route/permission boundary",
+  "description": "Introduce an explicit decorator (e.g. @public_ok) marking routes safe to serve anonymously, with default-deny for everything else, replacing the current app-wide no-auth posture with a reviewable allow-list.",
+  "status": "backlog",
+  "phase": 4,
+  "domain": "web-api",
+  "area": "public-experience",
+  "tags": ["adr-0005", "routing"],
+  "user_story_ids": [],
+  "acceptance_criteria": [
+    "A single decorator/mechanism marks a route as public; all other routes require an authenticated session when auth.enabled=true",
+    "The full list of public routes is enumerable from code (e.g. by grepping the decorator), not inferred from behaviour",
+    "The web/app.py module docstring ('no auth by design... localhost only') is updated to reflect the new reality once this feature ships",
+    "A test iterates all registered Flask routes and asserts every non-public one rejects an unauthenticated request when auth.enabled=true",
+    "Existing local/dev behaviour (auth.enabled=false) is unaffected — every route remains reachable as before"
+  ],
+  "notes": "See docs/adr/0005-public-vs-signed-in-experience-split.md, Alternatives Considered (default-deny chosen over reusing routes with conditional rendering)."
+}

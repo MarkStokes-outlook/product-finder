@@ -1,0 +1,10 @@
+{
+  "id": "EPIC-104",
+  "title": "Public homepage & search experience",
+  "description": "Refactor the homepage into a public, read-only, unauthenticated search/browse surface. Public users can search and view limited results and click through (tracked, unattributed); they cannot save, track, create projects, enable alerts, or reach any private/admin data. Gated actions prompt login rather than disappear, with a no-op entitlement hook for future subscriptions.",
+  "status": "planned",
+  "phase": 4,
+  "feature_ids": ["FEATURE-1040", "FEATURE-1041", "FEATURE-1042", "FEATURE-1043"],
+  "tags": ["roadmap-2026-07", "phase-4", "public-experience", "adr-0005"],
+  "notes": "See docs/adr/0005-public-vs-signed-in-experience-split.md. Depends on EPIC-103's ownership/authorization model existing to gate against. HARD BLOCKING DEPENDENCY: EPIC-100 (Catalogue globalization) must land first, per ADR-0001's revised sequencing — a public search surface drawing on a per-item-fragmented catalogue would visibly show duplicate products and fragmented price signals to many real users at once, exactly the scenario EPIC-100 exists to fix before it becomes externally visible. Retires the app.py 'localhost only, no auth by design' assumption — must be done deliberately, not as a side effect. Deferred: subscription/billing enforcement (hook only), public API, rate limiting/anti-abuse for public search (flagged, not solved)."
+}

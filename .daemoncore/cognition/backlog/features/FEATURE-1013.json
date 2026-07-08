@@ -1,0 +1,20 @@
+{
+  "id": "FEATURE-1013",
+  "epic_id": "EPIC-101",
+  "title": "Server-side-only affiliate config and secrets handling",
+  "description": "Define where affiliate partner IDs/tags/secrets live (config.yaml / environment) and enforce that they never reach the client, following the existing source_settings precedent for DB-stored per-source overrides while treating affiliate secrets as more sensitive than the current eBay credential handling.",
+  "status": "done",
+  "phase": 1,
+  "domain": "web-api",
+  "area": "affiliate",
+  "tags": ["adr-0002", "security", "config"],
+  "user_story_ids": [],
+  "acceptance_criteria": [
+    "Affiliate config fields are documented in config.example.yaml with clear comments distinguishing them from source-definition fields",
+    "No affiliate config value is ever serialized into an HTML template, inline script, or JSON API response",
+    "No affiliate secret is logged in plaintext at any log level",
+    "config.yaml (gitignored) remains the source of truth for affiliate secrets; nothing affiliate-related is committed to the repo",
+    "A code review checklist item or test asserts /out/<listing_id> responses and page source contain no affiliate identifiers beyond the final destination URL itself"
+  ],
+  "notes": "See docs/adr/0002-affiliate-link-redirect-and-tracking.md, security assumption section. This is the feature most worth a second pair of eyes given it is the one place secrets and public-facing output meet in Phase 1. Shipped 2026-07-08: config.OutboundConfig.affiliate_params, documented in config.example.yaml. tests/test_web.py::test_affiliate_identifiers_never_appear_in_page_source asserts a configured campaign id string appears nowhere in dashboard/project/auctions/offers/api-status page source, only in the /out/<id> redirect's Location header. Also verified live via a real `python -m product_finder web` process + curl, not just the Flask test client."
+}

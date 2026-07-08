@@ -1,0 +1,22 @@
+{
+  "id": "FEATURE-1031",
+  "epic_id": "EPIC-103",
+  "title": "Authorization checks across project-scoped routes",
+  "description": "Add ownership enforcement to every project-scoped read/write route in web/app.py (projects, items, product-suggestion review queue, exports, manual-search-link generation, listing-match/decision data) using a single shared helper rather than per-route ad hoc checks. Explicitly do NOT gate pure catalogue/listing reads (a product's reference prices, a listing's detail) by project ownership — those stay readable regardless of which project's item is asking.",
+  "status": "backlog",
+  "phase": 3,
+  "domain": "web-api",
+  "area": "projects",
+  "tags": ["adr-0004", "authorization"],
+  "user_story_ids": [],
+  "acceptance_criteria": [
+    "A single helper (e.g. db.assert_project_owner or equivalent query-scoping function) is the only mechanism routes use to enforce project ownership",
+    "Every route reachable from a project id (CRUD, item CRUD, product-suggestion approve/dismiss, CSV/JSON export, manual-search-link generation) is audited and uses the helper",
+    "A request for a project/item not owned by the current user returns 403/404 (not a data leak via error message differentiation), consistently",
+    "The global /catalogue-settings route (app_settings auto-approve threshold) is confirmed to be a global/operator-level setting, not project-scoped, and is explicitly excluded from the per-project ownership helper — it is not gated by owner_user_id at all in this phase",
+    "Fetching a products row's reference price or a listings row's detail is never gated by project ownership, even when reached from a project/item context — verified by a test that two different owners' items can both resolve the same shared product/listing",
+    "When auth.enabled=false, the legacy-owner's implicit session is used and behaviour is unchanged from pre-Phase-3",
+    "No route is found, in review or via the test suite from FEATURE-1032, to bypass the shared helper or to incorrectly apply it to a catalogue/listing read"
+  ],
+  "notes": "See docs/adr/0004-user-owned-data-model-and-migration.md. Revised 2026-07-08: earlier wording incorrectly implied product/catalogue reads should be owner-gated; corrected to match the platform-owned catalogue boundary."
+}

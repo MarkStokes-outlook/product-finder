@@ -1,0 +1,20 @@
+{
+  "id": "FEATURE-1040",
+  "epic_id": "EPIC-104",
+  "title": "Public read-only homepage/search surface",
+  "description": "Build a public, unauthenticated homepage with its own reviewed query path (not a direct reuse of the authenticated dashboard query) that lets anonymous users search and view a limited set of current listings and click through via the Phase 1 redirect.",
+  "status": "backlog",
+  "phase": 4,
+  "domain": "web-ui",
+  "area": "public-experience",
+  "tags": ["adr-0005", "public"],
+  "user_story_ids": [],
+  "acceptance_criteria": [
+    "A public homepage route serves search/browse results without requiring login",
+    "The public query path is implemented separately from _dashboard_data/_project_detail_data, not a conditional branch inside them",
+    "Public listing cards link out via /out/<listing_id> (FEATURE-1010), recording clicks with user_id NULL for anonymous visitors",
+    "The public surface shows a limited result set (exact limiting rule documented, e.g. no private/owned projects, no per-user saved data)",
+    "Page load and search work with no session/cookie required beyond what Flask needs functionally"
+  ],
+  "notes": "See docs/adr/0005-public-vs-signed-in-experience-split.md. Depends on EPIC-103 (ownership model) existing so 'what's private' is well-defined, and EPIC-101 (redirect) for click-through."
+}

@@ -685,9 +685,12 @@ def test_product_create(cfg, client):
     row = conn.execute("SELECT * FROM products WHERE manufacturer = 'Makita'").fetchone()
     assert row is not None
     product = db._product_from_row(row)
-    assert product.match_terms == ["makita sp6000", "sp6000"]
     assert product.msrp == 550
     assert product.typical_new_price == 500
+    # match_terms is this item's own tracking (item_products), not the
+    # global products row — see docs/adr/0007-catalogue-globalization.md.
+    item_product = db.get_item_product(conn, item_id, row["id"])
+    assert json.loads(item_product["match_terms"]) == ["makita sp6000", "sp6000"]
 
 
 def test_product_create_requires_manufacturer_and_match_terms(cfg, client):
@@ -704,13 +707,17 @@ def test_product_create_requires_manufacturer_and_match_terms(cfg, client):
 
 
 def test_product_edit(cfg, client):
+    # The web UI's /products/<id>/... routes key on this item's
+    # item_products row id, not the global product id create_product
+    # returns — see docs/adr/0007-catalogue-globalization.md.
     _, item_id = seed_match(cfg)
     conn = db.connect(cfg.db_path)
-    product_id = db.create_product(conn, item_id, "Makita", "SP6000", ["makita sp6000"], 550, 500, 350)
+    global_id = db.create_product(conn, item_id, "Makita", "SP6000", ["makita sp6000"], 550, 500, 350)
+    item_product_id = db.get_item_product(conn, item_id, global_id)["id"]
     conn.close()
 
     client.post(
-        f"/products/{product_id}/edit",
+        f"/products/{item_product_id}/edit",
         data={
             "manufacturer": "Makita",
             "model": "SP6000",
@@ -721,7 +728,7 @@ def test_product_edit(cfg, client):
         },
     )
     conn = db.connect(cfg.db_path)
-    product = db._product_from_row(db.get_product(conn, product_id))
+    product = db._item_product_from_row(db.get_item_product_by_id(conn, item_product_id))
     assert product.typical_new_price == 480
     assert product.target_deal_price == 320
 
@@ -729,22 +736,31 @@ def test_product_edit(cfg, client):
 def test_product_archive_and_delete(cfg, client):
     _, item_id = seed_match(cfg)
     conn = db.connect(cfg.db_path)
-    product_id = db.create_product(conn, item_id, "Makita", "SP6000", ["makita sp6000"], 550, 500, 350)
+    global_id = db.create_product(conn, item_id, "Makita", "SP6000", ["makita sp6000"], 550, 500, 350)
+    item_product_id = db.get_item_product(conn, item_id, global_id)["id"]
     conn.close()
 
-    client.post(f"/products/{product_id}/archive")
+    client.post(f"/products/{item_product_id}/archive")
     conn = db.connect(cfg.db_path)
     assert conn.execute(
-        "SELECT archived FROM products WHERE id = ?", (product_id,)
+        "SELECT archived FROM item_products WHERE id = ?", (item_product_id,)
     ).fetchone()["archived"] == 1
     conn.close()
 
-    client.post(f"/products/{product_id}/delete")
+    client.post(f"/products/{item_product_id}/delete")
     conn = db.connect(cfg.db_path)
-    assert conn.execute("SELECT COUNT(*) c FROM products").fetchone()["c"] == 0
+    # Deleting removes this item's tracking only — the shared global
+    # product and its price history are deliberately preserved (see
+    # docs/adr/0007-catalogue-globalization.md: an item-level action must
+    # never destroy platform-wide evidence).
+    assert db.list_products(conn, item_id) == []
+    assert conn.execute("SELECT COUNT(*) c FROM products").fetchone()["c"] == 1
 
 
 def test_deleting_item_also_deletes_its_products(cfg, client):
+    # "Its products" now means this item's item_products tracking rows —
+    # the underlying global product is intentionally preserved even once
+    # untracked by anyone (see docs/adr/0007-catalogue-globalization.md).
     _, item_id = seed_match(cfg)
     conn = db.connect(cfg.db_path)
     db.create_product(conn, item_id, "Makita", "SP6000", ["makita sp6000"], 550, 500, 350)
@@ -752,7 +768,8 @@ def test_deleting_item_also_deletes_its_products(cfg, client):
 
     client.post(f"/items/{item_id}/delete")
     conn = db.connect(cfg.db_path)
-    assert conn.execute("SELECT COUNT(*) c FROM products").fetchone()["c"] == 0
+    assert conn.execute("SELECT COUNT(*) c FROM item_products").fetchone()["c"] == 0
+    assert conn.execute("SELECT COUNT(*) c FROM products").fetchone()["c"] == 1
 
 
 def test_matched_product_shown_on_project_detail(cfg, client):
@@ -945,16 +962,19 @@ def test_project_hero_excludes_flagged_listings_even_if_top_scored(cfg, client):
         Evaluation(grade="A", flags=["live auction"], margin_abs=495.0,
                    margin_pct=99.0, under_target=True, deal_score=99.0),
     )
+    clean_listing_id = conn.execute(
+        "SELECT id FROM listings WHERE external_id = 'E1'"
+    ).fetchone()["id"]
     conn.commit()
     conn.close()
 
     resp = client.get(f"/projects/{project_id}")
     assert b"Makita SP6000 saw" in resp.data  # the clean, lower-scoring listing
     assert b"Suspiciously cheap live auction saw" in resp.data  # still visible in the table
-    # The hero card only ever links to the clean listing's URL.
+    # The hero card only ever links to the clean listing's outbound gateway URL.
     hero_section = resp.data.split(b"Items &amp; listings")[0]
-    assert b"example.com/1" in hero_section
-    assert b"example.com/2" not in hero_section
+    assert f"/out/{clean_listing_id}".encode() in hero_section
+    assert f"/out/{listing_id}".encode() not in hero_section
 
 
 # --- Listings filters, now on the project detail page ------------------------
@@ -1251,3 +1271,202 @@ def test_nav_includes_auctions_and_offers_links(client):
     resp = client.get("/")
     assert b"Active Auctions" in resp.data
     assert b">Offers<" in resp.data
+
+
+# --- Marketplace Outbound Gateway (EPIC-101) ----------------------------------
+# See outbound.py, ARCHITECTURE.md ("Marketplace outbound gateway"), and
+# docs/adr/0002-affiliate-link-redirect-and-tracking.md.
+
+
+def test_listing_out_redirects_to_original_url_when_no_affiliate_configured(cfg, client):
+    project_id, item_id = seed_match(cfg)
+    conn = db.connect(cfg.db_path)
+    listing_id = conn.execute("SELECT id FROM listings WHERE external_id = 'E1'").fetchone()["id"]
+    conn.close()
+
+    resp = client.get(f"/out/{listing_id}?context=dashboard")
+    assert resp.status_code == 302
+    assert resp.headers["Location"] == "https://example.com/1"
+
+    conn = db.connect(cfg.db_path)
+    click = conn.execute("SELECT * FROM listing_clicks WHERE listing_id = ?", (listing_id,)).fetchone()
+    assert click["source"] == "ebay"
+    assert click["context"] == "dashboard"
+    assert click["outcome"] == "success"
+    assert click["affiliate_applied"] == 0
+    assert click["user_id"] is None
+
+
+def test_listing_out_injects_affiliate_params_when_configured(cfg):
+    from product_finder.config import OutboundConfig
+
+    project_id, item_id = seed_match(cfg)
+    aff_cfg = AppConfig(
+        db_path=cfg.db_path,
+        outbound=OutboundConfig(affiliate_params={"ebay": {"campid": "12345"}}),
+    )
+    app = create_app(aff_cfg)
+    app.config["TESTING"] = True
+    aff_client = app.test_client()
+
+    conn = db.connect(cfg.db_path)
+    listing_id = conn.execute("SELECT id FROM listings WHERE external_id = 'E1'").fetchone()["id"]
+    conn.close()
+
+    resp = aff_client.get(f"/out/{listing_id}?context=dashboard")
+    assert resp.status_code == 302
+    assert resp.headers["Location"].startswith("https://example.com/1?")
+    assert "campid=12345" in resp.headers["Location"]
+
+    conn = db.connect(cfg.db_path)
+    click = conn.execute("SELECT * FROM listing_clicks WHERE listing_id = ?", (listing_id,)).fetchone()
+    assert click["affiliate_applied"] == 1
+
+
+def test_affiliate_identifiers_never_appear_in_page_source(cfg):
+    # FEATURE-1013: affiliate config must never reach a template, script, or
+    # API response — only the final destination URL (in the redirect's
+    # Location header) ever carries the campaign id.
+    from product_finder.config import OutboundConfig
+
+    project_id, item_id = seed_match(cfg)
+    aff_cfg = AppConfig(
+        db_path=cfg.db_path,
+        outbound=OutboundConfig(affiliate_params={"ebay": {"campid": "supersecret123"}}),
+    )
+    app = create_app(aff_cfg)
+    app.config["TESTING"] = True
+    aff_client = app.test_client()
+
+    for path in ("/", f"/projects/{project_id}", "/auctions", "/offers", "/api/status"):
+        resp = aff_client.get(path)
+        assert b"supersecret123" not in resp.data
+
+
+def test_listing_out_unknown_listing_404s(client):
+    resp = client.get("/out/999999")
+    assert resp.status_code == 404
+
+
+def test_listing_out_malformed_id_404s(client):
+    resp = client.get("/out/not-a-number")
+    assert resp.status_code == 404
+
+
+def test_listing_out_negative_id_404s(client):
+    resp = client.get("/out/-1")
+    assert resp.status_code == 404
+
+
+def test_listing_out_unsafe_destination_fails_safe_and_records_failure(cfg, client):
+    # Simulated bad data row (never produced by real connectors, but the
+    # gateway must never forward a browser to something unsafe regardless).
+    conn = db.connect(cfg.db_path)
+    project_id = db.create_project(conn, "Bad Data Project")
+    from product_finder.config import ItemConfig
+
+    item_id = db.create_item(conn, project_id, ItemConfig(name="Widget", terms=["widget"]))
+    listing_id, _ = db.upsert_listing(
+        conn,
+        Listing(source="ebay", external_id="BADURL", title="Widget",
+                price=10.0, url="javascript:alert(1)"),
+    )
+    db.record_match(
+        conn, listing_id, item_id,
+        Evaluation(grade="A", flags=[], margin_abs=0, margin_pct=0,
+                   under_target=False, deal_score=50.0),
+    )
+    conn.commit()
+    conn.close()
+
+    resp = client.get(f"/out/{listing_id}?context=dashboard")
+    assert resp.status_code == 502
+
+    conn = db.connect(cfg.db_path)
+    click = conn.execute("SELECT * FROM listing_clicks WHERE listing_id = ?", (listing_id,)).fetchone()
+    assert click["outcome"] == "failure"
+
+
+def test_listing_out_invalid_context_recorded_as_unknown(cfg, client):
+    project_id, item_id = seed_match(cfg)
+    conn = db.connect(cfg.db_path)
+    listing_id = conn.execute("SELECT id FROM listings WHERE external_id = 'E1'").fetchone()["id"]
+    conn.close()
+
+    client.get(f"/out/{listing_id}?context=totally-made-up")
+
+    conn = db.connect(cfg.db_path)
+    click = conn.execute("SELECT * FROM listing_clicks WHERE listing_id = ?", (listing_id,)).fetchone()
+    assert click["context"] == "unknown"
+
+
+def test_listing_out_records_project_id_when_given(cfg, client):
+    project_id, item_id = seed_match(cfg)
+    conn = db.connect(cfg.db_path)
+    listing_id = conn.execute("SELECT id FROM listings WHERE external_id = 'E1'").fetchone()["id"]
+    conn.close()
+
+    client.get(f"/out/{listing_id}?context=project&project_id={project_id}")
+
+    conn = db.connect(cfg.db_path)
+    click = conn.execute("SELECT * FROM listing_clicks WHERE listing_id = ?", (listing_id,)).fetchone()
+    assert click["project_id"] == project_id
+
+
+def test_dashboard_hero_links_through_outbound_gateway_not_raw_url(cfg, client):
+    project_id, item_id = seed_match(cfg)
+    resp = client.get("/")
+    assert b"/out/" in resp.data
+    assert b"https://example.com/1" not in resp.data
+
+
+def test_project_page_links_through_outbound_gateway_with_project_context(cfg, client):
+    project_id, item_id = seed_match(cfg)
+    resp = client.get(f"/projects/{project_id}")
+    assert b"context=project" in resp.data
+    assert b"https://example.com/1" not in resp.data
+
+
+def test_auctions_page_links_through_outbound_gateway(cfg, client):
+    project_id, item_id = seed_match(cfg)
+    conn = db.connect(cfg.db_path)
+    listing_id, _ = db.upsert_listing(
+        conn,
+        Listing(source="ebay", external_id="AUCOUT", title="Gateway auction listing",
+                price=90.0, url="https://example.com/aucout",
+                buying_options=["AUCTION"], bid_count=1, end_time="2099-01-01T12:00:00Z"),
+    )
+    db.record_match(conn, listing_id, item_id, Evaluation(
+        grade="B", flags=["live auction"], margin_abs=0, margin_pct=0,
+        under_target=False, deal_score=50.0))
+    conn.commit()
+
+    resp = client.get("/auctions")
+    assert b"context=auctions" in resp.data
+    assert b"https://example.com/aucout" not in resp.data
+
+
+def test_offers_page_links_through_outbound_gateway(cfg, client):
+    project_id, item_id = seed_match(cfg)
+    conn = db.connect(cfg.db_path)
+    listing_id, _ = db.upsert_listing(
+        conn,
+        Listing(source="ebay", external_id="OFFOUT", title="Gateway offer listing",
+                price=180.0, url="https://example.com/offout",
+                buying_options=["FIXED_PRICE", "BEST_OFFER"]),
+    )
+    db.record_match(conn, listing_id, item_id, Evaluation(
+        grade="A", flags=[], margin_abs=20, margin_pct=10, under_target=False, deal_score=40.0))
+    conn.commit()
+
+    resp = client.get("/offers")
+    assert b"context=offers" in resp.data
+    assert b"https://example.com/offout" not in resp.data
+
+
+def test_duplicate_review_links_through_outbound_gateway(cfg, client):
+    project_id, dup_id, (a, b) = seed_duplicate_pair(cfg)
+    resp = client.get(f"/projects/{project_id}")
+    assert b"context=duplicate_review" in resp.data
+    assert b"https://example.com/L1" not in resp.data
+    assert b"https://example.com/L2" not in resp.data

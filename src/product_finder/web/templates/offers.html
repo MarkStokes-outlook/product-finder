@@ -21,7 +21,7 @@
   <tr>
     <td>{% if row['image_url'] %}<img class="row-thumb" src="{{ row['image_url'] }}" alt=""
           loading="lazy" referrerpolicy="no-referrer" onerror="this.remove()">{% endif %}
-      <a href="{{ row['url'] }}" target="_blank" rel="noopener">{{ row['title'] }}</a>
+      <a href="{{ listing_out_url(row['listing_id'], 'offers', row['project_id']) }}" target="_blank" rel="noopener">{{ row['title'] }}</a>
       <div class="meta">{{ s.explanation }}</div></td>
     <td class="meta">{{ row['project_name'] }} / {{ row['item_name'] }}</td>
     <td class="num">£{{ '%.2f' | format(row['price']) }}</td>

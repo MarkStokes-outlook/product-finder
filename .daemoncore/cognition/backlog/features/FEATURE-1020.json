@@ -1,0 +1,21 @@
+{
+  "id": "FEATURE-1020",
+  "epic_id": "EPIC-102",
+  "title": "Authentik/OIDC login flow",
+  "description": "Implement the OIDC authorization-code flow against Authentik: GET /auth/login redirects to the authorization endpoint, GET /auth/callback exchanges the code, validates the ID token, and establishes a session. Add a users table populated from the validated identity.",
+  "status": "backlog",
+  "phase": 2,
+  "domain": "web-api",
+  "area": "auth",
+  "tags": ["adr-0003", "oidc"],
+  "user_story_ids": [],
+  "acceptance_criteria": [
+    "GET /auth/login redirects to Authentik's authorization endpoint with correct client_id/redirect_uri/scope",
+    "GET /auth/callback exchanges the authorization code for tokens and validates the ID token signature/issuer/audience before trusting it",
+    "A users row (id, oidc_subject, email, display_name, created_at) is created on first login and matched by oidc_subject on subsequent logins",
+    "Invalid or tampered ID tokens are rejected, not silently accepted",
+    "auth.enabled=false skips all of the above and preserves current no-login behaviour exactly",
+    "No ownership, permission, or data-access change results from a successful login in this feature"
+  ],
+  "notes": "See docs/adr/0003-authentik-oidc-authentication-backend.md. users table exists for Phase 3 (EPIC-103) to attach ownership to later; nothing reads it for authorization purposes yet."
+}

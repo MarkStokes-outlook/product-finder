@@ -51,13 +51,24 @@ CREATE TABLE IF NOT EXISTS items (
 );
 CREATE TABLE IF NOT EXISTS products (
     id INTEGER PRIMARY KEY,
-    item_id INTEGER NOT NULL REFERENCES items(id),
     manufacturer TEXT NOT NULL,
-    model TEXT NOT NULL DEFAULT '',
+    model TEXT NOT NULL DEFAULT ''
+);
+-- item_products is the join/context table between a project's item and a
+-- global catalogue product (see docs/adr/0007-catalogue-globalization.md):
+-- match_terms/target_deal_price/archived/wanted are this item's own
+-- tracking of the product, never the product's own identity or market
+-- data. A product may be tracked by many items across many projects;
+-- each gets its own row here rather than its own copy of the product.
+CREATE TABLE IF NOT EXISTS item_products (
+    id INTEGER PRIMARY KEY,
+    item_id INTEGER NOT NULL REFERENCES items(id),
+    product_id INTEGER NOT NULL REFERENCES products(id),
     match_terms TEXT NOT NULL DEFAULT '[]',
-    normal_price REAL,
     target_deal_price REAL,
-    archived INTEGER NOT NULL DEFAULT 0
+    archived INTEGER NOT NULL DEFAULT 0,
+    wanted INTEGER NOT NULL DEFAULT 1,
+    UNIQUE(item_id, product_id)
 );
 CREATE TABLE IF NOT EXISTS product_price_observations (
     id INTEGER PRIMARY KEY,
@@ -199,6 +210,28 @@ CREATE TABLE IF NOT EXISTS source_runs (
     last_error TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_source_runs_source ON source_runs(source, run_at);
+-- One row per GET /out/<listing_id> redirect attempt (Marketplace Outbound
+-- Gateway — see outbound.py, ARCHITECTURE.md "Marketplace outbound
+-- gateway", docs/adr/0002-affiliate-link-redirect-and-tracking.md).
+-- `source` echoes listings.source at click time (not a join), so a click
+-- record stays meaningful even if a listing's source were ever to change.
+-- `project_id` is nullable: set when the click originated from a
+-- project-scoped surface, NULL for dashboard/auctions/offers clicks.
+-- `user_id` is nullable and always NULL until Phase 3 (EPIC-103) starts
+-- writing it — the column exists now so that phase doesn't need a second
+-- migration on this table.
+CREATE TABLE IF NOT EXISTS listing_clicks (
+    id INTEGER PRIMARY KEY,
+    listing_id INTEGER NOT NULL REFERENCES listings(id),
+    project_id INTEGER REFERENCES projects(id),
+    source TEXT NOT NULL,
+    context TEXT NOT NULL DEFAULT '',
+    outcome TEXT NOT NULL DEFAULT 'success',
+    affiliate_applied INTEGER NOT NULL DEFAULT 0,
+    user_id INTEGER,
+    clicked_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_listing_clicks_listing ON listing_clicks(listing_id, clicked_at);
 """
 
 # Columns added since the first release; applied to pre-existing databases.
@@ -277,9 +310,17 @@ def connect(db_path: str | Path) -> sqlite3.Connection:
     conn.executescript(_SCHEMA)
     for table, column, decl in _MIGRATIONS:
         cols = [r[1] for r in conn.execute(f"PRAGMA table_info({table})")]
+        if table == "products" and column == "wanted" and "item_id" not in cols:
+            # wanted moved to item_products under catalogue globalization
+            # (see docs/adr/0007-catalogue-globalization.md) — only add it
+            # back to `products` for a database that still has `item_id`
+            # (pre-migration), where _migrate_catalogue_globalization's
+            # backfill needs to read it. A fresh database, or one already
+            # rebuilt, must never regain this column here.
+            continue
         if column not in cols:
             conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
-            if table == "products" and column == "typical_new_price":
+            if table == "products" and column == "typical_new_price" and "normal_price" in cols:
                 # normal_price predates the msrp/typical_new_price split —
                 # carry forward any existing value, since it was
                 # functionally "the new price" before the split. Only runs
@@ -287,13 +328,112 @@ def connect(db_path: str | Path) -> sqlite3.Connection:
                 # ever) — this used to run unconditionally on every single
                 # connect(), which meant every web request and every watch
                 # tick took a write lock for a no-op UPDATE, and enough of
-                # them colliding produced "database is locked".
+                # them colliding produced "database is locked". `normal_price`
+                # itself was dropped from `products` by the catalogue
+                # globalization rebuild (see _migrate_catalogue_globalization)
+                # — a database created after that ADR never had the column at
+                # all, so this guard keeps that (now purely historical) path
+                # a no-op instead of erroring on a missing column.
                 conn.execute(
                     "UPDATE products SET typical_new_price = normal_price "
                     "WHERE typical_new_price IS NULL AND normal_price IS NOT NULL"
                 )
     conn.commit()
+    _migrate_catalogue_globalization(conn)
     return conn
+
+
+def _migrate_catalogue_globalization(conn: sqlite3.Connection) -> None:
+    """One-time, idempotent migration to the catalogue-globalization schema
+    (see docs/adr/0007-catalogue-globalization.md): products stops being
+    item-scoped and becomes a shared/global catalogue, with item_products as
+    the new join/context table.
+
+    No-ops immediately (cheap PRAGMA check, no write) once already applied —
+    detected by `products` no longer having an `item_id` column, which only
+    the final rebuild step below removes. Safe to call on every connect().
+
+    Three steps, run in one transaction so a crash never leaves a
+    half-migrated database:
+
+    1. Backfill: one item_products row per pre-existing product, exactly
+       reproducing today's tracking relationship (zero behaviour change).
+    2. Global dedupe: fold cross-item duplicate products (same manufacturer/
+       model identity key) into one, reconciling item_products so no item
+       loses its own match_terms/target_deal_price/archived/wanted state and
+       no item ends up with two rows for the same product.
+    3. Rebuild `products` without `item_id` (and the long-dead `normal_price`
+       column) — SQLite has no in-place DROP COLUMN for a column with a
+       REFERENCES clause, so this is the first non-additive migration in
+       this codebase. Gated on step 1/2 having already run in this same
+       transaction, so a failure here still leaves item_products fully
+       populated and rollback-safe.
+    """
+    cols = [r[1] for r in conn.execute("PRAGMA table_info(products)")]
+    if "item_id" not in cols:
+        return  # already migrated
+
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        # Step 1: backfill — idempotent via the NOT IN guard, so re-running
+        # after a partial failure never duplicates a row.
+        conn.execute(
+            "INSERT INTO item_products (item_id, product_id, match_terms, "
+            "target_deal_price, archived, wanted) "
+            "SELECT item_id, id, match_terms, target_deal_price, archived, wanted "
+            "FROM products WHERE id NOT IN (SELECT product_id FROM item_products)"
+        )
+
+        # Step 2: global dedupe — same grouping catalogue.model_key already
+        # provides for per-item dedupe (find_duplicate_products), just
+        # without item_id in the key.
+        rows = conn.execute("SELECT id, manufacturer, model FROM products ORDER BY id").fetchall()
+        groups: dict[tuple, list[int]] = {}
+        for row in rows:
+            key = (catalogue.model_key(row["manufacturer"]), catalogue.model_key(row["model"]))
+            groups.setdefault(key, []).append(row["id"])
+        for ids in groups.values():
+            if len(ids) < 2:
+                continue
+            keep_id, *dup_ids = ids  # oldest (lowest id) kept, as elsewhere
+            for dup_id in dup_ids:
+                _merge_products_locked(conn, keep_id, dup_id)
+
+        # Step 3: rebuild products without item_id/normal_price. Every
+        # column below already exists on the pre-migration table (added by
+        # _MIGRATIONS over time) — this only changes which columns survive.
+        conn.execute(
+            """
+            CREATE TABLE products_new (
+                id INTEGER PRIMARY KEY,
+                manufacturer TEXT NOT NULL,
+                model TEXT NOT NULL DEFAULT '',
+                msrp REAL,
+                typical_new_price REAL,
+                typical_used_price REAL,
+                canonical_price_url TEXT,
+                price_search_checked INTEGER NOT NULL DEFAULT 0,
+                last_price_check_at TEXT,
+                last_price_check_ok INTEGER,
+                price_trend_pct REAL,
+                price_trend_confidence REAL NOT NULL DEFAULT 0
+            )
+            """
+        )
+        conn.execute(
+            "INSERT INTO products_new (id, manufacturer, model, msrp, typical_new_price, "
+            "typical_used_price, canonical_price_url, price_search_checked, "
+            "last_price_check_at, last_price_check_ok, price_trend_pct, price_trend_confidence) "
+            "SELECT id, manufacturer, model, msrp, typical_new_price, typical_used_price, "
+            "canonical_price_url, price_search_checked, last_price_check_at, last_price_check_ok, "
+            "price_trend_pct, price_trend_confidence FROM products"
+        )
+        conn.execute("DROP TABLE products")
+        conn.execute("ALTER TABLE products_new RENAME TO products")
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
 
 
 # --- Config import / DB-backed project & item loading -----------------------
@@ -602,36 +742,91 @@ def set_item_archived(conn: sqlite3.Connection, item_id: int, archived: bool) ->
 
 
 def delete_item(conn: sqlite3.Connection, item_id: int, _commit: bool = True) -> None:
-    """Hard delete an item and its matches/alerts/products (listings are kept)."""
+    """Hard delete an item and its matches/alerts/catalogue tracking
+    (listings, and the global products/price history they resolve to, are
+    kept — see docs/adr/0007-catalogue-globalization.md: a product may be
+    tracked by other items, and even when it isn't any more, its
+    accumulated price history stays as platform evidence rather than being
+    destroyed by one item's deletion)."""
     conn.execute(
         "DELETE FROM alerts_sent WHERE match_id IN "
         "(SELECT id FROM listing_matches WHERE item_id = ?)",
         (item_id,),
     )
     conn.execute("DELETE FROM listing_matches WHERE item_id = ?", (item_id,))
-    conn.execute(
-        "DELETE FROM product_price_observations WHERE product_id IN "
-        "(SELECT id FROM products WHERE item_id = ?)",
-        (item_id,),
-    )
-    conn.execute(
-        "DELETE FROM product_new_price_history WHERE product_id IN "
-        "(SELECT id FROM products WHERE item_id = ?)",
-        (item_id,),
-    )
+    conn.execute("DELETE FROM item_products WHERE item_id = ?", (item_id,))
     conn.execute("DELETE FROM product_suggestions WHERE item_id = ?", (item_id,))
-    conn.execute("DELETE FROM products WHERE item_id = ?", (item_id,))
     conn.execute("DELETE FROM items WHERE id = ?", (item_id,))
     if _commit:
         conn.commit()
 
 
-# --- Product catalogue CRUD (manufacturer/model tracked under one item) ------
+# --- Product catalogue CRUD ---------------------------------------------------
+#
+# products is the global/platform-owned catalogue (see
+# docs/adr/0007-catalogue-globalization.md): manufacturer/model identity and
+# market prices (msrp, typical new/used price, retailer URL, price trend),
+# shared across every item/project that tracks it. item_products is the
+# join/context table holding one item's own tracking of a product: its
+# match terms, its target-deal-price override, and whether it's still
+# archived/wanted *for that item* — never global state.
+
+_ITEM_PRODUCT_SELECT = """
+SELECT ip.id AS id, ip.item_id AS item_id, p.id AS product_id,
+       p.manufacturer AS manufacturer, p.model AS model,
+       ip.match_terms AS match_terms,
+       p.msrp AS msrp, p.typical_new_price AS typical_new_price,
+       p.typical_used_price AS typical_used_price,
+       ip.target_deal_price AS target_deal_price,
+       ip.archived AS archived, ip.wanted AS wanted,
+       p.price_trend_pct AS price_trend_pct,
+       p.price_trend_confidence AS price_trend_confidence,
+       p.canonical_price_url AS canonical_price_url,
+       p.price_search_checked AS price_search_checked,
+       p.last_price_check_at AS last_price_check_at,
+       p.last_price_check_ok AS last_price_check_ok
+FROM item_products ip
+JOIN products p ON p.id = ip.product_id
+"""
 
 
 def _product_from_row(row: sqlite3.Row) -> catalogue.Product:
+    """Build a Product from a *bare* global `products` row (see get_product)
+    — no item context, so the item-scoped fields (match_terms,
+    target_deal_price, archived, wanted) take their neutral defaults. Used
+    where only global market data is needed (price history, price trend)."""
     return catalogue.Product(
         id=row["id"],
+        global_product_id=row["id"],
+        item_product_id=None,
+        item_id=None,
+        manufacturer=row["manufacturer"],
+        model=row["model"] or "",
+        match_terms=[],
+        msrp=row["msrp"],
+        typical_new_price=row["typical_new_price"],
+        typical_used_price=row["typical_used_price"],
+        target_deal_price=None,
+        archived=False,
+        price_trend_pct=row["price_trend_pct"],
+        price_trend_confidence=row["price_trend_confidence"],
+        wanted=True,
+    )
+
+
+def _item_product_from_row(row: sqlite3.Row) -> catalogue.Product:
+    """Build a Product from a joined item_products+products row (see
+    _ITEM_PRODUCT_SELECT) — the effective, item-contextualised view:
+    global identity/market fields from products, tracking fields
+    (match_terms/target_deal_price/archived/wanted) from item_products.
+    `.id` is the *global* products.id (what listing_matches/price
+    observations must reference); `.item_product_id` is this item's own
+    tracking row, needed by anything that mutates match_terms/target_deal_price/
+    archived/wanted for this item specifically."""
+    return catalogue.Product(
+        id=row["product_id"],
+        global_product_id=row["product_id"],
+        item_product_id=row["id"],
         item_id=row["item_id"],
         manufacturer=row["manufacturer"],
         model=row["model"] or "",
@@ -650,20 +845,58 @@ def _product_from_row(row: sqlite3.Row) -> catalogue.Product:
 def list_products(
     conn: sqlite3.Connection, item_id: int, include_archived: bool = True
 ) -> list[sqlite3.Row]:
-    where = "item_id = ?" if include_archived else "item_id = ? AND archived = 0"
+    """This item's tracked catalogue products (joined view — see
+    _ITEM_PRODUCT_SELECT). `row['id']` is this item's item_products row id
+    (what the web UI's edit/archive/delete/toggle-wanted routes act on);
+    `row['product_id']` is the shared global product id."""
+    where = "ip.item_id = ?" if include_archived else "ip.item_id = ? AND ip.archived = 0"
     return conn.execute(
-        f"SELECT * FROM products WHERE {where} ORDER BY archived, manufacturer, model",
+        f"{_ITEM_PRODUCT_SELECT} WHERE {where} ORDER BY ip.archived, p.manufacturer, p.model",
         (item_id,),
     ).fetchall()
 
 
 def list_products_for_matching(conn: sqlite3.Connection, item_id: int) -> list[catalogue.Product]:
     """Active catalogue products for an item, ready for catalogue.match()."""
-    return [_product_from_row(r) for r in list_products(conn, item_id, include_archived=False)]
+    return [_item_product_from_row(r) for r in list_products(conn, item_id, include_archived=False)]
 
 
 def get_product(conn: sqlite3.Connection, product_id: int) -> sqlite3.Row | None:
+    """Bare global product row (identity + market data only — no
+    match_terms/target_deal_price/archived/wanted, which are item-scoped;
+    see get_item_product for the combined view)."""
     return conn.execute("SELECT * FROM products WHERE id = ?", (product_id,)).fetchone()
+
+
+def get_item_product(conn: sqlite3.Connection, item_id: int, product_id: int) -> sqlite3.Row | None:
+    """One item's tracking of one global product, joined (see
+    _ITEM_PRODUCT_SELECT) — the combined view most callers actually want."""
+    return conn.execute(
+        f"{_ITEM_PRODUCT_SELECT} WHERE ip.item_id = ? AND ip.product_id = ?",
+        (item_id, product_id),
+    ).fetchone()
+
+
+def get_item_product_by_id(conn: sqlite3.Connection, item_product_id: int) -> sqlite3.Row | None:
+    """Same joined view as get_item_product, looked up by the item_products
+    row's own id — what the web UI's per-item product routes receive."""
+    return conn.execute(
+        f"{_ITEM_PRODUCT_SELECT} WHERE ip.id = ?", (item_product_id,)
+    ).fetchone()
+
+
+def _find_global_product(conn: sqlite3.Connection, manufacturer: str, model: str) -> int | None:
+    """Identity-key lookup (casing/spacing/punctuation insensitive — see
+    catalogue.model_key) across the *global* catalogue, not scoped to any
+    one item — the heart of catalogue globalization: two items naming "the
+    same" product converge on one products row instead of each minting
+    their own."""
+    mkey, kkey = catalogue.model_key(manufacturer), catalogue.model_key(model)
+    for row in conn.execute("SELECT id, manufacturer, model FROM products"):
+        if (catalogue.model_key(row["manufacturer"]) == mkey
+                and catalogue.model_key(row["model"]) == kkey):
+            return row["id"]
+    return None
 
 
 def create_product(
@@ -676,32 +909,45 @@ def create_product(
     typical_new_price: float | None,
     target_deal_price: float | None,
 ) -> int:
-    """Create a catalogue product — or return the existing one if this
-    (item, manufacturer, model) already exists by identity key
-    (casing/spacing/punctuation insensitive — "CT15" and "CT 15" are one
-    product; see catalogue.model_key). products has no UNIQUE constraint
-    (casing variants and double-submits created real duplicates before
-    this guard), so uniqueness is enforced here at the only insert path
-    rather than by a migration that would fail on databases already
-    containing duplicates."""
-    for row in conn.execute(
-        "SELECT id, manufacturer, model FROM products WHERE item_id = ?", (item_id,)
-    ):
-        if (catalogue.model_key(row["manufacturer"]) == catalogue.model_key(manufacturer)
-                and catalogue.model_key(row["model"]) == catalogue.model_key(model)):
-            return row["id"]
-    cur = conn.execute(
-        "INSERT INTO products (item_id, manufacturer, model, match_terms, "
-        "msrp, typical_new_price, target_deal_price) VALUES (?, ?, ?, ?, ?, ?, ?)",
-        (item_id, manufacturer, model, json.dumps(match_terms), msrp, typical_new_price, target_deal_price),
-    )
+    """Attach an item to a catalogue product, returning the *global*
+    product id — creating the global product first if this manufacturer/
+    model doesn't already exist anywhere on the platform (see
+    _find_global_product), and creating (or updating, if the item already
+    tracks it) this item's own item_products row for match_terms/
+    target_deal_price. msrp/typical_new_price are only ever set at genuine
+    global creation — a second item attaching to an already-known product
+    never overwrites its established market data."""
+    product_id = _find_global_product(conn, manufacturer, model)
+    if product_id is None:
+        cur = conn.execute(
+            "INSERT INTO products (manufacturer, model, msrp, typical_new_price) "
+            "VALUES (?, ?, ?, ?)",
+            (manufacturer, model, msrp, typical_new_price),
+        )
+        product_id = cur.lastrowid
+
+    existing = conn.execute(
+        "SELECT id FROM item_products WHERE item_id = ? AND product_id = ?",
+        (item_id, product_id),
+    ).fetchone()
+    if existing is None:
+        conn.execute(
+            "INSERT INTO item_products (item_id, product_id, match_terms, target_deal_price) "
+            "VALUES (?, ?, ?, ?)",
+            (item_id, product_id, json.dumps(match_terms), target_deal_price),
+        )
+    else:
+        conn.execute(
+            "UPDATE item_products SET match_terms = ?, target_deal_price = ? WHERE id = ?",
+            (json.dumps(match_terms), target_deal_price, existing["id"]),
+        )
     conn.commit()
-    return cur.lastrowid
+    return product_id
 
 
 def update_product(
     conn: sqlite3.Connection,
-    product_id: int,
+    item_product_id: int,
     manufacturer: str,
     model: str,
     match_terms: list[str],
@@ -709,38 +955,57 @@ def update_product(
     typical_new_price: float | None,
     target_deal_price: float | None,
 ) -> None:
+    """Edit an item's tracked product: manufacturer/model/msrp/
+    typical_new_price are global market fields (affect every item tracking
+    this product — see docs/adr/0007-catalogue-globalization.md, "who can
+    edit shared global fields" is an explicitly open question, not solved
+    here); match_terms/target_deal_price are this item's own override."""
+    row = get_item_product_by_id(conn, item_product_id)
+    if row is None:
+        return
     conn.execute(
-        "UPDATE products SET manufacturer = ?, model = ?, match_terms = ?, "
-        "msrp = ?, typical_new_price = ?, target_deal_price = ? WHERE id = ?",
-        (manufacturer, model, json.dumps(match_terms), msrp, typical_new_price, target_deal_price, product_id),
+        "UPDATE products SET manufacturer = ?, model = ?, msrp = ?, typical_new_price = ? "
+        "WHERE id = ?",
+        (manufacturer, model, msrp, typical_new_price, row["product_id"]),
+    )
+    conn.execute(
+        "UPDATE item_products SET match_terms = ?, target_deal_price = ? WHERE id = ?",
+        (json.dumps(match_terms), target_deal_price, item_product_id),
     )
     conn.commit()
 
 
-def set_product_archived(conn: sqlite3.Connection, product_id: int, archived: bool) -> None:
-    conn.execute("UPDATE products SET archived = ? WHERE id = ?", (int(archived), product_id))
+def set_product_archived(conn: sqlite3.Connection, item_product_id: int, archived: bool) -> None:
+    """Archive/unarchive *this item's* tracking of a product — never
+    affects other items tracking the same global product."""
+    conn.execute("UPDATE item_products SET archived = ? WHERE id = ?", (int(archived), item_product_id))
     conn.commit()
 
 
-def set_product_wanted(conn: sqlite3.Connection, product_id: int, wanted: bool) -> None:
-    """Toggle deal surfacing for a product. wanted=False = knowledge only:
-    the catalogue keeps identifying its listings and collecting price
-    history, but matches never alert or appear on deal surfaces (read-time
-    gating via _WANTED — effect is immediate, no rescan needed). For
-    products that are real and worth knowing about, just not wanted by
-    this item (old CPU generations under a current-gen item)."""
-    conn.execute("UPDATE products SET wanted = ? WHERE id = ?", (int(wanted), product_id))
+def set_product_wanted(conn: sqlite3.Connection, item_product_id: int, wanted: bool) -> None:
+    """Toggle deal surfacing for *this item's* tracking of a product.
+    wanted=False = knowledge only: the catalogue keeps identifying its
+    listings and collecting price history, but matches never alert or
+    appear on deal surfaces for this item (read-time gating via _WANTED —
+    effect is immediate, no rescan needed). For products that are real and
+    worth knowing about, just not wanted by this item (old CPU generations
+    under a current-gen item). Never affects any other item tracking the
+    same global product."""
+    conn.execute("UPDATE item_products SET wanted = ? WHERE id = ?", (int(wanted), item_product_id))
     conn.commit()
 
 
-def merge_products(conn: sqlite3.Connection, keep_id: int, dup_id: int) -> None:
-    """Fold a duplicate product into the one being kept. Everything the
-    duplicate accumulated changes owner — listing matches, price
-    observations, new-price history, price candidates — then match_terms
-    are unioned (case-insensitively), the kept product's NULL reference
-    prices are filled from the duplicate's, the used-price cache is
-    recomputed over the combined observations, and the duplicate row is
-    deleted. Nothing else is lost."""
+def _merge_products_impl(conn: sqlite3.Connection, keep_id: int, dup_id: int) -> None:
+    """Fold a duplicate global product into the one being kept — no commit
+    (see merge_products / _merge_products_locked, the two public/internal
+    callers that control the transaction boundary). Everything the
+    duplicate accumulated changes owner: listing matches, price
+    observations, new-price history, price candidates, and every item's
+    own item_products tracking row. Global fields (msrp/typical_new_price/
+    canonical_price_url) are filled from the duplicate only where the
+    keeper's are NULL. The used-price cache is recomputed over the
+    combined observations, and the duplicate row is deleted. Nothing else
+    is lost."""
     keep = get_product(conn, keep_id)
     dup = get_product(conn, dup_id)
     if keep is None or dup is None or keep_id == dup_id:
@@ -753,39 +1018,78 @@ def merge_products(conn: sqlite3.Connection, keep_id: int, dup_id: int) -> None:
             (keep_id, dup_id),
         )
 
-    terms = json.loads(keep["match_terms"])
-    seen = {t.strip().lower() for t in terms}
-    for term in json.loads(dup["match_terms"]):
-        if term.strip().lower() not in seen:
-            terms.append(term)
-            seen.add(term.strip().lower())
+    # Reconcile item_products: an item that only tracked the duplicate is
+    # simply repointed at the keeper. An item that (unusually) already
+    # tracked *both* — the same-item double-tracking edge case dedupe must
+    # also handle — has its two rows merged into one, unioning match_terms
+    # and coalescing the override fields, mirroring the global-field merge
+    # below, then the now-redundant row is dropped.
+    for dup_ip in conn.execute(
+        "SELECT * FROM item_products WHERE product_id = ?", (dup_id,)
+    ).fetchall():
+        keep_ip = conn.execute(
+            "SELECT * FROM item_products WHERE item_id = ? AND product_id = ?",
+            (dup_ip["item_id"], keep_id),
+        ).fetchone()
+        if keep_ip is None:
+            conn.execute(
+                "UPDATE item_products SET product_id = ? WHERE id = ?",
+                (keep_id, dup_ip["id"]),
+            )
+            continue
+        terms = json.loads(keep_ip["match_terms"])
+        seen = {t.strip().lower() for t in terms}
+        for term in json.loads(dup_ip["match_terms"]):
+            if term.strip().lower() not in seen:
+                terms.append(term)
+                seen.add(term.strip().lower())
+        conn.execute(
+            "UPDATE item_products SET match_terms = ?, "
+            "target_deal_price = COALESCE(target_deal_price, ?), "
+            "archived = ?, wanted = ? WHERE id = ?",
+            (json.dumps(terms), dup_ip["target_deal_price"],
+             int(bool(keep_ip["archived"]) and bool(dup_ip["archived"])),
+             int(bool(keep_ip["wanted"]) or bool(dup_ip["wanted"])),
+             keep_ip["id"]),
+        )
+        conn.execute("DELETE FROM item_products WHERE id = ?", (dup_ip["id"],))
 
     conn.execute(
-        "UPDATE products SET match_terms = ?, "
+        "UPDATE products SET "
         "msrp = COALESCE(msrp, ?), "
         "typical_new_price = COALESCE(typical_new_price, ?), "
-        "target_deal_price = COALESCE(target_deal_price, ?), "
         "canonical_price_url = COALESCE(canonical_price_url, ?) "
         "WHERE id = ?",
-        (json.dumps(terms), dup["msrp"], dup["typical_new_price"],
-         dup["target_deal_price"], dup["canonical_price_url"], keep_id),
+        (dup["msrp"], dup["typical_new_price"], dup["canonical_price_url"], keep_id),
     )
     conn.execute("DELETE FROM products WHERE id = ?", (dup_id,))
     _recompute_used_price(conn, keep_id)
+
+
+def _merge_products_locked(conn: sqlite3.Connection, keep_id: int, dup_id: int) -> None:
+    """merge_products without its own commit — for callers (the
+    globalization migration) already managing their own transaction."""
+    _merge_products_impl(conn, keep_id, dup_id)
+
+
+def merge_products(conn: sqlite3.Connection, keep_id: int, dup_id: int) -> None:
+    _merge_products_impl(conn, keep_id, dup_id)
     conn.commit()
 
 
 def find_duplicate_products(conn: sqlite3.Connection) -> list[list[sqlite3.Row]]:
-    """Groups of products that are the same (item, manufacturer, model) by
+    """Groups of *global* products that are the same manufacturer/model by
     identity key (casing/spacing/punctuation insensitive, see
     catalogue.model_key) — the duplicates create_product now prevents,
     found so pre-guard databases can be swept (see cli catalogue-tidy).
-    Each group is ordered oldest first (the natural keeper)."""
-    rows = conn.execute("SELECT * FROM products ORDER BY item_id, id").fetchall()
+    Each group is ordered oldest first (the natural keeper). Global since
+    catalogue globalization (see docs/adr/0007-catalogue-globalization.md)
+    — two items' products with the same identity are duplicates regardless
+    of which items track them."""
+    rows = conn.execute("SELECT * FROM products ORDER BY id").fetchall()
     groups: dict[tuple, list[sqlite3.Row]] = {}
     for row in rows:
-        key = (row["item_id"], catalogue.model_key(row["manufacturer"]),
-               catalogue.model_key(row["model"]))
+        key = (catalogue.model_key(row["manufacturer"]), catalogue.model_key(row["model"]))
         groups.setdefault(key, []).append(row)
     return [group for group in groups.values() if len(group) > 1]
 
@@ -800,29 +1104,38 @@ _SUSPECT_MIN_MATCHES = 2
 
 
 def find_suspect_products(conn: sqlite3.Connection) -> list[dict]:
-    """Active products whose own matched listings suggest they're an
-    accessory, consumable or spare part rather than the wanted product —
-    approved from seller "model" fields that were really part numbers.
+    """Active item_products entries whose own matched listings suggest
+    they're an accessory, consumable or spare part rather than the wanted
+    product — approved from seller "model" fields that were really part
+    numbers. Evaluated per (item, product) tracking, not per global
+    product: the evidence (this item's own matched listings, this item's
+    own normal price) is inherently item-scoped, even though the product
+    identity itself is shared.
 
     Evidence-based and read-only: a product is only accused on what its
     matches actually show (average price far below the item's normal
     price, or most matched titles naming an accessory), never on model
     shape alone — some brands use bare article numbers for real products.
-    Products with fewer than _SUSPECT_MIN_MATCHES matches are never
-    listed: no evidence, no accusation. Archiving is the human's call
-    (see /catalogue); an archived product stops matching and its old
-    matches lose their product_id on the next rescan of each listing."""
+    Entries with fewer than _SUSPECT_MIN_MATCHES matches are never listed:
+    no evidence, no accusation. Archiving is the human's call (see
+    /catalogue); an archived entry stops matching and its old matches lose
+    their product_id on the next rescan of each listing.
+
+    `id` in each result is the item_products row id (what the web UI's
+    archive/knowledge-only bulk actions act on); `product_id` is the
+    shared global product id."""
     rows = conn.execute(
         """
-        SELECT p.id, p.item_id, p.manufacturer, p.model,
+        SELECT ip.id, ip.item_id, ip.product_id, p.manufacturer, p.model,
                i.name AS item_name, i.normal_price AS item_normal,
                COUNT(m.id) AS match_count, AVG(l.price) AS avg_price
-        FROM products p
-        JOIN items i ON i.id = p.item_id
-        JOIN listing_matches m ON m.product_id = p.id
+        FROM item_products ip
+        JOIN products p ON p.id = ip.product_id
+        JOIN items i ON i.id = ip.item_id
+        JOIN listing_matches m ON m.product_id = ip.product_id AND m.item_id = ip.item_id
         JOIN listings l ON l.id = m.listing_id
-        WHERE p.archived = 0 AND p.wanted = 1
-        GROUP BY p.id
+        WHERE ip.archived = 0 AND ip.wanted = 1
+        GROUP BY ip.id
         HAVING match_count >= ?
         ORDER BY avg_price
         """,
@@ -839,7 +1152,7 @@ def find_suspect_products(conn: sqlite3.Connection) -> list[dict]:
         titles = [
             r["title"] for r in conn.execute(
                 "SELECT l.title FROM listing_matches m JOIN listings l ON l.id = m.listing_id "
-                "WHERE m.product_id = ?", (row["id"],),
+                "WHERE m.product_id = ? AND m.item_id = ?", (row["product_id"], row["item_id"]),
             )
         ]
         share = catalogue.accessory_title_share(titles)
@@ -853,6 +1166,7 @@ def find_suspect_products(conn: sqlite3.Connection) -> list[dict]:
             reasons.append("model is shaped like a part number")
         suspects.append({
             "id": row["id"],
+            "product_id": row["product_id"],
             "item_id": row["item_id"],
             "item_name": row["item_name"],
             "manufacturer": row["manufacturer"],
@@ -867,8 +1181,8 @@ def find_suspect_products(conn: sqlite3.Connection) -> list[dict]:
 
 
 def dedupe_products(conn: sqlite3.Connection) -> int:
-    """Merge every exact-duplicate product group into its oldest member.
-    Returns how many duplicate rows were folded away. Idempotent."""
+    """Merge every exact-duplicate global product group into its oldest
+    member. Returns how many duplicate rows were folded away. Idempotent."""
     merged = 0
     for group in find_duplicate_products(conn):
         keep, *dups = group
@@ -878,12 +1192,40 @@ def dedupe_products(conn: sqlite3.Connection) -> int:
     return merged
 
 
+def delete_item_product(conn: sqlite3.Connection, item_product_id: int) -> None:
+    """Stop this item tracking a product — removes only this item's
+    item_products row and nulls this item's own listing_matches rows for
+    it. The shared global product, its price history, and any other
+    item's tracking of it are deliberately left untouched (see
+    docs/adr/0007-catalogue-globalization.md: an item deleting its own
+    tracking must never destroy platform-wide evidence). This is the
+    action the web UI's per-item "Delete" button performs."""
+    row = get_item_product_by_id(conn, item_product_id)
+    if row is None:
+        return
+    conn.execute(
+        "UPDATE listing_matches SET product_id = NULL WHERE product_id = ? AND item_id = ?",
+        (row["product_id"], row["item_id"]),
+    )
+    conn.execute("DELETE FROM item_products WHERE id = ?", (item_product_id,))
+    conn.commit()
+
+
 def delete_product(conn: sqlite3.Connection, product_id: int) -> None:
+    """Purge a global catalogue product entirely: every item's tracking of
+    it, its price observations/history/candidates, and its listing_matches
+    everywhere (across every item, not just one). A genuinely destructive,
+    platform-wide action — use delete_item_product for the everyday "this
+    item doesn't want this entry any more" case, which preserves shared
+    evidence. Intended for real garbage entries (e.g. a merge mistake),
+    not routine per-item cleanup."""
     conn.execute(
         "UPDATE listing_matches SET product_id = NULL WHERE product_id = ?", (product_id,)
     )
+    conn.execute("DELETE FROM item_products WHERE product_id = ?", (product_id,))
     conn.execute("DELETE FROM product_price_observations WHERE product_id = ?", (product_id,))
     conn.execute("DELETE FROM product_new_price_history WHERE product_id = ?", (product_id,))
+    conn.execute("DELETE FROM product_price_candidates WHERE product_id = ?", (product_id,))
     conn.execute("DELETE FROM products WHERE id = ?", (product_id,))
     conn.commit()
 
@@ -1018,11 +1360,13 @@ def clear_price_candidates(conn: sqlite3.Connection, product_id: int) -> None:
 
 
 def list_products_needing_price_search(conn: sqlite3.Connection) -> list[sqlite3.Row]:
-    """Active products with no canonical retailer URL that haven't had a
-    Stage-1 search attempt yet."""
+    """Global products still actively tracked by at least one item
+    (archived is now per-item — see item_products), with no canonical
+    retailer URL, that haven't had a Stage-1 search attempt yet."""
     return conn.execute(
-        "SELECT * FROM products WHERE archived = 0 AND canonical_price_url IS NULL "
-        "AND price_search_checked = 0"
+        "SELECT * FROM products WHERE canonical_price_url IS NULL "
+        "AND price_search_checked = 0 "
+        "AND EXISTS (SELECT 1 FROM item_products ip WHERE ip.product_id = products.id AND ip.archived = 0)"
     ).fetchall()
 
 
@@ -1057,8 +1401,9 @@ def list_products_due_for_price_refresh(
         timespec="seconds"
     )
     return conn.execute(
-        "SELECT * FROM products WHERE archived = 0 AND canonical_price_url IS NOT NULL "
-        "AND (last_price_check_at IS NULL OR last_price_check_at < ?)",
+        "SELECT * FROM products WHERE canonical_price_url IS NOT NULL "
+        "AND (last_price_check_at IS NULL OR last_price_check_at < ?) "
+        "AND EXISTS (SELECT 1 FROM item_products ip WHERE ip.product_id = products.id AND ip.archived = 0)",
         (cutoff,),
     ).fetchall()
 
@@ -1579,6 +1924,29 @@ def get_listing(conn: sqlite3.Connection, listing_id: int) -> sqlite3.Row | None
     return conn.execute("SELECT * FROM listings WHERE id = ?", (listing_id,)).fetchone()
 
 
+def record_listing_click(
+    conn: sqlite3.Connection,
+    listing_id: int,
+    source: str,
+    context: str,
+    outcome: str = "success",
+    affiliate_applied: bool = False,
+    project_id: int | None = None,
+) -> None:
+    """One row per GET /out/<listing_id> redirect attempt — the click
+    audit/analytics trail for the Marketplace Outbound Gateway (see
+    outbound.py). Raises on a genuine DB error like any other write here;
+    the caller (web/app.py's listing_out route) is responsible for making
+    sure a failed write never blocks the redirect itself — analytics must
+    never hold up the user's navigation."""
+    conn.execute(
+        "INSERT INTO listing_clicks (listing_id, project_id, source, context, "
+        "outcome, affiliate_applied, clicked_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (listing_id, project_id, source, context, outcome, int(affiliate_applied), _now()),
+    )
+    conn.commit()
+
+
 def mark_brand_checked(conn: sqlite3.Connection, listing_id: int) -> None:
     """Record that we've already looked this listing up for structured
     brand/model data (see suggestions below) — regardless of whether it had
@@ -1976,7 +2344,7 @@ _MATCH_SELECT = """
 SELECT p.name AS project_name, p.slug AS project_slug, p.id AS project_id,
        i.name AS item_name, i.id AS item_id,
        COALESCE(pr.typical_new_price, pr.msrp, i.normal_price) AS normal_price,
-       COALESCE(pr.target_deal_price, i.target_deal_price) AS target_deal_price,
+       COALESCE(ip.target_deal_price, i.target_deal_price) AS target_deal_price,
        pr.typical_used_price, i.priority,
        pr.manufacturer AS product_manufacturer, pr.model AS product_model,
        pr.price_trend_pct, pr.price_trend_confidence,
@@ -1989,6 +2357,7 @@ JOIN listings l ON l.id = m.listing_id
 JOIN items i ON i.id = m.item_id
 JOIN projects p ON p.id = i.project_id
 LEFT JOIN products pr ON pr.id = m.product_id
+LEFT JOIN item_products ip ON ip.product_id = m.product_id AND ip.item_id = m.item_id
 """
 
 _SORTS = {
@@ -2008,11 +2377,12 @@ _SORTS = {
 # closing price (see AuctionSnapshot.ended).
 _NOT_ENDED = "(l.end_time IS NULL OR l.end_time > strftime('%Y-%m-%dT%H:%M:%S', 'now'))"
 
-# A match against a knowledge-only product (products.wanted = 0) is
-# identification, not endorsement: it keeps price history and identity
-# working but never belongs on a deal surface or in an alert. Requires the
-# products table joined as `pr` (all deal-surface queries join it).
-_WANTED = "(m.product_id IS NULL OR pr.wanted = 1)"
+# A match against a knowledge-only tracking (item_products.wanted = 0 — this
+# item's own decision, not a global product flag) is identification, not
+# endorsement: it keeps price history and identity working but never
+# belongs on a deal surface or in an alert. Requires item_products joined
+# as `ip` (all deal-surface queries join it, keyed by item_id+product_id).
+_WANTED = "(m.product_id IS NULL OR ip.wanted = 1)"
 
 
 def query_matches(
@@ -2104,7 +2474,7 @@ def project_summaries(conn: sqlite3.Connection) -> list[sqlite3.Row]:
         LEFT JOIN items i ON i.project_id = p.id AND i.archived = 0
         LEFT JOIN listing_matches m ON m.item_id = i.id
         LEFT JOIN listings l ON l.id = m.listing_id
-        LEFT JOIN products pr ON pr.id = m.product_id
+        LEFT JOIN item_products ip ON ip.product_id = m.product_id AND ip.item_id = m.item_id
         WHERE p.archived = 0
         GROUP BY p.id ORDER BY p.name
         """
@@ -2130,7 +2500,7 @@ def project_top_picks(conn: sqlite3.Connection) -> dict[int, sqlite3.Row]:
             JOIN listings l ON l.id = m.listing_id
             JOIN items i ON i.id = m.item_id
             JOIN projects p ON p.id = i.project_id
-            LEFT JOIN products pr ON pr.id = m.product_id
+            LEFT JOIN item_products ip ON ip.product_id = m.product_id AND ip.item_id = m.item_id
             WHERE p.archived = 0 AND l.is_primary_sighting = 1
               AND {_NOT_ENDED} AND {_WANTED}
               AND m.flags = '[]' AND m.grade != 'spares/repair'
@@ -2603,7 +2973,7 @@ def dashboard_stats(conn: sqlite3.Connection) -> dict:
         JOIN listings l ON l.id = m.listing_id
         JOIN items i ON i.id = m.item_id AND i.archived = 0
         JOIN projects p ON p.id = i.project_id AND p.archived = 0
-        LEFT JOIN products pr ON pr.id = m.product_id
+        LEFT JOIN item_products ip ON ip.product_id = m.product_id AND ip.item_id = m.item_id
         WHERE l.is_primary_sighting = 1 AND {_NOT_ENDED} AND {_WANTED}
         """,
         (new_cutoff,),

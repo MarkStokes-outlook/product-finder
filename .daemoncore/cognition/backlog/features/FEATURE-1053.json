@@ -1,0 +1,21 @@
+{
+  "id": "FEATURE-1053",
+  "epic_id": "EPIC-105",
+  "title": "Authorization, lifecycle, and clone-integrity test suite",
+  "description": "Dedicated tests covering sharing/invite/clone authorization, the full invite lifecycle including unregistered-email resolution, and clone independence, as required by ADR-0006.",
+  "status": "backlog",
+  "phase": 5,
+  "domain": "web-api",
+  "area": "sharing",
+  "tags": ["adr-0006", "tests"],
+  "user_story_ids": [],
+  "acceptance_criteria": [
+    "Authorization: a non-owner cannot share, revoke, or trigger a clone for a project they do not own",
+    "Authorization: a recipient cannot view project contents before accepting the invite",
+    "Lifecycle: pending -> accepted/declined/revoked transitions all covered, including re-invite after decline",
+    "Lifecycle: an invite created for an unregistered email resolves correctly once that email completes signup (end-to-end with FEATURE-1020's callback)",
+    "Clone integrity: a cloned project's items/products match the source at clone time; mutating either project afterward never affects the other",
+    "Clone integrity: a freshly cloned project has zero listings, listing_matches, price observations, or auction snapshots"
+  ],
+  "notes": "See docs/adr/0006-project-sharing-invites-and-cloning.md, Required tests section. Explicitly required, not optional, for this phase, mirroring FEATURE-1032's role in EPIC-103."
+}

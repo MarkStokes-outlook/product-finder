@@ -3,11 +3,11 @@
 
 <h2>{{ 'Hot deals in this project' if hero_deals | length > 1 else 'Best deal in this project' }}</h2>
 {% if hero_deals %}
-{{ spotlight(hero_deals[0], show_project=False) }}
+{{ spotlight(hero_deals[0], show_project=False, context='project') }}
 {% set runners = hero_deals[1:] %}
 {% if runners %}
 <div class="hero-grid">
-  {% for deal in runners %}{{ deal_card(deal, show_project=False) }}{% endfor %}
+  {% for deal in runners %}{{ deal_card(deal, show_project=False, context='project') }}{% endfor %}
 </div>
 {% endif %}
 {% else %}
@@ -23,7 +23,7 @@
     {% endif %}
   </div>
   <div class="dup-side-body">
-    <a href="{{ d[prefix ~ 'url'] }}" target="_blank" rel="noopener">{{ d[prefix ~ 'title'] }}</a>
+    <a href="{{ listing_out_url(listing_id, 'duplicate_review', d['project_id']) }}" target="_blank" rel="noopener">{{ d[prefix ~ 'title'] }}</a>
     <div class="price-row"><span class="price-now">£{{ '%.2f' | format(d[prefix ~ 'price']) }}</span></div>
     <span class="meta">
       {{ d[prefix ~ 'source'] }}
@@ -201,7 +201,7 @@
         No listings yet
       {% endif %}
     </summary>
-    <div class="card table-card">{{ match_table(item_rows, show_item=False, paginate=True) }}</div>
+    <div class="card table-card">{{ match_table(item_rows, show_item=False, paginate=True, context='project') }}</div>
   </details>
 {% else %}
   <div class="card empty">No items in this project yet — <a href="{{ url_for('item_new', project_id=project['id']) }}">add one</a>.</div>

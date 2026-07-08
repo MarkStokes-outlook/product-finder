@@ -1,0 +1,22 @@
+{
+  "id": "FEATURE-1032",
+  "epic_id": "EPIC-103",
+  "title": "Cross-user isolation test suite",
+  "description": "A dedicated test suite proving (a) user A cannot read, list, edit, delete, or export user B's projects, items, notes, or candidate-match/decision data via any route, including indirect/less-obvious ones, and (b) shared catalogue/listing data is NOT wrongly isolated between users.",
+  "status": "backlog",
+  "phase": 3,
+  "domain": "web-api",
+  "area": "projects",
+  "tags": ["adr-0004", "tests", "security"],
+  "user_story_ids": [],
+  "acceptance_criteria": [
+    "Test fixtures create two users, each with their own project/items/notes/candidate-match decisions",
+    "Parameterised tests attempt every project-scoped route (list, detail, edit, delete, export, suggestion approve/dismiss, manual-search-link generation) as user A against user B's data and assert denial",
+    "Tests cover indirect paths explicitly: CSV/JSON export, product-suggestion approve/dismiss, manual-search-link generation",
+    "Tests cover the migration path itself: a migrated legacy-owner project is not accessible to a newly created second user",
+    "A complementary positive test: both users' items independently match the same shared listing/product, and both users can read that listing's/product's data without restriction — proving catalogue data was not accidentally locked to whichever project's item referenced it first",
+    "The global /catalogue-settings auto-approve threshold is confirmed reachable/consistent for both users (it is intentionally global, not user-isolated, in this phase) — not treated as a leak",
+    "This suite is run as part of the standard test command and fails the build on any isolation violation or any incorrect restriction of shared data"
+  ],
+  "notes": "See docs/adr/0004-user-owned-data-model-and-migration.md, Required tests section. Revised 2026-07-08 to add the 'shared data is not wrongly isolated' case and correct the catalogue-settings/product framing."
+}

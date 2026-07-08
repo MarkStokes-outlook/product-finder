@@ -53,10 +53,10 @@
 
 {% macro cta_label(row) %}{{ 'View on eBay ↗' if row['source'] == 'ebay' else 'Open listing ↗' }}{% endmacro %}
 
-{% macro spotlight(row, show_project=True) %}
+{% macro spotlight(row, show_project=True, context='dashboard') %}
 {# The one deliberately special element on the page. Everything else stays
    calm so this can actually stand out. #}
-<a class="spotlight" href="{{ row['url'] }}" target="_blank" rel="noopener">
+<a class="spotlight" href="{{ listing_out_url(row['listing_id'], context, row['project_id']) }}" target="_blank" rel="noopener">
   <div class="thumb">{{ thumb_img(row) }}</div>
   <div class="spotlight-body">
     <div class="kicker">★ Today's best deal{% if row['first_seen'] | is_new %} · <span class="chip-new">new</span>{% endif %}</div>
@@ -82,11 +82,11 @@
 </a>
 {% endmacro %}
 
-{% macro deal_card(row, show_project=True) %}
+{% macro deal_card(row, show_project=True, context='dashboard') %}
 {# Runner-up card: image, title, price. Condition only surfaces when it's
    below A — an "A" chip on every card is just noise. Score/trend live in
    the tables and spotlight, not here. #}
-<a class="deal-card" href="{{ row['url'] }}" target="_blank" rel="noopener">
+<a class="deal-card" href="{{ listing_out_url(row['listing_id'], context, row['project_id']) }}" target="_blank" rel="noopener">
   <div class="thumb">
     {{ thumb_img(row) }}
     {% if row['first_seen'] | is_new %}<span class="chip-new">new</span>{% endif %}

@@ -21,7 +21,7 @@
   <tr>
     <td>{% if row['image_url'] %}<img class="row-thumb" src="{{ row['image_url'] }}" alt=""
           loading="lazy" referrerpolicy="no-referrer" onerror="this.remove()">{% endif %}
-      <a href="{{ row['url'] }}" target="_blank" rel="noopener">{{ row['title'] }}</a>
+      <a href="{{ listing_out_url(row['listing_id'], 'auctions', row['project_id']) }}" target="_blank" rel="noopener">{{ row['title'] }}</a>
       {% if row['product_manufacturer'] %}<br><span class="meta">{{ row['product_manufacturer'] }}{% if row['product_model'] %} {{ row['product_model'] }}{% endif %}</span>{% endif %}</td>
     <td class="meta">{{ row['project_name'] }} / {{ row['item_name'] }}</td>
     <td class="num"><strong>{% if a.current_bid is not none %}£{{ '%.2f' | format(a.current_bid) }}{% else %}&mdash;{% endif %}</strong>

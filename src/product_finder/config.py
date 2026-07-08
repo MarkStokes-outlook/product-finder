@@ -136,6 +136,24 @@ class SourcesConfig:
 
 
 @dataclass
+class OutboundConfig:
+    """Marketplace Outbound Gateway config (see outbound.py,
+    ARCHITECTURE.md "Marketplace outbound gateway", and
+    docs/adr/0002-affiliate-link-redirect-and-tracking.md). Server-side
+    only: every value here is a partner ID/campaign tag that must never
+    reach a template, client script, or API response — only the resolved
+    destination URL leaves the server, via GET /out/<listing_id>.
+
+    Keyed by source name (same names as SourcesConfig.all_names()). A
+    source with no entry here gets a no-op passthrough adapter and
+    redirects to its listing's stored URL unchanged — adding, changing, or
+    removing a marketplace's affiliate programme is a config-only change,
+    never a code change or a listings backfill."""
+
+    affiliate_params: dict[str, dict[str, str]] = field(default_factory=dict)
+
+
+@dataclass
 class AppConfig:
     postcode: str = ""
     radius_miles: int = 30
@@ -145,6 +163,7 @@ class AppConfig:
     sources: SourcesConfig = field(default_factory=SourcesConfig)
     ollama: OllamaConfig = field(default_factory=OllamaConfig)
     searxng: SearxngConfig = field(default_factory=SearxngConfig)
+    outbound: OutboundConfig = field(default_factory=OutboundConfig)
     projects: list[ProjectConfig] = field(default_factory=list)
 
 
@@ -277,6 +296,15 @@ def load_config(path: str | Path) -> AppConfig:
         refresh_interval_hours=int(searxng_raw.get("refresh_interval_hours", 24)),
     )
 
+    outbound_raw = raw.get("outbound") or {}
+    affiliate_raw = outbound_raw.get("affiliate_params") or {}
+    outbound = OutboundConfig(
+        affiliate_params={
+            str(name): {str(k): str(v) for k, v in (params or {}).items()}
+            for name, params in affiliate_raw.items()
+        }
+    )
+
     projects = [_load_project(p) for p in (raw.get("projects") or [])]
     slugs = [p.slug for p in projects]
     if len(slugs) != len(set(slugs)):
@@ -302,5 +330,6 @@ def load_config(path: str | Path) -> AppConfig:
         sources=sources,
         ollama=ollama,
         searxng=searxng,
+        outbound=outbound,
         projects=projects,
     )

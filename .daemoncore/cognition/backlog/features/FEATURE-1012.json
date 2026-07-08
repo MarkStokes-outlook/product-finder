@@ -1,0 +1,21 @@
+{
+  "id": "FEATURE-1012",
+  "epic_id": "EPIC-101",
+  "title": "Click event storage for audit/analytics",
+  "description": "Add a listing_clicks table and record one row per redirect: listing_id, clicked_at, source, context (which surface the click came from), and a nullable user_id FK reserved for Phase 3 attribution.",
+  "status": "done",
+  "phase": 1,
+  "domain": "web-api",
+  "area": "affiliate",
+  "tags": ["adr-0002", "migration", "analytics"],
+  "user_story_ids": [],
+  "acceptance_criteria": [
+    "New listing_clicks table added via the existing additive _MIGRATIONS pattern in db.py (idempotent, no separate migration tool introduced)",
+    "Every successful /out/<listing_id> redirect writes exactly one listing_clicks row before issuing the 302",
+    "listing_clicks.user_id is nullable and always NULL until Phase 3 (EPIC-103) begins writing it",
+    "listing_clicks.context records which page/surface the click originated from (dashboard/project/auctions at minimum)",
+    "No PII beyond an optional hashed IP is stored; raw IP addresses are not persisted",
+    "A failed click-record write does not prevent the redirect from completing (never block the user's navigation on analytics)"
+  ],
+  "notes": "See docs/adr/0002-affiliate-link-redirect-and-tracking.md. Table shape anticipates Phase 3 (EPIC-103) attribution without requiring a second migration. Shipped 2026-07-08: the acceptance criteria's '_MIGRATIONS pattern' was imprecise — _MIGRATIONS is ALTER-TABLE-ADD-COLUMN-only in db.py; a brand new table follows the existing CREATE TABLE IF NOT EXISTS pattern in _SCHEMA instead (same as auction_snapshots/source_runs), which is what shipped. context covers dashboard/project/auctions/offers/duplicate_review/unknown — offers and duplicate_review added beyond the minimum named here per the broader gateway brief. Hashed-IP storage was evaluated and deliberately not implemented (no abuse/fraud need identified yet for a single-operator tool; adding a column nobody populates contradicts 'minimum schema needed') — see implementation notes for the full reasoning: docs/implementation-notes/2026-07-08-2135-marketplace-outbound-gateway-epic-101.md."
+}
