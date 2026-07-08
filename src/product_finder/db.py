@@ -2388,6 +2388,156 @@ def source_coverage(conn: sqlite3.Connection) -> dict[str, dict]:
     return coverage
 
 
+# Why this isn't computed: listing_matches.matched_at is stamped once, at
+# INSERT time — a listing's very first scan, which under the current
+# synchronous match-on-ingest pipeline (runner.run_once calls
+# db.record_match on every listing every cycle) always coincides with
+# first_seen. product_id, by contrast, IS overwritten on every rescan
+# (db.record_match's UPDATE path) — so a listing that starts unmatched and
+# later resolves to a catalogue product (e.g. once the catalogue grows)
+# silently gains a product_id with no record of *when* that happened.
+# There is no honest way to answer "how long after first being seen did
+# this source's listings typically get catalogued" from what's persisted
+# today. Would need a separate catalogue_matched_at column on
+# listing_matches, set once when product_id first transitions from NULL to
+# non-NULL, to compute this without guessing.
+TIME_TO_FIRST_MATCH_UNAVAILABLE = (
+    "Not tracked: matched_at is stamped once at first scan (always ~equal "
+    "to first_seen), and product_id is silently overwritten on every "
+    "rescan with no timestamp for when a catalogue match first became "
+    "true. Needs a dedicated catalogue_matched_at column, set once, to "
+    "compute honestly."
+)
+
+
+def source_coverage_analytics(conn: sqlite3.Connection) -> dict[str, dict]:
+    """Phase B ("Coverage Analytics") — rate-based metrics answering "which
+    source actually finds useful deals", not just "which returns the most
+    listings". Layered on top of source_coverage() rather than duplicating
+    its counts: two new lightweight GROUP BY queries (deal counts, resolved
+    -listing lifetimes, all-time price-observation counts) plus arithmetic
+    on numbers source_coverage() already computed. No per-listing scans, no
+    N+1 — safe for dashboard load.
+
+    Per source:
+    - total_sightings: every listing row ever recorded for this source,
+      before cross-source dedup (same figure as source_coverage's
+      listings_total, exposed under a name that matches what it measures
+      here).
+    - unique_listings: the subset that are the *primary* sighting of a
+      real-world item (is_primary_sighting=1) — total_sightings minus
+      source_coverage's hidden_duplicates.
+    - duplicate_suppression_pct: hidden_duplicates / total_sightings — how
+      much of what this source shows us turns out to be something another
+      sighting (same source or not) already covered.
+    - catalogue_match_pct: reused directly from source_coverage.
+    - deal_rate_pct: of this source's *primary* listings that were ever
+      evaluated against an item, the share whose most recent evaluation
+      met evaluation.under_target (listing_matches.under_target) — primary
+      only, so a deal isn't counted twice via a cross-source duplicate.
+    - stale_rate_pct: source_coverage's stale / total_sightings.
+    - avg_lifetime_days / lifetime_sample_size: mean days between
+      first_seen and a *resolved* end — end_time for a listing that's
+      actually ended, or last_seen for one that's gone stale (no end_time,
+      not rescanned in _STALE_AFTER_HOURS — the same "probably gone"
+      definition source_coverage's stale count uses). Still-live listings
+      being rescanned every cycle are excluded on purpose: their lifetime
+      hasn't concluded, so including "time since first seen" for them
+      would understate true lifetime and drift the average every cycle.
+      lifetime_sample_size is always reported alongside the average so a
+      figure backed by one resolved listing doesn't look as solid as one
+      backed by fifty. None (not 0) when no listing has resolved yet.
+    - price_history_coverage_pct: all-time product_price_observations for
+      this source, divided by matches_catalogued (source_coverage). This
+      is a ratio of aggregate counts, not a verified per-listing join —
+      observations are keyed by (product_id, source, observed_at), not by
+      listing_id, so it answers "roughly how much of what we catalogued
+      from this source ever produced a price data point", not an exact
+      per-listing figure.
+    - time_to_first_match: always None — see TIME_TO_FIRST_MATCH_UNAVAILABLE.
+    """
+    coverage = source_coverage(conn)
+    now = datetime.now(timezone.utc)
+    cutoff_stale = (now - timedelta(hours=_STALE_AFTER_HOURS)).isoformat(timespec="seconds")
+
+    analytics: dict[str, dict] = {}
+
+    def entry(source: str) -> dict:
+        return analytics.setdefault(source, {
+            "total_sightings": 0,
+            "unique_listings": 0,
+            "duplicate_suppression_pct": None,
+            "catalogue_match_pct": None,
+            "deal_rate_pct": None,
+            "stale_rate_pct": None,
+            "avg_lifetime_days": None,
+            "lifetime_sample_size": 0,
+            "price_history_coverage_pct": None,
+            "time_to_first_match": None,
+            "time_to_first_match_unavailable_reason": TIME_TO_FIRST_MATCH_UNAVAILABLE,
+        })
+
+    for source, cov in coverage.items():
+        e = entry(source)
+        e["total_sightings"] = cov["listings_total"]
+        e["unique_listings"] = cov["listings_total"] - cov["hidden_duplicates"]
+        if cov["listings_total"]:
+            e["duplicate_suppression_pct"] = round(
+                100 * cov["hidden_duplicates"] / cov["listings_total"]
+            )
+            e["stale_rate_pct"] = round(100 * cov["stale"] / cov["listings_total"])
+        e["catalogue_match_pct"] = cov["catalogue_match_pct"]
+
+    for row in conn.execute(
+        """
+        SELECT l.source AS source,
+               COUNT(*) AS evaluated,
+               SUM(CASE WHEN m.under_target = 1 THEN 1 ELSE 0 END) AS deals
+        FROM listing_matches m
+        JOIN listings l ON l.id = m.listing_id
+        WHERE l.is_primary_sighting = 1
+        GROUP BY l.source
+        """
+    ):
+        if row["evaluated"]:
+            entry(row["source"])["deal_rate_pct"] = round(
+                100 * row["deals"] / row["evaluated"]
+            )
+
+    for row in conn.execute(
+        """
+        SELECT source, AVG(lifetime_days) AS avg_days, COUNT(*) AS n
+        FROM (
+            SELECT l.source AS source,
+                   CASE
+                       WHEN l.end_time IS NOT NULL
+                            AND l.end_time <= strftime('%Y-%m-%dT%H:%M:%S', 'now')
+                       THEN julianday(l.end_time) - julianday(l.first_seen)
+                       WHEN l.end_time IS NULL AND l.last_seen < ?
+                       THEN julianday(l.last_seen) - julianday(l.first_seen)
+                   END AS lifetime_days
+            FROM listings l
+        )
+        WHERE lifetime_days IS NOT NULL
+        GROUP BY source
+        """,
+        (cutoff_stale,),
+    ):
+        e = entry(row["source"])
+        e["avg_lifetime_days"] = round(row["avg_days"], 1)
+        e["lifetime_sample_size"] = row["n"]
+
+    for row in conn.execute(
+        "SELECT source, COUNT(*) AS n FROM product_price_observations GROUP BY source"
+    ):
+        e = entry(row["source"])
+        matches_catalogued = coverage.get(row["source"], {}).get("matches_catalogued")
+        if matches_catalogued:
+            e["price_history_coverage_pct"] = round(100 * row["n"] / matches_catalogued)
+
+    return analytics
+
+
 def latest_activity(conn: sqlite3.Connection) -> str | None:
     """Latest listing timestamp seen by `watch`/`run-once` — a cheap "did a
     search just run" signal for the dashboard's live-polling JS. Every
