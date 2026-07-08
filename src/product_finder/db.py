@@ -1950,8 +1950,8 @@ SELECT p.name AS project_name, p.slug AS project_slug, p.id AS project_id,
        pr.typical_used_price, i.priority,
        pr.manufacturer AS product_manufacturer, pr.model AS product_model,
        pr.price_trend_pct, pr.price_trend_confidence,
-       l.title, l.price, l.currency, l.url, l.source, l.location, l.first_seen,
-       l.last_seen, l.end_time, l.bid_count, l.buying_options, l.image_url,
+       l.id AS listing_id, l.title, l.price, l.currency, l.url, l.source, l.location,
+       l.first_seen, l.last_seen, l.end_time, l.bid_count, l.buying_options, l.image_url,
        m.grade, m.deal_score, m.margin_abs, m.margin_pct, m.under_target, m.flags
 FROM listing_matches m
 JOIN listings l ON l.id = m.listing_id
@@ -2024,6 +2024,33 @@ def query_matches(
     tail = f" LIMIT {int(limit)}" if limit else ""
     return conn.execute(
         f"{_MATCH_SELECT} {where} ORDER BY {order}{tail}", params
+    ).fetchall()
+
+
+def list_active_auctions(conn: sqlite3.Connection, limit: int | None = None) -> list[sqlite3.Row]:
+    """Live auctions across every project, soonest-ending first — for the
+    Active Auctions view (see auction_trajectory.py for the per-row scoring
+    the web layer builds on top of this). Same exclusions as query_matches
+    (primary sighting, not ended, wanted); buying_options is a small fixed
+    set of values from real captures (FIXED_PRICE/AUCTION/BEST_OFFER/
+    CLASSIFIED_AD — see tests/fixtures/ebay/), so a LIKE match on the JSON
+    text is safe here without needing a join/subquery."""
+    tail = f" LIMIT {int(limit)}" if limit else ""
+    return conn.execute(
+        f"{_MATCH_SELECT} WHERE l.is_primary_sighting = 1 AND {_NOT_ENDED} AND {_WANTED} "
+        f"AND l.buying_options LIKE '%AUCTION%' "
+        f"ORDER BY (l.end_time IS NULL), l.end_time ASC{tail}"
+    ).fetchall()
+
+
+def list_offer_listings(conn: sqlite3.Connection, limit: int | None = None) -> list[sqlite3.Row]:
+    """Fixed-price listings that support Best Offer, most recently seen
+    first — for the Offers view (see offers.py)."""
+    tail = f" LIMIT {int(limit)}" if limit else ""
+    return conn.execute(
+        f"{_MATCH_SELECT} WHERE l.is_primary_sighting = 1 AND {_NOT_ENDED} AND {_WANTED} "
+        f"AND l.buying_options LIKE '%BEST_OFFER%' "
+        f"ORDER BY l.last_seen DESC{tail}"
     ).fetchall()
 
 

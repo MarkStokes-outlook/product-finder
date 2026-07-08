@@ -1,0 +1,41 @@
+{% extends "base.html" %}
+{% block title %}Active Auctions — Product Finder{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div>
+    <h1>Active Auctions</h1>
+    <p class="meta">Live bids across every project, soonest-ending first. Current bid is never a
+      committed price — see each auction's trajectory label and suggested bid ceiling.</p>
+  </div>
+</div>
+<div class="card table-card">
+<table>
+<thead><tr>
+  <th>Title</th><th>Project / Item</th><th>Current bid</th><th>Ends</th>
+  <th>Trajectory</th><th>Bid ceiling</th><th>Source</th>
+</tr></thead>
+<tbody>
+{% for a in auctions %}
+  {% set row = a.row %}
+  {% set t = a.trajectory %}
+  <tr>
+    <td>{% if row['image_url'] %}<img class="row-thumb" src="{{ row['image_url'] }}" alt=""
+          loading="lazy" referrerpolicy="no-referrer" onerror="this.remove()">{% endif %}
+      <a href="{{ row['url'] }}" target="_blank" rel="noopener">{{ row['title'] }}</a>
+      {% if row['product_manufacturer'] %}<br><span class="meta">{{ row['product_manufacturer'] }}{% if row['product_model'] %} {{ row['product_model'] }}{% endif %}</span>{% endif %}</td>
+    <td class="meta">{{ row['project_name'] }} / {{ row['item_name'] }}</td>
+    <td class="num"><strong>{% if a.current_bid is not none %}£{{ '%.2f' | format(a.current_bid) }}{% else %}&mdash;{% endif %}</strong>
+      {% if row['bid_count'] %}<br><span class="meta">{{ row['bid_count'] }} bids</span>{% endif %}</td>
+    <td class="meta">{% if row['end_time'] %}<span class="badge auction" data-ends="{{ row['end_time'] }}">…</span>{% else %}&mdash;{% endif %}</td>
+    <td><span class="badge {{ a.trajectory_css }}">{{ t.label }}</span>
+      <div class="meta">{{ t.explanation }}</div></td>
+    <td class="num">{% if t.bid_ceiling %}£{{ '%.0f' | format(t.bid_ceiling) }}{% else %}&mdash;{% endif %}</td>
+    <td class="meta">{{ row['source'] }}</td>
+  </tr>
+{% else %}
+  <tr><td colspan="7" class="empty">No live auctions being tracked right now.</td></tr>
+{% endfor %}
+</tbody>
+</table>
+</div>
+{% endblock %}

@@ -1,0 +1,40 @@
+{% extends "base.html" %}
+{% block title %}Offers — Product Finder{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div>
+    <h1>Offers</h1>
+    <p class="meta">Fixed-price listings that accept Best Offer, with suggested safe/normal/cheeky
+      prices. Suggestions only — nothing here submits an offer.</p>
+  </div>
+</div>
+<div class="card table-card">
+<table>
+<thead><tr>
+  <th>Title</th><th>Project / Item</th><th>Asking</th><th>Safe</th><th>Normal</th><th>Cheeky</th>
+  <th>Confidence</th><th>Source</th>
+</tr></thead>
+<tbody>
+{% for o in offers %}
+  {% set row = o.row %}
+  {% set s = o.suggestion %}
+  <tr>
+    <td>{% if row['image_url'] %}<img class="row-thumb" src="{{ row['image_url'] }}" alt=""
+          loading="lazy" referrerpolicy="no-referrer" onerror="this.remove()">{% endif %}
+      <a href="{{ row['url'] }}" target="_blank" rel="noopener">{{ row['title'] }}</a>
+      <div class="meta">{{ s.explanation }}</div></td>
+    <td class="meta">{{ row['project_name'] }} / {{ row['item_name'] }}</td>
+    <td class="num">£{{ '%.2f' | format(row['price']) }}</td>
+    <td class="num">{% if s.safe_offer %}£{{ '%.0f' | format(s.safe_offer) }}{% else %}&mdash;{% endif %}</td>
+    <td class="num">{% if s.normal_offer %}£{{ '%.0f' | format(s.normal_offer) }}{% else %}&mdash;{% endif %}</td>
+    <td class="num">{% if s.cheeky_offer %}£{{ '%.0f' | format(s.cheeky_offer) }}{% else %}&mdash;{% endif %}</td>
+    <td><span class="badge grade-{{ 'A' if s.confidence == 'high' else ('B' if s.confidence == 'medium' else 'unknown') }}">{{ s.confidence }}</span></td>
+    <td class="meta">{{ row['source'] }}</td>
+  </tr>
+{% else %}
+  <tr><td colspan="8" class="empty">No Best Offer listings being tracked right now.</td></tr>
+{% endfor %}
+</tbody>
+</table>
+</div>
+{% endblock %}

@@ -131,6 +131,14 @@ td.num { text-align: right; font-variant-numeric: tabular-nums; white-space: now
                              border-color: rgb(248 113 113 / .45);
                              animation: blink 1.4s ease-in-out infinite; }
 @keyframes blink { 50% { opacity: .55; } }
+/* Auction trajectory labels (auction_trajectory.py) — same palette as the
+   grade badges: green = actionable good, amber = caution, red = stop. */
+.badge.traj-unknown { background: var(--surface-2); color: var(--muted); }
+.badge.traj-early { background: var(--surface-2); color: var(--muted); }
+.badge.traj-potential { background: var(--accent-soft); color: var(--accent); }
+.badge.traj-bargain { background: var(--green-soft); color: var(--green-bright); }
+.badge.traj-hot { background: var(--amber-soft); color: var(--amber); }
+.badge.traj-no-deal { background: var(--red-soft); color: var(--red); }
 .chip-new { display: inline-block; padding: .06rem .45rem; border-radius: 999px;
             font-size: .68rem; font-weight: 600;
             color: var(--accent); border: 1px solid rgb(139 147 248 / .45);
@@ -337,7 +345,8 @@ details.warnings[open] > summary::before { content: "▾ "; }
 <nav>
   <span class="brand">Product<em>Finder</em></span>
   {% for endpoint, label in [('dashboard', 'Dashboard'), ('projects', 'Projects'),
-                             ('catalogue_review', 'Catalogue'),
+                             ('catalogue_review', 'Catalogue'), ('auctions', 'Active Auctions'),
+                             ('offers_view', 'Offers'),
                              ('manual', 'Manual searches'), ('source_list', 'Sources')] %}
   <a href="{{ url_for(endpoint) }}"{% if request.endpoint == endpoint %} class="active"{% endif %}>{{ label }}</a>
   {% endfor %}

@@ -1091,3 +1091,111 @@ def test_dashboard_shows_pending_duplicates_note(cfg, client):
 def test_missing_duplicate_404s(cfg, client):
     seed_duplicate_pair(cfg)
     assert client.post("/duplicates/999/confirm").status_code == 404
+
+
+# --- Active Auctions / Offers (Coverage phase) --------------------------------
+
+
+def test_auctions_page_empty(client):
+    resp = client.get("/auctions")
+    assert resp.status_code == 200
+    assert b"No live auctions being tracked" in resp.data
+
+
+def test_auctions_page_shows_live_auction_with_trajectory(cfg, client):
+    project_id, item_id = seed_match(cfg)
+    conn = db.connect(cfg.db_path)
+    listing_id, _ = db.upsert_listing(
+        conn,
+        Listing(source="ebay", external_id="AUC1", title="Bosch drill, live auction",
+                price=90.0, url="https://example.com/auc1",
+                buying_options=["AUCTION"], bid_count=5, end_time="2099-01-01T12:00:00Z"),
+    )
+    db.record_match(conn, listing_id, item_id, Evaluation(
+        grade="B", flags=["live auction"], margin_abs=110, margin_pct=55,
+        under_target=False, deal_score=50.0))
+    db.record_auction_snapshot(conn, listing_id, source="ebay", current_bid_price=90.0, bid_count=5)
+    conn.commit()
+
+    resp = client.get("/auctions")
+    assert resp.status_code == 200
+    assert b"Bosch drill, live auction" in resp.data
+    assert b"5 bids" in resp.data
+    assert b'data-ends="2099-01-01T12:00:00Z"' in resp.data
+    assert b"badge traj-" in resp.data  # some trajectory label rendered
+
+
+def test_auctions_page_uses_latest_snapshot_for_current_bid(cfg, client):
+    project_id, item_id = seed_match(cfg)
+    conn = db.connect(cfg.db_path)
+    listing_id, _ = db.upsert_listing(
+        conn,
+        Listing(source="ebay", external_id="AUC2", title="Rising bid auction",
+                price=20.0, url="https://example.com/auc2",
+                buying_options=["AUCTION"], bid_count=3, end_time="2099-01-01T12:00:00Z"),
+    )
+    db.record_match(conn, listing_id, item_id, Evaluation(
+        grade="B", flags=["live auction"], margin_abs=0, margin_pct=0,
+        under_target=False, deal_score=50.0))
+    db.record_auction_snapshot(conn, listing_id, source="ebay", current_bid_price=20.0, bid_count=1)
+    db.record_auction_snapshot(conn, listing_id, source="ebay", current_bid_price=35.0, bid_count=3)
+    conn.commit()
+
+    resp = client.get("/auctions")
+    assert b"\xc2\xa335.00" in resp.data  # latest snapshot, not the stale listing price of 20.0
+
+
+def test_ended_auction_excluded_from_active_auctions_page(cfg, client):
+    project_id, item_id = seed_match(cfg)
+    conn = db.connect(cfg.db_path)
+    listing_id, _ = db.upsert_listing(
+        conn,
+        Listing(source="ebay", external_id="AUC3", title="Ended auction listing",
+                price=20.0, url="https://example.com/auc3",
+                buying_options=["AUCTION"], bid_count=3, end_time="2000-01-01T12:00:00Z"),
+    )
+    db.record_match(conn, listing_id, item_id, Evaluation(
+        grade="B", flags=["live auction"], margin_abs=0, margin_pct=0,
+        under_target=False, deal_score=50.0))
+    conn.commit()
+
+    resp = client.get("/auctions")
+    assert b"Ended auction listing" not in resp.data
+
+
+def test_offers_page_empty(client):
+    resp = client.get("/offers")
+    assert resp.status_code == 200
+    assert b"No Best Offer listings being tracked" in resp.data
+
+
+def test_offers_page_shows_best_offer_listing_with_suggestion(cfg, client):
+    project_id, item_id = seed_match(cfg)
+    conn = db.connect(cfg.db_path)
+    listing_id, _ = db.upsert_listing(
+        conn,
+        Listing(source="ebay", external_id="OFF1", title="Makita drill, best offer",
+                price=180.0, url="https://example.com/off1",
+                buying_options=["FIXED_PRICE", "BEST_OFFER"]),
+    )
+    db.record_match(conn, listing_id, item_id, Evaluation(
+        grade="A", flags=[], margin_abs=20, margin_pct=10, under_target=False, deal_score=40.0))
+    conn.commit()
+
+    resp = client.get("/offers")
+    assert resp.status_code == 200
+    assert b"Makita drill, best offer" in resp.data
+    assert b"\xc2\xa3180.00" in resp.data  # asking price shown
+    assert b"badge grade-" in resp.data  # confidence badge rendered
+
+
+def test_fixed_price_listing_without_best_offer_excluded(cfg, client):
+    seed_match(cfg)  # plain FIXED_PRICE listing, no BEST_OFFER
+    resp = client.get("/offers")
+    assert b"Makita SP6000 saw" not in resp.data
+
+
+def test_nav_includes_auctions_and_offers_links(client):
+    resp = client.get("/")
+    assert b"Active Auctions" in resp.data
+    assert b">Offers<" in resp.data

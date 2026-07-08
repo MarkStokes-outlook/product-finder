@@ -16,7 +16,7 @@ from flask import (
     url_for,
 )
 
-from .. import db, project_import, retailer_price, runner, sources
+from .. import auction_trajectory, db, offers, project_import, retailer_price, runner, sources
 from ..config import AppConfig, ItemConfig
 
 # Deals scoring at or above this are "hot" — matches the excellent/hi score
@@ -133,6 +133,72 @@ def _dashboard_data(conn, cfg: AppConfig) -> dict:
         "stats": db.dashboard_stats(conn),
         "pending_duplicates": db.pending_duplicate_counts(conn),
     }
+
+
+# Maps auction_trajectory labels to a badge CSS modifier class — computed in
+# Python, not Jinja string-matching, since labels are plain-English sentences.
+_TRAJECTORY_CSS = {
+    auction_trajectory.LABEL_INSUFFICIENT_DATA: "traj-unknown",
+    auction_trajectory.LABEL_EARLY_WATCH: "traj-early",
+    auction_trajectory.LABEL_POTENTIAL_DEAL: "traj-potential",
+    auction_trajectory.LABEL_LIKELY_BARGAIN: "traj-bargain",
+    auction_trajectory.LABEL_GETTING_HOT: "traj-hot",
+    auction_trajectory.LABEL_NO_LONGER_DEAL: "traj-no-deal",
+}
+
+
+def _auction_view(conn, row: dict) -> dict:
+    """Resolve one listings-row into its trajectory view-model: reference
+    price prefers the product's typical_used_price (real market evidence)
+    over the item's blended normal_price estimate, same convention as
+    scoring.effective_prices()."""
+    remaining = None
+    if row["end_time"]:
+        end_time = datetime.fromisoformat(row["end_time"].replace("Z", "+00:00"))
+        remaining = end_time - datetime.now(timezone.utc)
+    snapshots = db.list_auction_snapshots(conn, row["listing_id"])
+    # Best-effort current bid before the first poll snapshot exists: the
+    # listing's own price reflects search-time _price_value() fallback
+    # (BIN-or-bid), which is the best we have until a snapshot lands.
+    current_bid = snapshots[-1]["current_bid_price"] if snapshots else row["price"]
+    reference_price = row["typical_used_price"] or row["normal_price"]
+    reference_label = "typical used price" if row["typical_used_price"] else "estimated normal price"
+    trajectory = auction_trajectory.evaluate(
+        current_bid=current_bid,
+        bid_count=row["bid_count"],
+        remaining=remaining,
+        reference_price=reference_price,
+        reference_label=reference_label,
+        snapshots=snapshots,
+    )
+    return {
+        "row": row,
+        "current_bid": current_bid,
+        "trajectory": trajectory,
+        "trajectory_css": _TRAJECTORY_CSS.get(trajectory.label, "traj-unknown"),
+    }
+
+
+def _auctions_data(conn) -> dict:
+    return {"auctions": [_auction_view(conn, row) for row in db.list_active_auctions(conn, limit=200)]}
+
+
+def _offer_view(row: dict) -> dict:
+    reference_price = row["typical_used_price"] or row["normal_price"]
+    reference_label = "typical used price" if row["typical_used_price"] else "estimated normal price"
+    suggestion = offers.suggest_offers(
+        listing_price=row["price"],
+        reference_price=reference_price,
+        reference_label=reference_label,
+        grade=row["grade"],
+        verified=row["typical_used_price"] is not None,
+        supports_offers=True,  # list_offer_listings already filtered to BEST_OFFER
+    )
+    return {"row": row, "suggestion": suggestion}
+
+
+def _offers_data(conn) -> dict:
+    return {"offers": [_offer_view(row) for row in db.list_offer_listings(conn, limit=200)]}
 
 
 def _match_filters_from_request() -> dict:
@@ -290,6 +356,18 @@ def create_app(cfg: AppConfig) -> Flask:
     @app.route("/api/status")
     def api_status():
         return {"last_activity": db.latest_activity(_get_conn(cfg))}
+
+    # --- Active Auctions / Offers ------------------------------------------------
+
+    @app.route("/auctions")
+    def auctions():
+        conn = _get_conn(cfg)
+        return render_template("auctions.html", **_auctions_data(conn))
+
+    @app.route("/offers")
+    def offers_view():
+        conn = _get_conn(cfg)
+        return render_template("offers.html", **_offers_data(conn))
 
     # --- Sources ---------------------------------------------------------------
 
