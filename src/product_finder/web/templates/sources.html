@@ -44,6 +44,29 @@
 </table>
 </div>
 
+<h2>Capabilities</h2>
+<p class="hint">
+  What each connector can know, declared straight off its own
+  <code>SourceCapabilities</code> — never inferred, never duplicated as
+  separate UI logic. <strong>N/A</strong> means the connector only ever
+  produces manual search links (see the Sources table above), never a full
+  listing, so the question doesn't apply — it's not a claim that the answer
+  is unknown.
+</p>
+{% for s in rows %}
+<details class="listings">
+  <summary><strong>{{ s.label }}</strong> <span class="meta">{{ s.name }}</span></summary>
+  <div class="card cap-grid">
+    {% for label, status in s.caps.capability_checklist() %}
+    <div class="cap-row cap-{{ status }}">
+      <span class="cap-icon">{% if status == 'supported' %}&#10003;{% elif status == 'unsupported' %}&#10007;{% else %}&mdash;{% endif %}</span>
+      <span>{{ label }}{% if status == 'na' %} <span class="meta">(n/a)</span>{% endif %}</span>
+    </div>
+    {% endfor %}
+  </div>
+</details>
+{% endfor %}
+
 <h2>Coverage</h2>
 <p class="hint">
   What each source has actually contributed — this is what decides which connector

@@ -323,6 +323,20 @@ details.warnings > summary::-webkit-details-marker { display: none; }
 details.warnings > summary::before { content: "▸ "; }
 details.warnings[open] > summary::before { content: "▾ "; }
 
+/* Connector Capability Explorer — per-connector checklist inside a
+   details.listings fold (see above). Neutral colouring on purpose: unlike
+   a health badge, a capability being "unsupported" isn't inherently bad
+   (e.g. requires_user_auth=unsupported is good), so support/unsupported/na
+   are distinguished by icon and weight, not red/green judgement. */
+.cap-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+  gap: .35rem .9rem; padding: .7rem .9rem; }
+.cap-row { display: flex; align-items: center; gap: .5rem; font-size: .86rem; }
+.cap-icon { width: 1.1em; text-align: center; flex-shrink: 0; }
+.cap-supported .cap-icon { color: var(--green-bright); }
+.cap-unsupported .cap-icon { color: var(--muted); }
+.cap-unsupported { color: var(--muted); }
+.cap-na .cap-icon, .cap-na { color: var(--muted); opacity: .55; }
+
 /* Client-side pagination controls for long per-item listing tables. */
 .pagination { display: flex; align-items: center; justify-content: center; gap: .8rem;
               padding: .6rem 0 .2rem; }

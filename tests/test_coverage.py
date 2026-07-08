@@ -211,6 +211,48 @@ def test_sources_page_connector_stats_empty_state_for_unrun_source(cfg, client):
     assert b"not yet run" in resp.data
 
 
+def test_sources_page_renders_capabilities_from_source_capabilities(cfg, client):
+    resp = client.get("/sources")
+    assert resp.status_code == 200
+    assert b"Capabilities" in resp.data
+    data = resp.data.decode()
+    # eBay's checklist should include every label capability_checklist()
+    # produces - verifies the page reads the live method, not a hard-coded
+    # subset of labels baked into the template.
+    from product_finder import sources as sources_mod
+    from product_finder.config import AppConfig as _Cfg
+    caps = sources_mod.build_all(_Cfg(db_path=cfg.db_path))["ebay"].capabilities()
+    for label, _status in caps.capability_checklist():
+        assert label in data, label
+
+
+def _capabilities_section(data):
+    start = data.find("<h2>Capabilities</h2>")
+    end = data.find("<h2>Coverage</h2>")
+    assert start != -1 and end != -1 and start < end
+    return data[start:end]
+
+
+def test_sources_page_capabilities_shows_na_for_manual_assisted_listing_shape(cfg, client):
+    resp = client.get("/sources")
+    section = _capabilities_section(resp.data.decode())
+    # Gumtree's block should show "(n/a)" markers for listing-shape fields.
+    gumtree_start = section.find("Gumtree")
+    facebook_start = section.find("Facebook Marketplace")
+    gumtree_block = section[gumtree_start:facebook_start]
+    assert "(n/a)" in gumtree_block
+
+
+def test_sources_page_capabilities_supported_marker_for_ebay_auctions(cfg, client):
+    resp = client.get("/sources")
+    section = _capabilities_section(resp.data.decode())
+    ebay_start = section.find("eBay")
+    ebay_end = section.find("</details>", ebay_start)
+    ebay_block = section[ebay_start:ebay_end]
+    assert "Auctions" in ebay_block
+    assert "(n/a)" not in ebay_block  # eBay is automated - real values, not n/a
+
+
 def test_sources_page_renders_coverage_analytics_table(cfg, client):
     conn = db.connect(cfg.db_path)
     item_id = _seed_item(conn)
