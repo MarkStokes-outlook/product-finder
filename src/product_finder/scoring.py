@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 
-from . import grading, price_trend
+from . import grading, price_trend, spec_match
 from .catalogue import Product
 from .config import ItemConfig
 from .models import Evaluation, Listing
@@ -58,6 +58,33 @@ IMPLAUSIBLE_PRICE_RATIO = 0.12
 FLAG_IMPLAUSIBLE_PRICE = "price implausible for item"
 FLAG_LIVE_AUCTION = "live auction"
 FLAG_MULTI_ITEM = "multiple items / price range"
+
+# --- Spec/category contradiction penalties (2026-07-08) -------------------------
+# See spec_match.py for the extraction/comparison mechanism (generic: capacity-
+# to-component binding, technical-attribute families, category tagging — none
+# of it RAM-specific). This block only decides how much each *kind* of
+# contradiction should cost, which is a scoring-calibration decision, not an
+# extraction one — born from an item wanting "128GB DDR5 RAM" scoring ~77
+# against laptop listings ("Dell Latitude ... 8GB DDR4 RAM 128GB SSD") that
+# share surface tokens with the search terms but are a different product
+# entirely: wrong RAM capacity, wrong DDR generation, and a bare-component
+# item matching a complete system. See docs/implementation-notes/
+# 2026-07-08-*-spec-conflict-detection.md.
+#
+# Deliberately unverified-only (same gate as is_price_implausible and the
+# margin-decay tail below): a listing that already resolved to a specific,
+# human-approved catalogue product is trusted over a generic text heuristic.
+# Category disagreement is weighted heaviest — a component-vs-whole-system
+# mismatch is the most reliable of the three signals — but any one kind
+# already lands a real dent; several compounding (as in the RAM/laptop case)
+# floors the score, deliberately with no positive counterpart: matching
+# tokens/capacities never earns a bonus here, only contradicting ones cost.
+_CONFLICT_SEVERITY = {
+    spec_match.CONFLICT_CATEGORY: 45.0,
+    spec_match.CONFLICT_CAPACITY: 30.0,
+    spec_match.CONFLICT_SPEC: 25.0,
+}
+CONFLICT_PENALTY_CAP = 75.0
 
 
 def warning_flags(text: str) -> list[str]:
@@ -171,6 +198,28 @@ def is_price_implausible(price: float, normal_price: float | None, verified: boo
     return price < normal_price * IMPLAUSIBLE_PRICE_RATIO
 
 
+def _item_spec_text(item: ItemConfig) -> str:
+    """The closest thing an ItemConfig has to a spec sheet, for spec_match:
+    its name and search terms are what it's actually asking for; notes often
+    carry additional spec constraints ("ECC preferred", "12GB VRAM+")."""
+    return " ".join(filter(None, [item.name, " ".join(item.terms), item.notes]))
+
+
+def attribute_conflicts(item: ItemConfig, listing: Listing) -> list[spec_match.Conflict]:
+    """Contradictions between what `item` wants and what `listing`'s own
+    title/description/condition text states — see spec_match.py. Callers
+    should skip this for verified matches (see evaluate()): a listing that
+    already resolved to a specific, human-approved catalogue product is
+    trusted over this generic heuristic."""
+    wanted = spec_match.extract(_item_spec_text(item))
+    found = spec_match.extract(listing.text)
+    return spec_match.compare(wanted, found)
+
+
+def conflict_penalty(conflicts: list[spec_match.Conflict]) -> float:
+    return min(sum(_CONFLICT_SEVERITY[c.kind] for c in conflicts), CONFLICT_PENALTY_CAP)
+
+
 def deal_score(
     price: float,
     normal_price: float | None,
@@ -182,10 +231,14 @@ def deal_score(
     price_trend_pct: float | None = None,
     price_trend_confidence: float = 0.0,
     verified: bool = False,
+    spec_conflict_penalty: float = 0.0,
 ) -> float:
     """Score 0-100. Higher = better deal. `verified` means the listing
     resolved to a catalogue product, so the reference prices describe this
-    exact product rather than the item's blended estimate.
+    exact product rather than the item's blended estimate. `spec_conflict_penalty`
+    is the pre-summed result of conflict_penalty() — see attribute_conflicts()
+    and spec_match.py — subtracted below and also treated as disqualifying
+    the target/"under target" bonus, same as an ambiguous price.
 
     Deliberately objective: item priority is NOT part of the score — how much
     the operator wants an item belongs to ranking/spotlight selection, not to
@@ -196,18 +249,22 @@ def deal_score(
     score += margin_term(pct_below, verified)
     # The target bonus only ever rewards a price you could actually commit
     # to right now. A live auction's current bid, a bundle/range listing's
-    # ambiguous price, and an implausibly cheap unverified price all fail
-    # that test — the same three categories evaluate() refuses to mark
-    # under_target, kept in lockstep here.
+    # ambiguous price, an implausibly cheap unverified price, and a listing
+    # whose own spec contradicts the item (wrong capacity/generation, or a
+    # whole system standing in for a bare component) all fail that test —
+    # the same categories evaluate() refuses to mark under_target, kept in
+    # lockstep here.
     ambiguous_price = (
         FLAG_LIVE_AUCTION in flags
         or FLAG_MULTI_ITEM in flags
         or is_price_implausible(price, normal_price, verified)
+        or spec_conflict_penalty > 0
     )
     if target_deal_price and price <= target_deal_price and not ambiguous_price:
         score += TARGET_BONUS
     score += _GRADE_ADJUST.get(grade, 0.0)
     score -= min(len(flags) * 8.0, 30.0)
+    score -= spec_conflict_penalty
     if title and len(title.split()) < 3:
         score -= 5.0  # vague title
     if is_likely_false_bargain(price, normal_price, flags):
@@ -271,20 +328,30 @@ def evaluate(listing: Listing, item: ItemConfig, product: Product | None = None)
     multi_item = is_multi_item_or_price_range(listing)
     if multi_item:
         flags = flags + [FLAG_MULTI_ITEM]
+    # Spec/category contradictions (see spec_match.py) — unverified only: a
+    # listing already resolved to a specific, human-approved catalogue
+    # product is trusted over this generic text heuristic.
+    conflicts = [] if verified else attribute_conflicts(item, listing)
+    spec_penalty = conflict_penalty(conflicts)
+    if conflicts:
+        flags = flags + [c.message for c in conflicts]
     margin_abs, margin_pct = margins(listing.price, normal_price)
     # Never a confirmed "target met" off a price that isn't a committed,
     # unambiguous price for this exact item: a live auction's current bid
     # can still rise (see is_live_auction), a bundle/range listing's price
-    # may apply to any item in it or either end of the range, and an
-    # implausibly cheap unverified price is almost certainly not this
-    # item's price at all. deal_score() withholds the target bonus for the
-    # same three categories.
+    # may apply to any item in it or either end of the range, an implausibly
+    # cheap unverified price is almost certainly not this item's price at
+    # all, and a listing whose own spec contradicts the item (wrong
+    # capacity/generation, or a whole system standing in for a bare
+    # component) isn't "this item" in the first place. deal_score()
+    # withholds the target bonus for the same categories.
     under_target = bool(
         target_deal_price
         and listing.price <= target_deal_price
         and not live_auction
         and not multi_item
         and not implausible
+        and not conflicts
     )
     score = deal_score(
         price=listing.price,
@@ -297,6 +364,7 @@ def evaluate(listing: Listing, item: ItemConfig, product: Product | None = None)
         price_trend_pct=product.price_trend_pct if product else None,
         price_trend_confidence=product.price_trend_confidence if product else 0.0,
         verified=verified,
+        spec_conflict_penalty=spec_penalty,
     )
     return Evaluation(
         grade=grade,

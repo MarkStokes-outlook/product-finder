@@ -1,3 +1,5 @@
+import pytest
+
 from product_finder import grading, price_trend, scoring
 from product_finder.catalogue import Product
 from product_finder.config import ItemConfig
@@ -453,3 +455,92 @@ def test_live_auction_never_beats_fixed_price_on_score():
         item, product,
     )
     assert fixed.deal_score > auction.deal_score
+
+
+# --- Spec/category conflict detection (see spec_match.py) ---------------------
+# Regression coverage for the false-positive class where a listing shares
+# surface tokens with an item's search terms ("128GB", "RAM") but is a
+# structurally different product — a laptop's spec-sheet title, not a bare
+# memory module.
+
+
+def make_ram_item(**overrides):
+    defaults = dict(
+        name="128GB DDR5 RAM",
+        terms=["128gb ddr5", "128gb ram", "4x32gb ddr5", "2x64gb ddr5"],
+        max_price=350,
+        normal_price=275,
+        target_deal_price=220,
+        priority="normal",
+    )
+    defaults.update(overrides)
+    return ItemConfig(**defaults)
+
+
+@pytest.mark.parametrize("laptop_title", [
+    "Dell Latitude 5420 i5 8GB DDR4 RAM 128GB SSD",
+    "Lenovo ThinkPad T480 i5 8GB DDR4 RAM 128GB SSD",
+    "Microsoft Surface Laptop 3 8GB DDR4 RAM 128GB SSD",
+])
+def test_laptop_listings_no_longer_score_as_good_ram_deals(laptop_title):
+    # The reported case: these were scoring ~77 (a price well under normal_price
+    # and under target_deal_price, clean condition) despite being laptops, not
+    # RAM sticks. A wrong-generation, wrong-capacity, wrong-category listing
+    # should land at the score floor, not read as an attractive deal.
+    item = make_ram_item()
+    ev = scoring.evaluate(make_listing(laptop_title, 180.0), item)
+    assert ev.deal_score <= 15.0
+    assert ev.under_target is False
+
+
+def test_laptop_listing_flags_all_three_conflict_kinds():
+    item = make_ram_item()
+    ev = scoring.evaluate(make_listing("Dell Latitude 5420 8GB DDR4 RAM 128GB SSD", 180.0), item)
+    joined = " ".join(ev.flags)
+    assert "capacity mismatch" in joined
+    assert "ram generation mismatch" in joined
+    assert "category mismatch" in joined
+
+
+def test_genuine_ram_listing_unaffected_by_conflict_detection():
+    # Positive control: a real, consistent RAM listing must not be penalised.
+    item = make_ram_item()
+    ev = scoring.evaluate(
+        make_listing("Corsair Vengeance 128GB (4x32GB) DDR5 6000MHz Desktop Memory", 180.0), item
+    )
+    assert ev.deal_score > 60.0
+    assert not any("mismatch" in f for f in ev.flags)
+
+
+def test_ssd_vs_hdd_category_mismatch_scores_poorly():
+    item = make_item(name="2TB SSD", terms=["2tb ssd", "2tb nvme"], normal_price=150,
+                      target_deal_price=100, max_price=180, exclude_terms=[])
+    ev = scoring.evaluate(make_listing("Seagate 2TB HDD external hard drive", 70.0), item)
+    assert ev.deal_score <= 25.0
+
+
+def test_conflict_penalty_skipped_for_verified_product_match():
+    # A listing that already resolved to a specific, human-approved catalogue
+    # product is trusted over the generic text heuristic — even if its title
+    # happens to also contain a system-ish word.
+    item = make_ram_item()
+    product = make_product(
+        manufacturer="Corsair", model="Vengeance 128GB DDR5",
+        match_terms=["corsair vengeance 128gb ddr5"], typical_new_price=275,
+    )
+    # Deliberately mentions "desktop tower" (a system keyword) — would trip a
+    # category conflict if this were unverified.
+    ev = scoring.evaluate(
+        make_listing("Corsair Vengeance 128GB DDR5 pulled from desktop tower build", 180.0),
+        item, product,
+    )
+    assert not any("mismatch" in f for f in ev.flags)
+
+
+def test_attribute_conflicts_helper_is_generic_not_ram_specific():
+    # Same mechanism, a completely different component pairing — nothing in
+    # scoring.attribute_conflicts()/spec_match.py special-cases RAM.
+    item = make_item(name="16GB VRAM Graphics Card", terms=["16gb vram gpu"], exclude_terms=[])
+    listing = make_listing("Laptop with 16GB System RAM, good condition", 100.0)
+    conflicts = scoring.attribute_conflicts(item, listing)
+    assert any(c.kind == "category" for c in conflicts)
