@@ -421,6 +421,7 @@ def create_app(cfg: AppConfig) -> Flask:
             })
         for row in rows:
             row["caps"] = connectors[row["name"]].capabilities()
+            row["knowledge"] = connectors[row["name"]].knowledge()
             row["health"] = health.get(row["name"])
             row["coverage"] = coverage.get(row["name"])
             row["analytics"] = analytics.get(row["name"])

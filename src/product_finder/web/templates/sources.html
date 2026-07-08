@@ -80,6 +80,69 @@
 </details>
 {% endfor %}
 
+<h2>Connector Knowledge</h2>
+<p class="hint">
+  The engineering reference for each connector — identity, what it can
+  actually do today, and where it's known to fall short or headed next.
+  Declared on the connector itself (<code>ConnectorKnowledge</code>), not
+  written separately here. Fields already covered by the Capabilities
+  section above (schedule, freshness, rate-limit posture, auth, account
+  risk) are shown from <code>SourceCapabilities</code> directly rather than
+  repeated as a second copy.
+</p>
+{% for s in rows %}
+<details class="listings">
+  <summary>
+    <strong>{{ s.knowledge.display_name }}</strong>
+    <span class="badge grade-unknown">{{ s.knowledge.maturity }}</span>
+    <span class="meta">{{ s.knowledge.implementation_type }}</span>
+  </summary>
+  <div class="card knowledge-card">
+    <p>{{ s.knowledge.description }}</p>
+
+    <h3>Operational characteristics</h3>
+    <ul class="plain-list">
+      <li><strong>Recommended schedule:</strong> {{ s.caps.recommended_schedule }}</li>
+      <li><strong>Expected freshness:</strong> {{ s.caps.freshness }}</li>
+      <li><strong>Rate-limit posture:</strong> {{ s.caps.rate_limit_class }}</li>
+      <li><strong>Authentication:</strong>
+        {% if s.caps.requires_user_auth %}Personal user session/credentials required
+        {% elif s.caps.is_official_api %}Application credentials (API key), no personal login
+        {% elif s.caps.requires_manual_input %}None — human searches manually, this connector never touches credentials
+        {% else %}None
+        {% endif %}
+      </li>
+      <li><strong>Account/compliance risk:</strong> {{ s.caps.account_risk }} ({{ s.caps.compliance_mode }})</li>
+    </ul>
+
+    {% if s.knowledge.supported_listing_types or s.knowledge.supported_marketplaces or s.knowledge.supported_search_features %}
+    <h3>Current functionality</h3>
+    <ul class="plain-list">
+      {% if s.knowledge.supported_listing_types %}<li><strong>Listing types:</strong> {{ s.knowledge.supported_listing_types | join(', ') }}</li>{% endif %}
+      {% if s.knowledge.supported_marketplaces %}<li><strong>Marketplaces:</strong> {{ s.knowledge.supported_marketplaces | join(', ') }}</li>{% endif %}
+      {% if s.knowledge.supported_search_features %}<li><strong>Search features:</strong> {{ s.knowledge.supported_search_features | join('; ') }}</li>{% endif %}
+    </ul>
+    {% endif %}
+
+    {% if s.knowledge.known_limitations %}
+    <h3>Known limitations</h3>
+    <ul class="plain-list">
+      {% for item in s.knowledge.known_limitations %}<li>{{ item }}</li>{% endfor %}
+    </ul>
+    {% endif %}
+
+    {% if s.knowledge.planned_work or s.knowledge.intentionally_unsupported or s.knowledge.investigation_items %}
+    <h3>Future / enhancement notes</h3>
+    <ul class="plain-list">
+      {% for item in s.knowledge.planned_work %}<li><strong>Planned:</strong> {{ item }}</li>{% endfor %}
+      {% for item in s.knowledge.intentionally_unsupported %}<li><strong>Intentionally unsupported:</strong> {{ item }}</li>{% endfor %}
+      {% for item in s.knowledge.investigation_items %}<li><strong>Worth investigating:</strong> {{ item }}</li>{% endfor %}
+    </ul>
+    {% endif %}
+  </div>
+</details>
+{% endfor %}
+
 <h2>Coverage</h2>
 <p class="hint">
   What each source has actually contributed — this is what decides which connector

@@ -359,3 +359,62 @@ def test_sources_page_no_status_badge_for_unrun_source(cfg, client):
 def test_sources_page_health_hint_discloses_failure_classification_gap(cfg, client):
     resp = client.get("/sources")
     assert b"never specifically" in resp.data or b"not classified" in resp.data.lower() or b"classified by cause" in resp.data
+
+
+# --- Connector Knowledge (roadmap Phase E) ------------------------------------
+
+
+def _knowledge_section(data):
+    start = data.find("<h2>Connector Knowledge</h2>")
+    end = data.find("<h2>Coverage</h2>")
+    assert start != -1 and end != -1 and start < end
+    return data[start:end]
+
+
+def test_sources_page_renders_connector_knowledge_from_the_dataclass(cfg, client):
+    resp = client.get("/sources")
+    assert resp.status_code == 200
+    section = _knowledge_section(resp.data.decode())
+    # Spot-check content that only exists in ebay.py's knowledge() - proves
+    # the page is reading the live method, not hard-coded template text.
+    assert "Official eBay Browse API client" in section
+    assert "EBAY_GB" in section
+    assert "Only the first 50 results" in section
+
+
+def test_sources_page_connector_knowledge_shows_maturity_and_implementation_type(cfg, client):
+    resp = client.get("/sources")
+    section = _knowledge_section(resp.data.decode())
+    ebay_start = section.find("eBay")
+    ebay_end = section.find("</details>", ebay_start)
+    ebay_block = section[ebay_start:ebay_end]
+    assert "production" in ebay_block
+    assert "Official REST API client" in ebay_block
+
+
+def test_sources_page_connector_knowledge_reuses_capabilities_no_duplicate_fields(cfg, client):
+    # Operational characteristics (schedule/freshness/rate-limit/risk) must
+    # come from SourceCapabilities, not a second copy on ConnectorKnowledge.
+    resp = client.get("/sources")
+    section = _knowledge_section(resp.data.decode())
+    ebay_start = section.find("eBay")
+    ebay_end = section.find("</details>", ebay_start)
+    ebay_block = section[ebay_start:ebay_end]
+    assert "every watch cycle" in ebay_block  # caps.recommended_schedule
+    assert "realtime" in ebay_block  # caps.freshness
+    assert "official-api-standard" in ebay_block  # caps.rate_limit_class
+
+
+def test_sources_page_connector_knowledge_omits_empty_sections(cfg, client):
+    # Gumtree declares no planned_work - that heading shouldn't appear in
+    # its own block even though other connectors' blocks have one. Anchor
+    # on the summary heading, not a bare "Gumtree" substring - eBay's own
+    # known_limitations text mentions "Gumtree/Facebook's postcode+radius"
+    # and would otherwise match first.
+    resp = client.get("/sources")
+    section = _knowledge_section(resp.data.decode())
+    gumtree_start = section.find("<strong>Gumtree</strong>")
+    facebook_start = section.find("<strong>Facebook Marketplace</strong>")
+    assert gumtree_start != -1 and facebook_start != -1
+    gumtree_block = section[gumtree_start:facebook_start]
+    assert "<strong>Planned:</strong>" not in gumtree_block
