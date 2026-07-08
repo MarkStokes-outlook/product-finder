@@ -29,6 +29,7 @@ logs/
 
 # product-finder — local runtime
 .venv/
+.DS_Store
 config.yaml
 data/*.db
 data/*.db-wal
