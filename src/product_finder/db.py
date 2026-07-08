@@ -2195,6 +2195,16 @@ def record_source_run(
     conn.commit()
 
 
+#: How many of a source's most recent runs feed recent_avg_duration_ms/
+#: recent_avg_listings_found (source_health, below) — a sampling parameter
+#: for what counts as "recent" (owned here, alongside the query that
+#: produces it), not a health-model threshold (those live in
+#: connector_health.py and are expressed purely in terms of the numbers
+#: this module publishes, so neither module needs to import constants from
+#: the other).
+_RECENT_RUN_SAMPLE_SIZE = 5
+
+
 def source_health(conn: sqlite3.Connection) -> dict[str, dict]:
     """Per-connector health, keyed by source name.
 
@@ -2209,9 +2219,18 @@ def source_health(conn: sqlite3.Connection) -> dict[str, dict]:
       as it already had no last_success_at.
 
     No health score or status here — raw telemetry only. Turning this into
-    an explainable Healthy/Warning/Degraded/Offline model is a separate
-    scoring step (roadmap Phase D), built on top of these numbers rather
-    than duplicating them.
+    an explainable Healthy/Warning/Degraded/Offline model
+    (connector_health.py, roadmap Phase D) is built on top of these
+    numbers rather than duplicating them — including recent_avg_duration_ms/
+    recent_avg_listings_found/recent_run_count below, which exist
+    specifically so Phase D can compare a connector against its *own*
+    recent history rather than an arbitrary cross-connector number (an
+    RSS feed and the eBay API have very different normal latencies, so an
+    absolute latency threshold would be unfair to one or meaningless for
+    the other). recent_* covers the most recent _RECENT_RUN_SAMPLE_SIZE
+    runs still in the retention window (fewer if the source doesn't have
+    that many yet) — free to compute in the same pass as everything else
+    above, since rows already arrive ordered newest-first per source.
 
     Sources with no recorded runs simply aren't present — the UI shows them
     as "not yet run"."""
@@ -2252,6 +2271,9 @@ def source_health(conn: sqlite3.Connection) -> dict[str, dict]:
                 "avg_duplicates": None,
                 "avg_catalogue_matches": None,
                 "avg_deals_found": None,
+                "recent_avg_duration_ms": None,
+                "recent_avg_listings_found": None,
+                "recent_run_count": 0,
                 "_streak_open": True,
                 "_sum_duration_ms": 0,
                 "_sum_listings": 0,
@@ -2259,6 +2281,8 @@ def source_health(conn: sqlite3.Connection) -> dict[str, dict]:
                 "_sum_duplicates": 0,
                 "_sum_catalogue_matches": 0,
                 "_sum_deals_found": 0,
+                "_recent_duration_ms": [],
+                "_recent_listings": [],
             },
         )
         h["total_runs"] += 1
@@ -2282,6 +2306,9 @@ def source_health(conn: sqlite3.Connection) -> dict[str, dict]:
         h["_sum_duplicates"] += row["duplicates"]
         h["_sum_catalogue_matches"] += row["catalogue_matches"]
         h["_sum_deals_found"] += row["deals_found"]
+        if len(h["_recent_duration_ms"]) < _RECENT_RUN_SAMPLE_SIZE:
+            h["_recent_duration_ms"].append(row["duration_ms"])
+            h["_recent_listings"].append(row["listings"])
     for h in health.values():
         del h["_streak_open"]
         n = h["total_runs"]
@@ -2292,8 +2319,14 @@ def source_health(conn: sqlite3.Connection) -> dict[str, dict]:
         h["avg_duplicates"] = round(h["_sum_duplicates"] / n, 1) if n else None
         h["avg_catalogue_matches"] = round(h["_sum_catalogue_matches"] / n, 1) if n else None
         h["avg_deals_found"] = round(h["_sum_deals_found"] / n, 1) if n else None
+        recent_n = len(h["_recent_duration_ms"])
+        h["recent_run_count"] = recent_n
+        if recent_n:
+            h["recent_avg_duration_ms"] = round(sum(h["_recent_duration_ms"]) / recent_n)
+            h["recent_avg_listings_found"] = round(sum(h["_recent_listings"]) / recent_n, 1)
         for key in ("_sum_duration_ms", "_sum_listings", "_sum_new_listings",
-                    "_sum_duplicates", "_sum_catalogue_matches", "_sum_deals_found"):
+                    "_sum_duplicates", "_sum_catalogue_matches", "_sum_deals_found",
+                    "_recent_duration_ms", "_recent_listings"):
             del h[key]
     return health
 

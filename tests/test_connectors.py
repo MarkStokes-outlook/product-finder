@@ -206,6 +206,32 @@ def test_source_health_reports_success_rate_and_averages(tmp_path):
     assert h["last_failed_at"] is not None
 
 
+def test_source_health_recent_window_tracks_most_recent_runs_only(tmp_path):
+    cfg = _cfg(tmp_path)
+    conn = db.connect(cfg.db_path)
+    # 7 runs, but the recent window (_RECENT_RUN_SAMPLE_SIZE=5) should only
+    # ever reflect the 5 most recent ones - the two oldest (duration 10, 20)
+    # must not pull the recent average down.
+    for duration in (10, 20, 100, 100, 100, 100, 100):
+        db.record_source_run(conn, "s", searches=1, listings=1, duration_ms=duration)
+    h = db.source_health(conn)["s"]
+    assert h["total_runs"] == 7
+    assert h["recent_run_count"] == 5
+    assert h["recent_avg_duration_ms"] == 100
+    assert h["avg_duration_ms"] < 100  # full-window baseline still pulled down by the old runs
+
+
+def test_source_health_recent_window_capped_by_available_runs(tmp_path):
+    cfg = _cfg(tmp_path)
+    conn = db.connect(cfg.db_path)
+    db.record_source_run(conn, "s", searches=1, listings=3, duration_ms=50)
+    db.record_source_run(conn, "s", searches=1, listings=5, duration_ms=70)
+    h = db.source_health(conn)["s"]
+    assert h["recent_run_count"] == 2
+    assert h["recent_avg_listings_found"] == 4.0
+    assert h["recent_avg_duration_ms"] == 60
+
+
 def test_source_health_has_no_score_or_status_field(tmp_path):
     # Phase A is raw metrics only — health scoring/status is a separate,
     # explainable model (roadmap Phase D), not decided here.
