@@ -296,6 +296,18 @@ def test_accessory_title_share_word_boundaries():
     assert catalogue.accessory_title_share(["Carbide tipped mitre saw"]) == 0.0
 
 
+def test_find_accessory_keyword_matches_plural_cables():
+    # Regression: "cable" alone missed "Power Supply Cables" entirely (word-
+    # boundary matching means "cable" doesn't match inside "Cables").
+    assert catalogue.find_accessory_keyword(
+        "Corsair Type 4 HX RMx RMi SF Series GPU PCIe PSU Power Supply Cables"
+    ) == "cables"
+
+
+def test_find_accessory_keyword_none_when_nothing_matches():
+    assert catalogue.find_accessory_keyword("Makita LS1019L mitre saw") is None
+
+
 def test_accessory_priced_product_is_suspect(tmp_path):
     cfg, conn, item_id = _setup(tmp_path)
     conn.execute("UPDATE items SET normal_price = 400 WHERE id = ?", (item_id,))
@@ -610,7 +622,12 @@ def test_catalogue_page_orders_tables_easy_to_hard(web):
 def test_catalogue_page_empty_state(web):
     cfg, conn, item_id, client = web
     resp = client.get("/catalogue")
-    assert b"Nothing waiting for review" in resp.data
+    # Each tab shows its own empty state now rather than one combined
+    # message — the tab bar itself stays put (with "(0)" counts) so its
+    # layout doesn't jump around as suggestions/suspects come and go.
+    assert b"Nothing here right now" in resp.data
+    assert b"Suspect products" in resp.data
+    assert b"(0)" in resp.data
 
 
 def test_bulk_approve_skips_brand_only_suggestions(web):
@@ -661,7 +678,12 @@ def test_catalogue_page_shows_suspects_and_bulk_archive_works(web):
     assert db.get_item_product_by_id(conn, item_product_id)["archived"] == 1
     # Archived: no longer offered to catalogue.match, no longer accused.
     assert db.list_products_for_matching(conn, item_id) == []
-    assert b"Suspect products" not in client.get("/catalogue").data
+    # The "Suspect products" tab itself is always present (it's a tab label,
+    # not a conditional section any more) — what disappears is the flagged
+    # product inside it.
+    resp = client.get("/catalogue")
+    assert b"Suspect products" in resp.data
+    assert b"Festool" not in resp.data
 
 
 def test_bulk_knowledge_only_and_toggle_route(web):

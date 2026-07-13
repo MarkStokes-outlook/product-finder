@@ -633,6 +633,33 @@ def test_item_edit(cfg, client):
     assert item.sources is None  # no boxes ticked = all sources
 
 
+def test_item_edit_removes_match_that_now_fails_a_new_exclude_term(cfg, client):
+    _, item_id = seed_match(cfg)  # matched listing titled "Makita SP6000 saw"
+    resp = client.post(
+        f"/items/{item_id}/edit",
+        data={"name": "Track Saw", "terms": "track saw", "priority": "high",
+              "normal_price": "500", "target_deal_price": "300",
+              "exclude_terms": "SP6000"},
+        follow_redirects=True,
+    )
+    assert b"removed 1 now-excluded" in resp.data
+    conn = db.connect(cfg.db_path)
+    assert conn.execute(
+        "SELECT COUNT(*) c FROM listing_matches WHERE item_id = ?", (item_id,)
+    ).fetchone()["c"] == 0
+
+
+def test_item_edit_with_no_effect_on_matches_has_plain_message(cfg, client):
+    _, item_id = seed_match(cfg)
+    resp = client.post(
+        f"/items/{item_id}/edit",
+        data={"name": "Track Saw", "terms": "track saw", "priority": "high",
+              "normal_price": "500", "target_deal_price": "300"},
+        follow_redirects=True,
+    )
+    assert b"Re-scored 1 existing match" in resp.data
+
+
 def test_item_archive_and_delete(cfg, client):
     _, item_id = seed_match(cfg)
     client.post(f"/items/{item_id}/archive")
@@ -919,6 +946,93 @@ def test_suggestion_dismiss(cfg, client):
     conn = db.connect(cfg.db_path)
     assert db.get_product_suggestion(conn, suggestion["id"])["status"] == "dismissed"
     assert db.list_products(conn, item_id) == []
+
+
+def test_suggestion_approve_then_undo_via_route(cfg, client):
+    _, item_id = seed_match(cfg)
+    conn = db.connect(cfg.db_path)
+    suggestion = db.record_suggestion_sighting(conn, item_id, "Makita", "LS0816F/2", "https://example.com/x")
+    conn.close()
+
+    client.post(f"/suggestions/{suggestion['id']}/approve")
+    resp = client.post("/suggestions/undo", follow_redirects=True)
+
+    assert b"Undone" in resp.data
+    conn = db.connect(cfg.db_path)
+    assert db.get_product_suggestion(conn, suggestion["id"])["status"] == "pending"
+    assert db.list_products(conn, item_id) == []
+
+
+def test_suggestion_dismiss_then_undo_via_route(cfg, client):
+    _, item_id = seed_match(cfg)
+    conn = db.connect(cfg.db_path)
+    suggestion = db.record_suggestion_sighting(conn, item_id, "Makita", "LS0816F/2", "https://example.com/x")
+    conn.close()
+
+    client.post(f"/suggestions/{suggestion['id']}/dismiss")
+    client.post("/suggestions/undo")
+
+    conn = db.connect(cfg.db_path)
+    assert db.get_product_suggestion(conn, suggestion["id"])["status"] == "pending"
+
+
+def test_suggestion_bulk_approve_then_undo_via_route(cfg, client):
+    _, item_id = seed_match(cfg)
+    conn = db.connect(cfg.db_path)
+    s1 = db.record_suggestion_sighting(conn, item_id, "Makita", "LS0816F/2", "https://x/1")
+    s2 = db.record_suggestion_sighting(conn, item_id, "Bosch", "GKT55", "https://x/2")
+    conn.close()
+
+    client.post(
+        "/suggestions/bulk-approve",
+        data={"suggestion_ids": [str(s1["id"]), str(s2["id"])], "item_id": str(item_id)},
+    )
+    client.post("/suggestions/undo")
+
+    conn = db.connect(cfg.db_path)
+    assert db.get_product_suggestion(conn, s1["id"])["status"] == "pending"
+    assert db.get_product_suggestion(conn, s2["id"])["status"] == "pending"
+    assert db.list_products(conn, item_id) == []
+
+
+def test_undo_only_reverses_most_recent_action(cfg, client):
+    _, item_id = seed_match(cfg)
+    conn = db.connect(cfg.db_path)
+    s1 = db.record_suggestion_sighting(conn, item_id, "Makita", "LS0816F/2", "https://x/1")
+    s2 = db.record_suggestion_sighting(conn, item_id, "Bosch", "GKT55", "https://x/2")
+    conn.close()
+
+    client.post(f"/suggestions/{s1['id']}/dismiss")
+    client.post(f"/suggestions/{s2['id']}/dismiss")
+    client.post("/suggestions/undo")
+
+    conn = db.connect(cfg.db_path)
+    # Only the second (most recent) dismissal is undone.
+    assert db.get_product_suggestion(conn, s1["id"])["status"] == "dismissed"
+    assert db.get_product_suggestion(conn, s2["id"])["status"] == "pending"
+
+
+def test_undo_with_nothing_to_undo(cfg, client):
+    resp = client.post("/suggestions/undo", follow_redirects=True)
+    assert b"Nothing to undo" in resp.data
+
+
+def test_catalogue_review_shows_undo_button_after_dismiss(cfg, client):
+    _, item_id = seed_match(cfg)
+    conn = db.connect(cfg.db_path)
+    suggestion = db.record_suggestion_sighting(conn, item_id, "Makita", "LS0816F/2", "https://example.com/x")
+    conn.close()
+
+    client.post(f"/suggestions/{suggestion['id']}/dismiss")
+    resp = client.get("/catalogue")
+
+    assert b"Undo:" in resp.data
+    assert b"Makita LS0816F/2" in resp.data
+
+
+def test_catalogue_review_hides_undo_button_with_no_recent_action(cfg, client):
+    resp = client.get("/catalogue")
+    assert b"Undo:" not in resp.data
 
 
 def test_catalogue_settings_updates_threshold(cfg, client):

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 
 
@@ -48,6 +49,31 @@ class Listing:
     def text(self) -> str:
         """Combined text used for grading and warning-flag detection."""
         return " ".join(p for p in (self.title, self.condition, self.description) if p)
+
+    @classmethod
+    def from_row(cls, row) -> "Listing":
+        """Reconstruct a Listing from a `listings` table row (db.get_listing)
+        — the inverse of how a source builds one at fetch time. For
+        re-evaluating an already-stored listing against current
+        matching/scoring code without a network round-trip (see
+        runner.reassess_item_matches)."""
+        return cls(
+            source=row["source"],
+            external_id=row["external_id"],
+            title=row["title"],
+            price=row["price"],
+            url=row["url"],
+            currency=row["currency"],
+            location=row["location"] or "",
+            description=row["description"] or "",
+            condition=row["condition"] or "",
+            buying_options=json.loads(row["buying_options"] or "[]"),
+            bid_count=row["bid_count"],
+            end_time=row["end_time"],
+            current_bid_price=row["current_bid_price"],
+            buy_it_now_price=row["buy_it_now_price"],
+            image_url=row["image_url"],
+        )
 
 
 @dataclass

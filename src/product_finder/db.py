@@ -147,6 +147,19 @@ CREATE TABLE IF NOT EXISTS alerts_sent (
     sent_at TEXT NOT NULL,
     UNIQUE(match_id, channel)
 );
+CREATE TABLE IF NOT EXISTS listing_match_exclusions (
+    -- A human said "this specific listing is wrong for this item" (the
+    -- "Not a match" button) — permanent, per (listing, item) pair, checked
+    -- by run_once() alongside scoring.excluded() so a future rescan of the
+    -- same still-active listing doesn't quietly re-create the match. The
+    -- systemic version of this is an item's exclude_terms (see the "This is
+    -- a part" button); this is for the one-off case with no shared keyword
+    -- worth excluding item-wide.
+    listing_id INTEGER NOT NULL REFERENCES listings(id),
+    item_id INTEGER NOT NULL REFERENCES items(id),
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (listing_id, item_id)
+);
 CREATE TABLE IF NOT EXISTS source_settings (
     name TEXT PRIMARY KEY,
     enabled INTEGER,               -- NULL = inherit the YAML default
@@ -1810,6 +1823,75 @@ def dismiss_suggestion(conn: sqlite3.Connection, suggestion_id: int) -> None:
     conn.commit()
 
 
+# --- Undo (last suggestion action only) ----------------------------------------
+#
+# A single slot, not a history stack: catalogue review is a fast, high-volume
+# clicking task and mistakes get noticed immediately (a mis-click on the very
+# next row, not five actions later) — see the operator's own report of
+# approving a listing under the wrong item. Stored via the existing
+# app_settings key/value store rather than a new table; a second action
+# overwrites the slot, and Undo consumes it so it never fires twice.
+
+_LAST_SUGGESTION_ACTION_KEY = "last_suggestion_action"
+
+
+def record_last_suggestion_action(conn: sqlite3.Connection, action: dict) -> None:
+    """Remember one reversible suggestion action (approve/dismiss, single or
+    bulk) as the Undo target. `action` must include "kind" and a
+    human-readable "description" the UI can show on the Undo button/tooltip
+    without any further lookups."""
+    set_setting(conn, _LAST_SUGGESTION_ACTION_KEY, json.dumps(action))
+
+
+def get_last_suggestion_action(conn: sqlite3.Connection) -> dict | None:
+    """The pending Undo target, if any — read-only, for rendering the Undo
+    button's label/tooltip. Does not consume it."""
+    raw = get_setting(conn, _LAST_SUGGESTION_ACTION_KEY)
+    return json.loads(raw) if raw else None
+
+
+def clear_last_suggestion_action(conn: sqlite3.Connection) -> None:
+    set_setting(conn, _LAST_SUGGESTION_ACTION_KEY, None)
+
+
+def undo_last_suggestion_action(conn: sqlite3.Connection) -> str | None:
+    """Reverse the most recently recorded approve/dismiss (single or bulk)
+    and clear the slot. An approval is undone the same way a human would
+    correct it by hand: stop this item tracking the product
+    (delete_item_product — the shared global product and any other item's
+    tracking of it are untouched) and put the suggestion back to pending. A
+    dismissal is undone by putting it back to pending too. Returns a
+    human-readable summary, or None if there's nothing to undo (already
+    used, or nothing actioned yet)."""
+    action = get_last_suggestion_action(conn)
+    if action is None:
+        return None
+
+    def _repend(suggestion_id: int) -> None:
+        conn.execute(
+            "UPDATE product_suggestions SET status = 'pending' WHERE id = ?", (suggestion_id,)
+        )
+
+    kind = action["kind"]
+    if kind == "approve":
+        if action["item_product_id"] is not None:
+            delete_item_product(conn, action["item_product_id"])
+        _repend(action["suggestion_id"])
+    elif kind == "dismiss":
+        _repend(action["suggestion_id"])
+    elif kind == "bulk_approve":
+        for entry in action["items"]:
+            if entry["item_product_id"] is not None:
+                delete_item_product(conn, entry["item_product_id"])
+            _repend(entry["suggestion_id"])
+    elif kind == "bulk_dismiss":
+        for suggestion_id in action["suggestion_ids"]:
+            _repend(suggestion_id)
+    conn.commit()
+    clear_last_suggestion_action(conn)
+    return action["description"]
+
+
 # --- Auction close tracking (see auction_watch.py) -----------------------------
 
 
@@ -2378,6 +2460,53 @@ def record_match(
     return cur.lastrowid, True
 
 
+def delete_listing_match(conn: sqlite3.Connection, match_id: int) -> None:
+    """Remove a single listing/item match outright — e.g. a listing that
+    fails the item's exclude_terms/max_price after an edit (see
+    runner.reassess_item_matches). The listing itself, any other item's
+    match against it, and the product's price history are untouched."""
+    conn.execute("DELETE FROM alerts_sent WHERE match_id = ?", (match_id,))
+    conn.execute("DELETE FROM listing_matches WHERE id = ?", (match_id,))
+    conn.commit()
+
+
+def get_listing_match(conn: sqlite3.Connection, match_id: int) -> sqlite3.Row | None:
+    return conn.execute("SELECT * FROM listing_matches WHERE id = ?", (match_id,)).fetchone()
+
+
+def exclude_listing_from_item(conn: sqlite3.Connection, listing_id: int, item_id: int) -> None:
+    """The "Not a match" action: permanently stop this one listing from ever
+    matching this item again, with no assumption about *why* (contrast with
+    an item's exclude_terms, which excludes by keyword and so also catches
+    future similar listings — see runner.reassess_item_matches). Removes
+    the existing match immediately; run_once() checks
+    listing_excluded_from_item() before creating a new one, so a future
+    rescan of the same still-active listing doesn't quietly recreate it."""
+    row = conn.execute(
+        "SELECT id FROM listing_matches WHERE listing_id = ? AND item_id = ?",
+        (listing_id, item_id),
+    ).fetchone()
+    if row:
+        delete_listing_match(conn, row["id"])
+    conn.execute(
+        "INSERT OR IGNORE INTO listing_match_exclusions (listing_id, item_id, created_at) "
+        "VALUES (?, ?, ?)",
+        (listing_id, item_id, _now()),
+    )
+    conn.commit()
+
+
+def listing_excluded_from_item(conn: sqlite3.Connection, item_id: int, source: str, external_id: str) -> bool:
+    """True if a human has already said this (source, external_id) listing
+    is not a match for this item — checked before a match would otherwise
+    be (re)created, both at ingest (run_once) and on reassessment."""
+    return conn.execute(
+        "SELECT 1 FROM listing_match_exclusions x JOIN listings l ON l.id = x.listing_id "
+        "WHERE x.item_id = ? AND l.source = ? AND l.external_id = ?",
+        (item_id, source, external_id),
+    ).fetchone() is not None
+
+
 def mark_alerted(conn: sqlite3.Connection, match_id: int, channel: str) -> bool:
     """Record an alert. Returns False if already sent on this channel."""
     try:
@@ -2404,7 +2533,7 @@ SELECT p.name AS project_name, p.slug AS project_slug, p.id AS project_id,
        l.id AS listing_id, l.title, l.price, l.currency, l.url, l.source, l.location,
        l.first_seen, l.last_seen, l.end_time, l.bid_count, l.buying_options, l.image_url,
        l.current_bid_price, l.buy_it_now_price,
-       m.grade, m.deal_score, m.margin_abs, m.margin_pct, m.under_target, m.flags
+       m.id AS match_id, m.grade, m.deal_score, m.margin_abs, m.margin_pct, m.under_target, m.flags
 FROM listing_matches m
 JOIN listings l ON l.id = m.listing_id
 JOIN items i ON i.id = m.item_id
