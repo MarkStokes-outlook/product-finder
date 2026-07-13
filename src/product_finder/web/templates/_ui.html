@@ -53,53 +53,85 @@
 
 {% macro cta_label(row) %}{{ 'View on eBay ↗' if row['source'] == 'ebay' else 'Open listing ↗' }}{% endmacro %}
 
+{% macro match_actions(row) %}
+{# Correcting a mismatch right where it's spotted, rather than hunting for
+   it on the catalogue review page. "Not a match" is a one-off, no-keyword
+   fix (see db.exclude_listing_from_item); "This is a part" prompts for an
+   exclude term so every similar listing stops matching too (see
+   runner.reassess_item_matches) — pre-filled with a guessed word from the
+   title, editable before it's applied. #}
+<div class="pf-match-actions">
+  <form method="post" action="{{ url_for('match_unmatch', match_id=row['match_id']) }}" class="inline"
+        onsubmit="return confirm('Stop matching this listing to this item? It will never be suggested here again.');">
+    <input type="hidden" name="next" value="{{ request.path }}">
+    <button class="small" type="submit" title="Wrong listing for this item — stop matching it here, permanently">Not a match</button>
+  </form>
+  <button class="small pf-mark-part" type="button"
+          data-part-action="{{ url_for('item_add_exclude_term', item_id=row['item_id']) }}"
+          data-part-guess="{{ row['title'] | guess_accessory_term }}"
+          title="This is an accessory/part, not the wanted item — add an exclude term so listings like it stop matching too">This is a part</button>
+</div>
+{% endmacro %}
+
 {% macro spotlight(row, show_project=True, context='dashboard') %}
 {# The one deliberately special element on the page. Everything else stays
-   calm so this can actually stand out. #}
-<a class="spotlight" href="{{ listing_out_url(row['listing_id'], context, row['project_id']) }}" target="_blank" rel="noopener">
-  <div class="thumb">{{ thumb_img(row) }}</div>
-  <div class="spotlight-body">
-    <div class="kicker">★ Today's best deal{% if row['first_seen'] | is_new %} · <span class="chip-new">new</span>{% endif %}</div>
-    <h3>{{ row['title'] }}</h3>
-    {{ price_block(row) }}
-    <div class="badges">
-      {% if row['under_target'] %}<span class="badge target">under your £{{ '%.0f' | format(row['target_deal_price']) }} target</span>{% endif %}
-      {{ trend_chip(row) }}
+   calm so this can actually stand out. The outer element is a plain div,
+   not a link — action buttons can't nest inside an <a>, so the actual
+   click-to-open-listing behaviour lives on the inner .spotlight-link
+   (display:contents, so it doesn't disturb the grid layout below). #}
+<div class="spotlight">
+  <a class="spotlight-link" href="{{ listing_out_url(row['listing_id'], context, row['project_id']) }}"
+     target="_blank" rel="noopener" style="display: contents;">
+    <div class="thumb">{{ thumb_img(row) }}</div>
+    <div class="spotlight-body">
+      <div class="kicker">★ Today's best deal{% if row['first_seen'] | is_new %} · <span class="chip-new">new</span>{% endif %}</div>
+      <h3>{{ row['title'] }}</h3>
+      {{ price_block(row) }}
+      <div class="badges">
+        {% if row['under_target'] %}<span class="badge target">under your £{{ '%.0f' | format(row['target_deal_price']) }} target</span>{% endif %}
+        {{ trend_chip(row) }}
+      </div>
+      {{ target_bar(row) }}
+      <div class="spotlight-foot">
+        <span class="meta">
+          condition {{ row['grade'] }}
+          &middot; {% if show_project %}{{ row['project_name'] }} / {% endif %}{{ row['item_name'] }}
+          {% if row['product_manufacturer'] %}&middot; {{ row['product_manufacturer'] }}{% if row['product_model'] %} {{ row['product_model'] }}{% endif %}{% endif %}
+          &middot; {{ row['source'] }}
+          {% if row['location'] %}&middot; {{ row['location'] }}{% endif %}
+          {% if row['first_seen'] %}&middot; spotted {{ row['first_seen'] | timeago }}{% endif %}
+        </span>
+        <span class="cta">{{ cta_label(row) }}</span>
+      </div>
     </div>
-    {{ target_bar(row) }}
-    <div class="spotlight-foot">
-      <span class="meta">
-        condition {{ row['grade'] }}
-        &middot; {% if show_project %}{{ row['project_name'] }} / {% endif %}{{ row['item_name'] }}
-        {% if row['product_manufacturer'] %}&middot; {{ row['product_manufacturer'] }}{% if row['product_model'] %} {{ row['product_model'] }}{% endif %}{% endif %}
-        &middot; {{ row['source'] }}
-        {% if row['location'] %}&middot; {{ row['location'] }}{% endif %}
-        {% if row['first_seen'] %}&middot; spotted {{ row['first_seen'] | timeago }}{% endif %}
-      </span>
-      <span class="cta">{{ cta_label(row) }}</span>
-    </div>
-  </div>
-</a>
+  </a>
+  {{ match_actions(row) }}
+</div>
 {% endmacro %}
 
 {% macro deal_card(row, show_project=True, context='dashboard') %}
 {# Runner-up card: image, title, price. Condition only surfaces when it's
    below A — an "A" chip on every card is just noise. Score/trend live in
-   the tables and spotlight, not here. #}
-<a class="deal-card" href="{{ listing_out_url(row['listing_id'], context, row['project_id']) }}" target="_blank" rel="noopener">
-  <div class="thumb">
-    {{ thumb_img(row) }}
-    {% if row['first_seen'] | is_new %}<span class="chip-new">new</span>{% endif %}
-  </div>
-  <div class="deal-body">
-    <h3>{{ row['title'] }}</h3>
-    {{ price_block(row) }}
-    <span class="meta">
-      {% if row['grade'] not in ('A', 'unknown') %}condition {{ row['grade'] }} &middot; {% endif %}
-      {% if show_project %}{{ row['project_name'] }} / {% endif %}{{ row['item_name'] }}
-      &middot; {{ row['source'] }}
-      {% if row['first_seen'] %}&middot; {{ row['first_seen'] | timeago }}{% endif %}
-    </span>
-  </div>
-</a>
+   the tables and spotlight, not here. Same div-wrapping-a-display:contents-
+   link structure as spotlight, for the same reason (action buttons). #}
+<div class="deal-card">
+  <a class="deal-card-link" href="{{ listing_out_url(row['listing_id'], context, row['project_id']) }}"
+     target="_blank" rel="noopener" style="display: contents;">
+    <div class="thumb">
+      {{ thumb_img(row) }}
+      {% if row['first_seen'] | is_new %}<span class="chip-new">new</span>{% endif %}
+    </div>
+    <div class="deal-body">
+      <h3>{{ row['title'] }}</h3>
+      {{ price_block(row) }}
+      <span class="meta">
+        {% if row['grade'] not in ('A', 'unknown') %}condition {{ row['grade'] }} &middot; {% endif %}
+        {% if show_project %}{{ row['project_name'] }} / {% endif %}{{ row['item_name'] }}
+        &middot; {{ row['source'] }}
+        {% if row['first_seen'] %}&middot; {{ row['first_seen'] | timeago }}{% endif %}
+      </span>
+    </div>
+  </a>
+  {{ match_actions(row) }}
+</div>
 {% endmacro %}

@@ -9,7 +9,7 @@ from . import catalogue, db, extraction, retailer_price, scoring, sources
 from .alerts import console as console_alerts
 from .alerts import webhook as webhook_alerts
 from .config import AppConfig, ItemConfig, OllamaConfig, ProjectConfig
-from .models import ManualLink, MatchAlert
+from .models import Listing, ManualLink, MatchAlert
 from .orchestrator import SearchOrchestrator, WorkItem
 
 log = logging.getLogger(__name__)
@@ -33,6 +33,50 @@ def load_projects(cfg: AppConfig, conn: sqlite3.Connection) -> list[ProjectConfi
     """Active projects/items from the DB, seeding from YAML on first use."""
     db.seed_from_config_if_empty(conn, cfg)
     return db.load_project_configs(conn)
+
+
+def reassess_item_matches(conn: sqlite3.Connection, item_id: int, item: ItemConfig) -> dict:
+    """Re-run catalogue matching and scoring for every listing already
+    matched against this item, against its just-saved settings — called
+    after an item edit so a newly-added exclude term, a changed max price,
+    or a corrected normal/target price takes effect on existing matches
+    immediately, not only on whatever the next watch cycle happens to
+    re-fetch. scoring.excluded() and the max_price check only ever gated
+    *new* matches at ingest time (see run_once above); nothing previously
+    re-applied them to what's already stored.
+
+    A listing that now fails exclusion or max_price — or was individually
+    flagged "not a match" for this item (see db.exclude_listing_from_item)
+    — is removed outright (db.delete_listing_match). Its price history
+    lives in product_price_observations, keyed to the product, so nothing
+    is lost. Everything else is re-scored and re-attributed to whichever
+    catalogue product now matches (or none); db.record_match's upsert makes
+    this idempotent to re-run. Returns {"rescored": n, "excluded": n}."""
+    products = db.list_products_for_matching(conn, item_id)
+    rows = conn.execute(
+        "SELECT m.id AS match_id, l.* FROM listing_matches m "
+        "JOIN listings l ON l.id = m.listing_id WHERE m.item_id = ?",
+        (item_id,),
+    ).fetchall()
+    rescored = excluded = 0
+    for row in rows:
+        listing = Listing.from_row(row)
+        if (
+            scoring.excluded(listing, item)
+            or (item.max_price and listing.price > item.max_price)
+            or db.listing_excluded_from_item(conn, item_id, listing.source, listing.external_id)
+        ):
+            db.delete_listing_match(conn, row["match_id"])
+            excluded += 1
+            continue
+        product = catalogue.match(listing.text, products) if products else None
+        evaluation = scoring.evaluate(listing, item, product)
+        db.record_match(
+            conn, row["id"], item_id, evaluation,
+            product_id=product.global_product_id if product else None,
+        )
+        rescored += 1
+    return {"rescored": rescored, "excluded": excluded}
 
 
 def collect_manual_links(
@@ -110,6 +154,14 @@ def run_once(
                     if scoring.excluded(listing, item):
                         continue
                     if item.max_price and listing.price > item.max_price:
+                        continue
+                    # A human already said this exact listing is wrong for
+                    # this item (the "Not a match" button) — never recreate
+                    # the match, even though nothing about its text/price
+                    # would otherwise exclude it.
+                    if item_id and db.listing_excluded_from_item(
+                        conn, item_id, listing.source, listing.external_id
+                    ):
                         continue
                     product = catalogue.match(listing.text, products) if products else None
                     evaluation = scoring.evaluate(listing, item, product)
@@ -193,9 +245,12 @@ def _maybe_suggest_product(
     Offered to any connector declaring supports_enrichment (not "to eBay" —
     connectors are capabilities, not special cases). Structured brand/model
     fields from get_item_details() are tried first (a much more reliable
-    signal). Only when those are absent — common with private/casual
-    sellers — does the optional Ollama free-text fallback get a look, over
-    the listing's own title/description, never a second API round-trip."""
+    signal). Only when the structured *model* is absent — common with
+    private/casual sellers who pick a brand from a dropdown but skip the
+    free-text MPN field — does the optional Ollama free-text fallback get a
+    look, over the listing's own title/description, never a second API
+    round-trip. eBay's own brand is still kept over an LLM guess whenever
+    it's available; only the model is filled in from extraction."""
     listing_row = db.get_listing(conn, listing_id)
     if listing_row is None or listing_row["brand_checked"]:
         return
@@ -205,7 +260,7 @@ def _maybe_suggest_product(
         log.warning("Product-detail lookup failed for %s: %s", listing_row["external_id"], exc)
         details = None
     db.mark_brand_checked(conn, listing_id)
-    if details:
+    if details and details["model"]:
         db.record_suggestion_sighting(
             conn, item_id, details["brand"], details["model"], listing_row["url"]
         )
@@ -213,9 +268,16 @@ def _maybe_suggest_product(
     text = " ".join(p for p in (listing_row["title"], listing_row["description"]) if p)
     extracted = extraction.extract_brand_model(text, ollama_cfg)
     if extracted:
+        brand = details["brand"] if details else extracted["brand"]
         db.record_suggestion_sighting(
-            conn, item_id, extracted["brand"], extracted["model"], listing_row["url"],
+            conn, item_id, brand, extracted["model"], listing_row["url"],
             source="ollama",
+        )
+    elif details:
+        # Structured brand but no recoverable model anywhere — record as
+        # brand-only rather than dropping the sighting entirely.
+        db.record_suggestion_sighting(
+            conn, item_id, details["brand"], details["model"], listing_row["url"]
         )
 
 

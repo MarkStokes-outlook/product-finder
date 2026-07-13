@@ -176,7 +176,7 @@ td.num { text-align: right; font-variant-numeric: tabular-nums; white-space: now
              border-radius: var(--radius); overflow: hidden; margin: .8rem 0 1rem;
              box-shadow: var(--shadow); color: var(--text);
              transition: transform .18s, border-color .18s; }
-a.spotlight:hover { text-decoration: none; border-color: var(--green); transform: translateY(-2px); }
+.spotlight:hover { border-color: var(--green); transform: translateY(-2px); }
 /* The text column defines the card's height; the photo crops to fill its
    own column (absolute + cover). Without this, a tall portrait eBay photo
    in normal flow stretches the whole card and leaves a dead gap under the
@@ -199,10 +199,19 @@ a.spotlight:hover { text-decoration: none; border-color: var(--green); transform
        background: var(--green); color: #06231a; font-weight: 700; font-size: .92rem;
        padding: .6rem 1.15rem; border-radius: 10px; }
 a:hover .cta { filter: brightness(1.08); }
+.spotlight-link:hover, .deal-card-link:hover { text-decoration: none; }
 @media (max-width: 44rem) {
   .spotlight { grid-template-columns: 1fr; }
   .spotlight .thumb { min-height: 11rem; aspect-ratio: 16 / 9; }
 }
+
+/* Match-correction buttons ("Not a match" / "This is a part") — outside the
+   card's own <a> (buttons can't nest inside a link), so they sit as a
+   sibling row instead. Spans both spotlight grid columns as its own row;
+   deal-card is already a single column so no override needed there. */
+.pf-match-actions { display: flex; gap: .5rem; padding: .5rem 1rem .8rem;
+                    border-top: 1px solid var(--border); }
+.spotlight .pf-match-actions { grid-column: 1 / -1; padding: .5rem 1.5rem .9rem; }
 
 /* Runner-up product cards. */
 .hero-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(15.5rem, 1fr));
@@ -455,6 +464,34 @@ function pfEnhance(root) {
   pfPaginate(root);
   pfCountdownTick();
 }
+
+// "This is a part" deal-card action: prompts for (editable) confirmation of
+// the exclude term rather than silently applying the guessed keyword, then
+// posts it as a normal form submit — no fetch/JSON, so it behaves exactly
+// like every other action button (full page redirect, flash message).
+// Delegated (not an inline onclick): the guess string is user-generated
+// listing-title text, and mixing an onclick="..." attribute with a Jinja
+// |tojson value inside it is a real quoting collision, not just untidy —
+// the JSON string's own double quotes terminate the attribute early and
+// silently produce a dead handler. data-part-guess (plain, HTML-escaped by
+// Jinja) sidesteps that entirely.
+document.addEventListener("click", function (e) {
+  var btn = e.target.closest(".pf-mark-part");
+  if (!btn) return;
+  var term = window.prompt("Exclude listings mentioning:", btn.dataset.partGuess || "");
+  if (!term) return;
+  var form = document.createElement("form");
+  form.method = "post";
+  form.action = btn.dataset.partAction;
+  form.style.display = "none";
+  [["term", term], ["next", window.location.pathname]].forEach(function (pair) {
+    var input = document.createElement("input");
+    input.type = "hidden"; input.name = pair[0]; input.value = pair[1];
+    form.appendChild(input);
+  });
+  document.body.appendChild(form);
+  form.submit();
+});
 
 // Flash the nav heartbeat green when a live refresh just landed.
 function pfFreshPulse() {
