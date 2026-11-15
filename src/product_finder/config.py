@@ -26,6 +26,8 @@ class ItemConfig:
     exclude_terms: list[str] = field(default_factory=list)
     sources: list[str] | None = None  # None = all enabled sources
     id: int | None = None  # set when loaded from the database
+    required_terms: list[str] = field(default_factory=list)
+    alternatives: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -196,6 +198,8 @@ def _load_item(raw: dict, project_slug: str) -> ItemConfig:
         priority=priority,
         notes=str(raw.get("notes", "")),
         exclude_terms=[str(t) for t in (raw.get("exclude_terms") or [])],
+        required_terms=[str(t) for t in (raw.get("required_terms") or [])],
+        alternatives=[str(t) for t in (raw.get("alternatives") or [])],
         sources=sources,
     )
 

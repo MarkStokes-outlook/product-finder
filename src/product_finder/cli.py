@@ -142,6 +142,13 @@ def cmd_catalogue_tidy(cfg: AppConfig) -> int:
     return 0
 
 
+def cmd_reassess_matches(cfg: AppConfig) -> int:
+    with db.connect(cfg.db_path) as conn:
+        counts = runner.reassess_saved_matches(conn, db.effective_config(conn, cfg))
+    print(f"Reassessed saved candidates. {counts['rescored']} matches and {counts['excluded']} held back.")
+    return 0
+
+
 def cmd_web(cfg: AppConfig, port: int, debug: bool = False) -> int:
     from .web.app import create_app
 
@@ -166,6 +173,7 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("import-config", help="Import/merge YAML projects and items into the database")
     sub.add_parser("list-projects", help="List projects")
     sub.add_parser("list-items", help="List items per project")
+    sub.add_parser("reassess-matches", help="Reassess saved candidates locally without sending alerts")
     sub.add_parser(
         "catalogue-tidy",
         help="Re-normalise pending suggestions and merge exact-duplicate products (idempotent)",
@@ -200,6 +208,7 @@ def main(argv: list[str] | None = None) -> int:
         "import-config": cmd_import_config,
         "list-projects": cmd_list_projects,
         "list-items": cmd_list_items,
+        "reassess-matches": cmd_reassess_matches,
         "catalogue-tidy": cmd_catalogue_tidy,
     }
     return commands[args.command](cfg)

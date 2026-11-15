@@ -118,6 +118,8 @@ def _item_dict(item_cfg: ItemConfig, enabled: bool) -> dict:
         "priority": item_cfg.priority,
         "search_terms": item_cfg.terms,
         "exclude_terms": item_cfg.exclude_terms,
+        "required_terms": item_cfg.required_terms,
+        "alternatives": item_cfg.alternatives,
         "max_price": item_cfg.max_price,
         "normal_price": item_cfg.normal_price,
         "target_price": item_cfg.target_deal_price,
@@ -365,6 +367,13 @@ def build_plan(
             item_exclude_raw = []
         merged_exclude = (default_exclude_terms if merge_defaults else []) + [str(t) for t in item_exclude_raw]
         exclude_terms = list(dict.fromkeys(merged_exclude))  # de-dupe, keep first-seen order
+        match_terms = {}
+        for field in ("required_terms", "alternatives"):
+            phrases = raw_item.get(field, [])
+            if not isinstance(phrases, list) or any(not isinstance(value, str) for value in phrases):
+                errors.append(ImportIssue("item", f"'{field}' must be a list of phrases.", index=index, name=name))
+                phrases = []
+            match_terms[field] = [phrase.strip() for phrase in phrases if phrase.strip()]
 
         max_price = _as_float(errors, "item", index, name, field_value("max_price"), "max_price")
         normal_price = _as_float(errors, "item", index, name, field_value("normal_price"), "normal_price")
@@ -405,6 +414,7 @@ def build_plan(
             notes=notes,
             exclude_terms=exclude_terms,
             sources=sources,
+            **match_terms,
         )
 
         existing_item = (
@@ -501,6 +511,10 @@ def export_project(conn: sqlite3.Connection, project_id: int) -> dict:
         entry: dict = {"name": item_cfg.name, "search_terms": item_cfg.terms}
         if item_cfg.exclude_terms:
             entry["exclude_terms"] = item_cfg.exclude_terms
+        if item_cfg.required_terms:
+            entry["required_terms"] = item_cfg.required_terms
+        if item_cfg.alternatives:
+            entry["alternatives"] = item_cfg.alternatives
         if item_cfg.max_price is not None:
             entry["max_price"] = item_cfg.max_price
         if item_cfg.normal_price is not None:

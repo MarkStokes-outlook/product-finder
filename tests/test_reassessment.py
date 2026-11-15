@@ -37,11 +37,9 @@ def test_reassess_removes_matches_that_now_fail_a_new_exclude_term(tmp_path):
     result = runner.reassess_item_matches(conn, item_id, item)
 
     assert result == {"rescored": 1, "excluded": 1}
-    remaining = conn.execute(
-        "SELECT l.title FROM listing_matches m JOIN listings l ON l.id = m.listing_id "
-        "WHERE m.item_id = ?", (item_id,),
-    ).fetchall()
+    remaining = db.query_matches(conn, item_id=item_id)
     assert [r["title"] for r in remaining] == ["Makita track saw, mint condition"]
+    assert db.query_matches(conn, item_id=item_id, review=True)[0]["match_status"] == "excluded"
 
 
 def test_reassess_removes_matches_over_a_lowered_max_price(tmp_path):

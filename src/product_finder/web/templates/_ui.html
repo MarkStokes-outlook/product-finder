@@ -86,6 +86,7 @@
     <div class="spotlight-body">
       <div class="kicker">★ Today's best deal{% if row['first_seen'] | is_new %} · <span class="chip-new">new</span>{% endif %}</div>
       <h3>{{ row['title'] }}</h3>
+      {% if row['match_status'] == 'substitute' %}<p class="meta">{{ row['match_reason'] }}</p>{% endif %}
       {{ price_block(row) }}
       <div class="badges">
         {% if row['under_target'] %}<span class="badge target">under your £{{ '%.0f' | format(row['target_deal_price']) }} target</span>{% endif %}
@@ -123,6 +124,7 @@
     </div>
     <div class="deal-body">
       <h3>{{ row['title'] }}</h3>
+      {% if row['match_status'] == 'substitute' %}<p class="meta">{{ row['match_reason'] }}</p>{% endif %}
       {{ price_block(row) }}
       <span class="meta">
         {% if row['grade'] not in ('A', 'unknown') %}condition {{ row['grade'] }} &middot; {% endif %}

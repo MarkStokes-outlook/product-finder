@@ -189,11 +189,9 @@ def test_exclude_term_route_adds_term_and_removes_matching_listing(tmp_path):
     conn = db.connect(cfg.db_path)
     item = db._item_from_row(db.get_item(conn, item_id))
     assert "cables" in item.exclude_terms
-    remaining = conn.execute(
-        "SELECT l.title FROM listing_matches m JOIN listings l ON l.id = m.listing_id "
-        "WHERE m.item_id = ?", (item_id,),
-    ).fetchall()
+    remaining = db.query_matches(conn, item_id=item_id)
     assert [r["title"] for r in remaining] == ["be quiet! 1000W PSU"]
+    assert db.query_matches(conn, item_id=item_id, review=True)[0]["match_status"] == "excluded"
 
 
 def test_exclude_term_route_requires_a_term(tmp_path):

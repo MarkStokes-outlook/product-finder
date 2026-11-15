@@ -44,6 +44,8 @@ class Listing:
     # API always does (thumbnailImages[0] is the large render, ~1200-1600px;
     # `image` is the 225px one); RSS feeds sometimes carry media:thumbnail.
     image_url: str | None = None
+    category: str = ""
+    variation_group: bool = False
 
     @property
     def text(self) -> str:
@@ -73,6 +75,8 @@ class Listing:
             current_bid_price=row["current_bid_price"],
             buy_it_now_price=row["buy_it_now_price"],
             image_url=row["image_url"],
+            category=row["category"],
+            variation_group=bool(row["variation_group"]),
         )
 
 

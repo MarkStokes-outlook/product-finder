@@ -52,18 +52,6 @@ nav a:not(.brand) { color: var(--muted); font-weight: 500; font-size: .9rem;
                     padding: .35rem .8rem; border-radius: 8px; }
 nav a:not(.brand):hover { background: var(--surface-2); color: var(--text); text-decoration: none; }
 nav a.active { background: var(--accent-soft); color: var(--accent); }
-/* "The watcher is alive" heartbeat in the nav. Turns green and ripples for a
-   few seconds when a background run just delivered fresh results. */
-.live-dot { margin-left: auto; display: inline-flex; align-items: center; gap: .45rem;
-            color: var(--muted); font-size: .76rem; }
-.live-dot::before { content: ""; width: .55rem; height: .55rem; border-radius: 999px;
-                    background: var(--muted); }
-.live-dot.fresh { color: var(--green); }
-.live-dot.fresh::before { background: var(--green); animation: ripple 1.2s ease-out 3; }
-@keyframes ripple {
-  0% { box-shadow: 0 0 0 0 rgb(52 211 153 / .5); }
-  100% { box-shadow: 0 0 0 .55rem rgb(52 211 153 / 0); }
-}
 
 main { max-width: 78rem; margin: 1.6rem auto 3rem; padding: 0 1.4rem; }
 h1 { font-size: 1.55rem; letter-spacing: -.02em; margin: 0 0 .2rem; }
@@ -396,7 +384,6 @@ details.warnings[open] > summary::before { content: "▾ "; }
                              ('manual', 'Manual searches'), ('source_list', 'Sources')] %}
   <a href="{{ url_for(endpoint) }}"{% if request.endpoint == endpoint %} class="active"{% endif %}>{{ label }}</a>
   {% endfor %}
-  <span class="live-dot" id="live-dot" title="Search runs in the background; this page updates itself">watching</span>
 </nav>
 <main>
 {% with messages = get_flashed_messages() %}
@@ -493,19 +480,42 @@ document.addEventListener("click", function (e) {
   form.submit();
 });
 
-// Flash the nav heartbeat green when a live refresh just landed.
-function pfFreshPulse() {
-  var dot = document.getElementById("live-dot");
-  if (!dot) return;
-  dot.classList.add("fresh");
-  dot.textContent = "fresh results";
-  setTimeout(function () {
-    dot.classList.remove("fresh");
-    dot.textContent = "watching";
-  }, 8000);
+function pfWatchResults(container, status) {
+  var refreshing = false;
+  setInterval(async function () {
+    if (refreshing) return;
+    refreshing = true;
+    try {
+      var response = await fetch(container.dataset.statusUrl, {cache: "no-store"});
+      if (!response.ok) throw new Error("Status request failed");
+      var data = await response.json();
+      if (status.textContent !== data.search.message) status.textContent = data.search.message;
+      var activity = data.last_activity || "";
+      var expiry = data.last_expiry;
+      var previousExpiry = container.dataset.expiry ? Number(container.dataset.expiry) : null;
+      if (activity === container.dataset.activity && expiry === previousExpiry) return;
+      response = await fetch(container.dataset.liveUrl + window.location.search, {cache: "no-store"});
+      if (!response.ok) return;
+      container.innerHTML = await response.text();
+      container.dataset.activity = activity;
+      container.dataset.expiry = expiry ?? "";
+      container.classList.remove("swap-in");
+      void container.offsetWidth;
+      container.classList.add("swap-in");
+      pfEnhance(container);
+    } catch {
+      status.textContent = "Search status temporarily unavailable";
+    } finally {
+      refreshing = false;
+    }
+  }, 15000);
 }
 
-document.addEventListener("DOMContentLoaded", function () { pfEnhance(document); });
+document.addEventListener("DOMContentLoaded", function () {
+  pfEnhance(document);
+  var container = document.querySelector("[data-live-url]");
+  if (container) pfWatchResults(container, document.getElementById("search-status"));
+});
 </script>
 </body>
 </html>

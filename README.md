@@ -98,6 +98,7 @@ projects:
 
 ```bash
 python -m product_finder run-once        # one search cycle, alert on new matches
+python -m product_finder reassess-matches # reassess saved listings without marketplace requests or alerts
 python -m product_finder watch           # run continuously at interval_minutes
 python -m product_finder web             # local web UI at http://127.0.0.1:8765
 python -m product_finder import-config   # merge YAML projects/items into the database
@@ -107,6 +108,11 @@ python -m product_finder list-items      # show items
 
 All commands accept `-c path/to/config.yaml` (default `config.yaml`) and `-v`
 for debug logging. `web` also accepts `--port`.
+
+After upgrading an existing database to watch matching with required phrases
+and acceptable models, run `reassess-matches` once to classify saved candidates.
+Current candidates awaiting assessment appear under **Review candidates** in
+their project. Past listings remain available under **Past listings**.
 
 ### Running on a schedule
 

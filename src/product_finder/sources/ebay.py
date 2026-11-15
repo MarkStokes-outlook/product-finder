@@ -243,6 +243,11 @@ class EbaySource(Source):
                     image_url=image_url,
                     current_bid_price=current_bid,
                     buy_it_now_price=buy_it_now_price,
+                    category=" / ".join(
+                        category["categoryName"] for category in (summary.get("categories") or [])
+                        if category.get("categoryName")
+                    ),
+                    variation_group=bool(summary.get("itemGroupHref") or summary.get("itemGroupType")),
                 )
             )
         return listings

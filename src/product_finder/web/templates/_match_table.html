@@ -1,10 +1,10 @@
-{% macro match_table(rows, show_item=True, paginate=False, page_size=10, context='dashboard') %}
+{% macro match_table(rows, show_item=True, paginate=False, page_size=10, context='dashboard', historical=False, review=False) %}
 {% if paginate %}<div class="table-wrap" data-page-size="{{ page_size }}">{% endif %}
 <table>
 <thead><tr>
-  <th>Score</th><th>Title</th>{% if show_item %}<th>Project / Item</th>{% endif %}
-  <th>Price</th><th>Normal</th><th>Saving</th><th>Grade</th><th>Flags</th>
-  <th>Source</th><th>Seen</th>
+  <th>{{ 'Decision' if review else 'Score' }}</th><th>Title</th>{% if show_item %}<th>Project / Item</th>{% endif %}
+  <th>Price</th>{% if not review %}<th>Normal</th><th>Saving</th>{% endif %}<th>Grade</th><th>Flags</th>
+  <th>Source</th><th>{{ 'Last seen' if historical else 'Seen' }}</th>
 </tr></thead>
 <tbody>
 {% for row in rows %}
@@ -12,10 +12,12 @@
   {% set buying = row['buying_options'] | parse_flags %}
   {% set cls = 'warning' if (flags or row['grade'] == 'spares/repair') else '' %}
   <tr{% if paginate %} data-row{% endif %}{% if cls %} class="{{ cls }}"{% endif %}>
-    <td class="num"><span class="score">{{ '%.0f' | format(row['deal_score'] or 0) }}</span></td>
+    <td class="num">{% if review %}{{ 'Excluded' if row['match_status'] == 'excluded' else 'Needs review' }}{% else %}<span class="score">{{ '%.0f' | format(row['deal_score'] or 0) }}</span>{% endif %}</td>
     <td>{% if row['image_url'] %}<img class="row-thumb" src="{{ row['image_url'] }}" alt=""
           loading="lazy" referrerpolicy="no-referrer" onerror="this.remove()">{% endif %}
       <a href="{{ listing_out_url(row['listing_id'], context, row['project_id']) }}" target="_blank" rel="noopener">{{ row['title'] }}</a>
+      {% if row['match_reason'] %}<br><span class="meta">{{ row['match_reason'] }}</span>{% endif %}
+      {% if review and row['search_term'] %}<br><span class="meta">Found by {{ row['search_term'] }}</span>{% endif %}
       {% if row['product_manufacturer'] %}<br><span class="meta">{{ row['product_manufacturer'] }}{% if row['product_model'] %} {{ row['product_model'] }}{% endif %}</span>{% endif %}</td>
     {% if show_item %}<td class="meta">{{ row['project_name'] }} / {{ row['item_name'] }}</td>{% endif %}
     <td class="num">
@@ -32,15 +34,18 @@
       {% if 'AUCTION' in buying %}<br><span class="badge auction">auction{% if row['bid_count'] %} · {{ row['bid_count'] }} bids{% endif %}{% if row['end_time'] %} · <span data-ends="{{ row['end_time'] }}">…</span>{% endif %}</span>{% endif %}
       {% endif %}
     </td>
+    {% if not review %}
     <td class="num">{% if row['normal_price'] %}£{{ '%.0f' | format(row['normal_price']) }}{% else %}&mdash;{% endif %}</td>
     <td class="num">{% if row['margin_pct'] %}{{ '%.0f' | format(row['margin_pct']) }}%{% else %}&mdash;{% endif %}</td>
+    {% endif %}
     <td><span class="badge grade-{{ 'spares' if row['grade'] == 'spares/repair' else row['grade'] }}">{{ row['grade'] }}</span></td>
     <td>{% for flag in flags %}<span class="badge flag">{{ flag }}</span>{% else %}&mdash;{% endfor %}</td>
     <td class="meta">{{ row['source'] }}</td>
-    <td class="meta" title="{{ (row['first_seen'] or '')[:10] }}">{{ row['first_seen'] | timeago }}</td>
+    {% set seen = row['last_seen'] if historical else row['first_seen'] %}
+    <td class="meta" title="{{ (seen or '')[:10] }}">{{ seen | timeago }}</td>
   </tr>
 {% else %}
-  <tr><td colspan="{{ 10 if show_item else 9 }}" class="empty">Nothing here yet.</td></tr>
+  <tr><td colspan="{{ 9 + (1 if show_item else 0) - (2 if review else 0) }}" class="empty">Nothing here yet.</td></tr>
 {% endfor %}
 </tbody>
 </table>

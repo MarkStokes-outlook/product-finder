@@ -298,6 +298,13 @@ _MIGRATIONS = [
     # retention pruning — set once on a source's first recorded run, never
     # overwritten (see record_source_run).
     ("source_settings", "first_seen", "TEXT"),
+    ("items", "required_terms", "TEXT NOT NULL DEFAULT '[]'"),
+    ("items", "alternatives", "TEXT NOT NULL DEFAULT '[]'"),
+    ("listings", "category", "TEXT NOT NULL DEFAULT ''"),
+    ("listings", "variation_group", "INTEGER NOT NULL DEFAULT 0"),
+    ("listing_matches", "match_status", "TEXT NOT NULL DEFAULT 'review'"),
+    ("listing_matches", "match_reason", "TEXT NOT NULL DEFAULT 'Saved candidate awaiting reassessment.'"),
+    ("listing_matches", "search_term", "TEXT"),
 ]
 
 
@@ -524,25 +531,15 @@ def import_config(conn: sqlite3.Connection, cfg: AppConfig) -> int:
         for item in project.items:
             conn.execute(
                 "INSERT INTO items (project_id, name, priority, max_price, normal_price, "
-                "target_deal_price, notes, terms, exclude_terms, sources) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+                "target_deal_price, notes, terms, exclude_terms, sources, required_terms, alternatives) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
                 "ON CONFLICT(project_id, name) DO UPDATE SET "
                 "priority = excluded.priority, max_price = excluded.max_price, "
                 "normal_price = excluded.normal_price, target_deal_price = excluded.target_deal_price, "
                 "notes = excluded.notes, terms = excluded.terms, "
-                "exclude_terms = excluded.exclude_terms, sources = excluded.sources",
-                (
-                    project_id,
-                    item.name,
-                    item.priority,
-                    item.max_price,
-                    item.normal_price,
-                    item.target_deal_price,
-                    item.notes,
-                    json.dumps(item.terms),
-                    json.dumps(item.exclude_terms),
-                    json.dumps(item.sources) if item.sources is not None else None,
-                ),
+                "exclude_terms = excluded.exclude_terms, sources = excluded.sources, "
+                "required_terms = excluded.required_terms, alternatives = excluded.alternatives",
+                (project_id, *_item_params(item)),
             )
             count += 1
     conn.commit()
@@ -645,6 +642,8 @@ def _item_from_row(row: sqlite3.Row) -> ItemConfig:
         exclude_terms=json.loads(row["exclude_terms"] or "[]"),
         sources=json.loads(sources) if sources else None,
         id=row["id"],
+        required_terms=json.loads(row["required_terms"]),
+        alternatives=json.loads(row["alternatives"]),
     )
 
 
@@ -778,14 +777,16 @@ def _item_params(item: ItemConfig) -> tuple:
         json.dumps(item.terms),
         json.dumps(item.exclude_terms),
         json.dumps(item.sources) if item.sources is not None else None,
+        json.dumps(item.required_terms),
+        json.dumps(item.alternatives),
     )
 
 
 def create_item(conn: sqlite3.Connection, project_id: int, item: ItemConfig) -> int:
     cur = conn.execute(
         "INSERT INTO items (project_id, name, priority, max_price, normal_price, "
-        "target_deal_price, notes, terms, exclude_terms, sources) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "target_deal_price, notes, terms, exclude_terms, sources, required_terms, alternatives) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (project_id, *_item_params(item)),
     )
     conn.commit()
@@ -795,7 +796,8 @@ def create_item(conn: sqlite3.Connection, project_id: int, item: ItemConfig) -> 
 def update_item(conn: sqlite3.Connection, item_id: int, item: ItemConfig) -> None:
     conn.execute(
         "UPDATE items SET name = ?, priority = ?, max_price = ?, normal_price = ?, "
-        "target_deal_price = ?, notes = ?, terms = ?, exclude_terms = ?, sources = ? "
+        "target_deal_price = ?, notes = ?, terms = ?, exclude_terms = ?, sources = ?, "
+        "required_terms = ?, alternatives = ? "
         "WHERE id = ?",
         (*_item_params(item), item_id),
     )
@@ -2013,10 +2015,12 @@ def upsert_listing(conn: sqlite3.Connection, listing: Listing) -> tuple[int, boo
             "UPDATE listings SET last_seen = ?, price = ?, title = ?, "
             "buying_options = ?, bid_count = ?, end_time = ?, "
             "current_bid_price = ?, buy_it_now_price = ?, "
-            "image_url = COALESCE(?, image_url) WHERE id = ?",
+            "image_url = COALESCE(?, image_url), description = ?, condition = ?, "
+            "category = ?, variation_group = ? WHERE id = ?",
             (now, listing.price, listing.title, buying_options, listing.bid_count,
              listing.end_time, listing.current_bid_price, listing.buy_it_now_price,
-             listing.image_url, row["id"]),
+             listing.image_url, listing.description, listing.condition,
+             listing.category, int(listing.variation_group), row["id"]),
         )
         # Commit immediately (as every db.py write function must): the watch
         # loop calls this between network requests, and an uncommitted write
@@ -2029,8 +2033,8 @@ def upsert_listing(conn: sqlite3.Connection, listing: Listing) -> tuple[int, boo
         "INSERT INTO listings (source, external_id, title, price, currency, url, "
         "location, description, condition, first_seen, last_seen, "
         "buying_options, bid_count, end_time, image_url, "
-        "current_bid_price, buy_it_now_price) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "current_bid_price, buy_it_now_price, category, variation_group) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (
             listing.source,
             listing.external_id,
@@ -2049,6 +2053,8 @@ def upsert_listing(conn: sqlite3.Connection, listing: Listing) -> tuple[int, boo
             listing.image_url,
             listing.current_bid_price,
             listing.buy_it_now_price,
+            listing.category,
+            int(listing.variation_group),
         ),
     )
     conn.commit()
@@ -2203,9 +2209,8 @@ def scan_duplicate_candidates(conn: sqlite3.Connection) -> int:
     rows = conn.execute(
         f"""
         SELECT DISTINCT m.item_id, l.id, l.title, l.price, l.source, l.location, l.image_url
-        FROM listing_matches m
-        JOIN listings l ON l.id = m.listing_id
-        WHERE l.is_primary_sighting = 1 AND {_NOT_ENDED}
+        {_MATCH_FROM}
+        WHERE {_CURRENT_MATCH}
         ORDER BY m.item_id, l.id
         """
     ).fetchall()
@@ -2269,6 +2274,7 @@ SELECT d.*, i.name AS item_name, i.project_id,
        lb.url AS b_url, lb.end_time AS b_end_time
 FROM listing_duplicates d
 JOIN items i ON i.id = d.item_id
+JOIN projects p ON p.id = i.project_id
 JOIN listings la ON la.id = d.listing_a
 JOIN listings lb ON lb.id = d.listing_b
 """
@@ -2289,9 +2295,10 @@ def list_duplicate_candidates(
     clauses = ["d.status = ?"]
     params: list = [status]
     if status == "pending":
+        clauses.append(_ACTIVE_WATCH)
         clauses.append("la.is_primary_sighting = 1 AND lb.is_primary_sighting = 1")
         for alias in ("la", "lb"):
-            clauses.append(_NOT_ENDED.replace("l.", f"{alias}."))
+            clauses.append(_CURRENT_LISTING.replace("l.", f"{alias}."))
     if project_id is not None:
         clauses.append("i.project_id = ?")
         params.append(project_id)
@@ -2384,18 +2391,20 @@ def pending_duplicate_counts(conn: sqlite3.Connection) -> dict[int, int]:
     """Reviewable pending pairs per project id (same both-live-and-primary
     visibility rule as list_duplicate_candidates), for the dashboard's
     per-project "possible duplicates" note."""
-    not_ended_a = _NOT_ENDED.replace("l.", "la.")
-    not_ended_b = _NOT_ENDED.replace("l.", "lb.")
+    current_a = _CURRENT_LISTING.replace("l.", "la.")
+    current_b = _CURRENT_LISTING.replace("l.", "lb.")
     rows = conn.execute(
         f"""
         SELECT i.project_id, COUNT(*) AS c
         FROM listing_duplicates d
         JOIN items i ON i.id = d.item_id
+        JOIN projects p ON p.id = i.project_id
         JOIN listings la ON la.id = d.listing_a
         JOIN listings lb ON lb.id = d.listing_b
         WHERE d.status = 'pending'
+          AND {_ACTIVE_WATCH}
           AND la.is_primary_sighting = 1 AND lb.is_primary_sighting = 1
-          AND {not_ended_a} AND {not_ended_b}
+          AND {current_a} AND {current_b}
         GROUP BY i.project_id
         """
     ).fetchall()
@@ -2408,6 +2417,10 @@ def record_match(
     item_id: int,
     evaluation: Evaluation,
     product_id: int | None = None,
+    *,
+    match_status: str = "exact",
+    match_reason: str = "",
+    search_term: str | None = None,
 ) -> tuple[int, bool]:
     """Record a listing/item match. Returns (match_id, is_new_match).
 
@@ -2421,7 +2434,8 @@ def record_match(
     if row:
         conn.execute(
             "UPDATE listing_matches SET grade = ?, deal_score = ?, margin_abs = ?, "
-            "margin_pct = ?, under_target = ?, flags = ?, product_id = ? WHERE id = ?",
+            "margin_pct = ?, under_target = ?, flags = ?, product_id = ?, "
+            "match_status = ?, match_reason = ?, search_term = COALESCE(?, search_term) WHERE id = ?",
             (
                 evaluation.grade,
                 evaluation.deal_score,
@@ -2430,6 +2444,7 @@ def record_match(
                 int(evaluation.under_target),
                 json.dumps(evaluation.flags),
                 product_id,
+                match_status, match_reason, search_term,
                 row["id"],
             ),
         )
@@ -2441,8 +2456,8 @@ def record_match(
         return row["id"], False
     cur = conn.execute(
         "INSERT INTO listing_matches (listing_id, item_id, grade, deal_score, "
-        "margin_abs, margin_pct, under_target, flags, matched_at, product_id) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "margin_abs, margin_pct, under_target, flags, matched_at, product_id, "
+        "match_status, match_reason, search_term) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (
             listing_id,
             item_id,
@@ -2454,6 +2469,7 @@ def record_match(
             json.dumps(evaluation.flags),
             _now(),
             product_id,
+            match_status, match_reason, search_term,
         ),
     )
     conn.commit()
@@ -2508,21 +2524,31 @@ def listing_excluded_from_item(conn: sqlite3.Connection, item_id: int, source: s
 
 
 def mark_alerted(conn: sqlite3.Connection, match_id: int, channel: str) -> bool:
-    """Record an alert. Returns False if already sent on this channel."""
+    """Claim a current match for alerting once per channel."""
     try:
-        conn.execute(
-            "INSERT INTO alerts_sent (match_id, channel, sent_at) VALUES (?, ?, ?)",
-            (match_id, channel, _now()),
+        cur = conn.execute(
+            f"""INSERT INTO alerts_sent (match_id, channel, sent_at)
+                SELECT m.id, ?, ? {_MATCH_FROM} WHERE m.id = ? AND {_CURRENT_MATCH}""",
+            (channel, _now(), match_id),
         )
         # Committed before the caller fires the (possibly slow) webhook —
         # never hold the writer lock across network I/O.
         conn.commit()
-        return True
+        return cur.rowcount == 1
     except sqlite3.IntegrityError:
         return False
 
 
-_MATCH_SELECT = """
+_MATCH_FROM = """
+FROM listing_matches m
+JOIN listings l ON l.id = m.listing_id
+JOIN items i ON i.id = m.item_id
+JOIN projects p ON p.id = i.project_id
+LEFT JOIN products pr ON pr.id = m.product_id
+LEFT JOIN item_products ip ON ip.product_id = m.product_id AND ip.item_id = m.item_id
+"""
+
+_MATCH_SELECT = f"""
 SELECT p.name AS project_name, p.slug AS project_slug, p.id AS project_id,
        i.name AS item_name, i.id AS item_id,
        COALESCE(pr.typical_new_price, pr.msrp, i.normal_price) AS normal_price,
@@ -2533,13 +2559,9 @@ SELECT p.name AS project_name, p.slug AS project_slug, p.id AS project_id,
        l.id AS listing_id, l.title, l.price, l.currency, l.url, l.source, l.location,
        l.first_seen, l.last_seen, l.end_time, l.bid_count, l.buying_options, l.image_url,
        l.current_bid_price, l.buy_it_now_price,
-       m.id AS match_id, m.grade, m.deal_score, m.margin_abs, m.margin_pct, m.under_target, m.flags
-FROM listing_matches m
-JOIN listings l ON l.id = m.listing_id
-JOIN items i ON i.id = m.item_id
-JOIN projects p ON p.id = i.project_id
-LEFT JOIN products pr ON pr.id = m.product_id
-LEFT JOIN item_products ip ON ip.product_id = m.product_id AND ip.item_id = m.item_id
+       m.id AS match_id, m.grade, m.deal_score, m.margin_abs, m.margin_pct, m.under_target, m.flags,
+       m.match_status, m.match_reason, m.search_term
+{_MATCH_FROM}
 """
 
 _SORTS = {
@@ -2548,16 +2570,15 @@ _SORTS = {
     "first_seen": "l.first_seen DESC",
 }
 
-# An ended listing (auction finished, or a fixed-price listing whose end date
-# has passed) isn't buyable at any price, so it never belongs on a browsing
-# or preview surface — it should vanish the moment the clock passes, not a
-# watch cycle later. eBay end_time strings ("2026-07-06T20:51:35.000Z", UTC)
-# compare lexically against SQLite's UTC 'now' rendered in the same
-# YYYY-MM-DDTHH:MM:SS prefix format. Rows stay in the DB for provenance and
-# price history, and auction_watch deliberately keeps its own listing
-# queries — it must keep polling briefly *past* end time to capture the
-# closing price (see AuctionSnapshot.ended).
-_NOT_ENDED = "(l.end_time IS NULL OR l.end_time > strftime('%Y-%m-%dT%H:%M:%S', 'now'))"
+# An undated listing becomes stale after 48 hours without a new sighting.
+# Dated listings follow their end time. Auction close capture deliberately
+# uses its own query because it can need to poll after that time.
+_STALE_AFTER_HOURS = 48
+_LISTING_EXPIRY = (
+    f"CASE WHEN l.end_time IS NULL THEN julianday(l.last_seen, '+{_STALE_AFTER_HOURS} hours') "
+    "ELSE julianday(l.end_time) END"
+)
+_CURRENT_LISTING = f"(l.sold_captured = 0 AND COALESCE(({_LISTING_EXPIRY}) > julianday('now'), 0))"
 
 # A match against a knowledge-only tracking (item_products.wanted = 0 — this
 # item's own decision, not a global product flag) is identification, not
@@ -2565,6 +2586,16 @@ _NOT_ENDED = "(l.end_time IS NULL OR l.end_time > strftime('%Y-%m-%dT%H:%M:%S', 
 # belongs on a deal surface or in an alert. Requires item_products joined
 # as `ip` (all deal-surface queries join it, keyed by item_id+product_id).
 _WANTED = "(m.product_id IS NULL OR ip.wanted = 1)"
+_ACTIVE_WATCH = "(p.archived = 0 AND i.archived = 0)"
+_VISIBLE_MATCH = f"(l.is_primary_sighting = 1 AND {_WANTED})"
+_ELIGIBLE_MATCH = "m.match_status IN ('exact', 'substitute')"
+_CURRENT_MATCH = f"({_ACTIVE_WATCH} AND {_VISIBLE_MATCH} AND {_CURRENT_LISTING} AND {_ELIGIBLE_MATCH})"
+
+
+def match_is_current(conn: sqlite3.Connection, match_id: int) -> bool:
+    return conn.execute(
+        f"SELECT 1 {_MATCH_FROM} WHERE m.id = ? AND {_CURRENT_MATCH}", (match_id,)
+    ).fetchone() is not None
 
 
 def query_matches(
@@ -2576,16 +2607,25 @@ def query_matches(
     flagged: bool | None = None,
     sort: str = "score",
     limit: int | None = None,
+    *,
+    historical: bool = False,
+    review: bool = False,
 ) -> list[sqlite3.Row]:
     """Browse matches with optional filters. flagged=True → has warning flags
     or graded spares/repair; flagged=False → clean listings only.
 
-    Always excludes non-primary sightings (see resolve_identity()) — a
-    listing that's a confirmed duplicate of another, already-surfaced one
-    stays in the database for provenance but never appears in results.
-    Ended listings (see _NOT_ENDED) and matches against knowledge-only
-    products (see _WANTED) are likewise always excluded."""
-    clauses, params = ["l.is_primary_sighting = 1", _NOT_ENDED, _WANTED], []
+    By default only current listings from active watches are shown.
+    Historical results contain expired listings and archived watches.
+    Both views hide non-primary sightings and knowledge-only matches."""
+    visibility = (
+        f"{_VISIBLE_MATCH} AND NOT ({_ACTIVE_WATCH} AND {_CURRENT_LISTING})"
+        if historical else _CURRENT_MATCH
+    )
+    if review:
+        visibility = (
+            f"{_VISIBLE_MATCH} AND {_ACTIVE_WATCH} AND {_CURRENT_LISTING} AND NOT ({_ELIGIBLE_MATCH})"
+        )
+    clauses, params = [visibility], []
     if project_id is not None:
         clauses.append("p.id = ?")
         params.append(project_id)
@@ -2620,7 +2660,7 @@ def list_active_auctions(conn: sqlite3.Connection, limit: int | None = None) -> 
     text is safe here without needing a join/subquery."""
     tail = f" LIMIT {int(limit)}" if limit else ""
     return conn.execute(
-        f"{_MATCH_SELECT} WHERE l.is_primary_sighting = 1 AND {_NOT_ENDED} AND {_WANTED} "
+        f"{_MATCH_SELECT} WHERE {_CURRENT_MATCH} "
         f"AND l.buying_options LIKE '%AUCTION%' "
         f"ORDER BY (l.end_time IS NULL), l.end_time ASC{tail}"
     ).fetchall()
@@ -2631,7 +2671,7 @@ def list_offer_listings(conn: sqlite3.Connection, limit: int | None = None) -> l
     first — for the Offers view (see offers.py)."""
     tail = f" LIMIT {int(limit)}" if limit else ""
     return conn.execute(
-        f"{_MATCH_SELECT} WHERE l.is_primary_sighting = 1 AND {_NOT_ENDED} AND {_WANTED} "
+        f"{_MATCH_SELECT} WHERE {_CURRENT_MATCH} "
         f"AND l.buying_options LIKE '%BEST_OFFER%' "
         f"ORDER BY l.last_seen DESC{tail}"
     ).fetchall()
@@ -2644,14 +2684,13 @@ def project_summaries(conn: sqlite3.Connection) -> list[sqlite3.Row]:
     resolve_identity()) via the CASE guards below, so a confirmed
     cross-source duplicate doesn't inflate the count or surface a stale
     score — the LEFT JOINs are kept as LEFT so item_count (which doesn't
-    depend on matches existing at all) is unaffected. Ended listings (see
-    _NOT_ENDED) are excluded the same way."""
+    depend on matches existing at all) is unaffected."""
     return conn.execute(
         f"""
         SELECT p.id, p.name, p.slug, p.archived,
                COUNT(DISTINCT i.id) AS item_count,
-               COUNT(CASE WHEN l.is_primary_sighting = 1 AND {_NOT_ENDED} AND {_WANTED} THEN m.id END) AS match_count,
-               MAX(CASE WHEN l.is_primary_sighting = 1 AND {_NOT_ENDED} AND {_WANTED} THEN m.deal_score END) AS best_score
+               COUNT(CASE WHEN {_CURRENT_MATCH} THEN m.id END) AS match_count,
+               MAX(CASE WHEN {_CURRENT_MATCH} THEN m.deal_score END) AS best_score
         FROM projects p
         LEFT JOIN items i ON i.project_id = p.id AND i.archived = 0
         LEFT JOIN listing_matches m ON m.item_id = i.id
@@ -2683,8 +2722,7 @@ def project_top_picks(conn: sqlite3.Connection) -> dict[int, sqlite3.Row]:
             JOIN items i ON i.id = m.item_id
             JOIN projects p ON p.id = i.project_id
             LEFT JOIN item_products ip ON ip.product_id = m.product_id AND ip.item_id = m.item_id
-            WHERE p.archived = 0 AND l.is_primary_sighting = 1
-              AND {_NOT_ENDED} AND {_WANTED}
+            WHERE {_CURRENT_MATCH}
               AND m.flags = '[]' AND m.grade != 'spares/repair'
         )
         WHERE rn = 1
@@ -2694,6 +2732,23 @@ def project_top_picks(conn: sqlite3.Connection) -> dict[int, sqlite3.Row]:
 
 
 _SOURCE_RUN_RETENTION_DAYS = 30
+
+
+def latest_search_runs(conn: sqlite3.Connection) -> dict[str, sqlite3.Row]:
+    """Latest completed attempt and most recent recorded success per source."""
+    rows = conn.execute(
+        """
+        WITH runs AS (
+            SELECT source, run_at, ok, listings,
+                   MAX(CASE WHEN ok = 1 THEN run_at END) OVER (PARTITION BY source) AS last_success,
+                   ROW_NUMBER() OVER (PARTITION BY source ORDER BY run_at DESC, id DESC) AS position
+            FROM source_runs
+            WHERE searches > 0
+        )
+        SELECT source, run_at, ok, listings, last_success FROM runs WHERE position = 1
+        """
+    ).fetchall()
+    return {row["source"]: row for row in rows}
 
 
 def record_source_run(
@@ -2883,13 +2938,6 @@ def source_health(conn: sqlite3.Connection) -> dict[str, dict]:
     return health
 
 
-# A listing with no end_time can't expire on its own — if the source stops
-# returning it (sold, delisted, filtered out) it just lingers. Not rescanned
-# for this long = probably gone; the roadmap's "source freshness /
-# stale-listing rate" metric counts exactly these.
-_STALE_AFTER_HOURS = 48
-
-
 def source_coverage(conn: sqlite3.Connection) -> dict[str, dict]:
     """Per-source data coverage, keyed by source name — the roadmap's
     "coverage should become measurable" metrics, computed from what each
@@ -2930,7 +2978,7 @@ def source_coverage(conn: sqlite3.Connection) -> dict[str, dict]:
         f"""
         SELECT l.source,
                COUNT(*) AS listings_total,
-               SUM(CASE WHEN {_NOT_ENDED} THEN 1 ELSE 0 END) AS listings_live,
+               SUM(CASE WHEN {_CURRENT_LISTING} THEN 1 ELSE 0 END) AS listings_live,
                SUM(CASE WHEN l.first_seen >= ? THEN 1 ELSE 0 END) AS new_24h,
                SUM(CASE WHEN l.first_seen >= ? THEN 1 ELSE 0 END) AS new_7d,
                SUM(CASE WHEN l.end_time IS NULL AND l.last_seen < ? THEN 1 ELSE 0 END) AS stale,
@@ -3123,13 +3171,17 @@ def source_coverage_analytics(conn: sqlite3.Connection) -> dict[str, dict]:
     return analytics
 
 
-def latest_activity(conn: sqlite3.Connection) -> str | None:
-    """Latest listing timestamp seen by `watch`/`run-once` — a cheap "did a
-    search just run" signal for the dashboard's live-polling JS. Every
-    listing touched in a cycle gets its last_seen bumped, whether new or
-    not, so this changes on any cycle that fetched at least one listing."""
-    row = conn.execute("SELECT MAX(last_seen) AS ts FROM listings").fetchone()
-    return row["ts"] if row else None
+def listing_activity(conn: sqlite3.Connection) -> dict:
+    """Signals that a sighting or expiry changed the results since the last poll."""
+    row = conn.execute(
+        f"""SELECT MAX(l.last_seen) AS last_activity,
+                   MAX(CASE WHEN l.sold_captured = 1
+                            THEN julianday(COALESCE(l.last_poll_at, l.last_seen))
+                            WHEN ({_LISTING_EXPIRY}) <= julianday('now')
+                            THEN ({_LISTING_EXPIRY}) END) AS last_expiry
+            FROM listings l"""
+    ).fetchone()
+    return dict(row)
 
 
 def dashboard_stats(conn: sqlite3.Connection) -> dict:
@@ -3153,10 +3205,10 @@ def dashboard_stats(conn: sqlite3.Connection) -> dict:
                      THEN m.id END) AS new_today
         FROM listing_matches m
         JOIN listings l ON l.id = m.listing_id
-        JOIN items i ON i.id = m.item_id AND i.archived = 0
-        JOIN projects p ON p.id = i.project_id AND p.archived = 0
+        JOIN items i ON i.id = m.item_id
+        JOIN projects p ON p.id = i.project_id
         LEFT JOIN item_products ip ON ip.product_id = m.product_id AND ip.item_id = m.item_id
-        WHERE l.is_primary_sighting = 1 AND {_NOT_ENDED} AND {_WANTED}
+        WHERE {_CURRENT_MATCH}
         """,
         (new_cutoff,),
     ).fetchone()

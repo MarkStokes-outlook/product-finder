@@ -2,14 +2,16 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import sqlite3
+from collections.abc import Iterable
 
-from . import catalogue, db, extraction, retailer_price, scoring, sources
+from . import catalogue, db, extraction, grading, relevance, retailer_price, scoring, sources
 from .alerts import console as console_alerts
 from .alerts import webhook as webhook_alerts
 from .config import AppConfig, ItemConfig, OllamaConfig, ProjectConfig
-from .models import Listing, ManualLink, MatchAlert
+from .models import Evaluation, Listing, ManualLink, MatchAlert
 from .orchestrator import SearchOrchestrator, WorkItem
 
 log = logging.getLogger(__name__)
@@ -35,48 +37,80 @@ def load_projects(cfg: AppConfig, conn: sqlite3.Connection) -> list[ProjectConfi
     return db.load_project_configs(conn)
 
 
-def reassess_item_matches(conn: sqlite3.Connection, item_id: int, item: ItemConfig) -> dict:
-    """Re-run catalogue matching and scoring for every listing already
-    matched against this item, against its just-saved settings — called
-    after an item edit so a newly-added exclude term, a changed max price,
-    or a corrected normal/target price takes effect on existing matches
-    immediately, not only on whatever the next watch cycle happens to
-    re-fetch. scoring.excluded() and the max_price check only ever gated
-    *new* matches at ingest time (see run_once above); nothing previously
-    re-applied them to what's already stored.
+def _assess(
+    listing: Listing, item: ItemConfig, products: list[catalogue.Product],
+    permitted_sources: Iterable[str] | None,
+    *,
+    manually_excluded: bool = False,
+) -> tuple[relevance.Decision, Evaluation, catalogue.Product | None]:
+    if manually_excluded:
+        decision = relevance.Decision("excluded", "This listing was dismissed for this watch.")
+        product = None
+    elif permitted_sources is not None and listing.source not in permitted_sources:
+        decision = relevance.Decision("excluded", "The source is outside this watch's settings.")
+        product = None
+    elif scoring.excluded(listing, item):
+        decision = relevance.Decision("excluded", "The title matches a watch exclusion.")
+        product = None
+    elif item.max_price is not None and listing.price > item.max_price:
+        decision = relevance.Decision("excluded", "The listing price exceeds the watch budget.")
+        product = None
+    else:
+        decision, product = relevance.assess(listing, item, products)
+    evaluation = (
+        scoring.evaluate(listing, item, product)
+        if decision.eligible else Evaluation(grading.classify(listing.text), [], 0, 0, False, 0)
+    )
+    return decision, evaluation, product
 
-    A listing that now fails exclusion or max_price — or was individually
-    flagged "not a match" for this item (see db.exclude_listing_from_item)
-    — is removed outright (db.delete_listing_match). Its price history
-    lives in product_price_observations, keyed to the product, so nothing
-    is lost. Everything else is re-scored and re-attributed to whichever
-    catalogue product now matches (or none); db.record_match's upsert makes
-    this idempotent to re-run. Returns {"rescored": n, "excluded": n}."""
+
+def reassess_item_matches(
+    conn: sqlite3.Connection, item_id: int, item: ItemConfig, cfg: AppConfig | None = None,
+) -> dict:
+    """Re-evaluate stored candidates in place, retaining their evidence and alert history."""
     products = db.list_products_for_matching(conn, item_id)
+    project_sources = conn.execute(
+        "SELECT p.sources FROM projects p JOIN items i ON p.id = i.project_id WHERE i.id = ?",
+        (item_id,),
+    ).fetchone()
+    permitted = set(cfg.sources.enabled_names()) if cfg is not None else None
+    for restriction in (item.sources, json.loads(project_sources["sources"] or "null") if project_sources else None):
+        if restriction is not None:
+            permitted = permitted.intersection(restriction) if permitted is not None else set(restriction)
+
     rows = conn.execute(
-        "SELECT m.id AS match_id, l.* FROM listing_matches m "
-        "JOIN listings l ON l.id = m.listing_id WHERE m.item_id = ?",
+        "SELECT l.*, x.item_id IS NOT NULL AS manually_excluded FROM listing_matches m "
+        "JOIN listings l ON l.id = m.listing_id "
+        "LEFT JOIN listing_match_exclusions x ON x.listing_id = m.listing_id AND x.item_id = m.item_id "
+        "WHERE m.item_id = ?",
         (item_id,),
     ).fetchall()
     rescored = excluded = 0
     for row in rows:
         listing = Listing.from_row(row)
-        if (
-            scoring.excluded(listing, item)
-            or (item.max_price and listing.price > item.max_price)
-            or db.listing_excluded_from_item(conn, item_id, listing.source, listing.external_id)
-        ):
-            db.delete_listing_match(conn, row["match_id"])
-            excluded += 1
-            continue
-        product = catalogue.match(listing.text, products) if products else None
-        evaluation = scoring.evaluate(listing, item, product)
+        decision, evaluation, product = _assess(
+            listing, item, products, permitted, manually_excluded=bool(row["manually_excluded"]),
+        )
         db.record_match(
             conn, row["id"], item_id, evaluation,
             product_id=product.global_product_id if product else None,
+            match_status=decision.status, match_reason=decision.reason,
         )
-        rescored += 1
+        if decision.eligible:
+            rescored += 1
+        else:
+            excluded += 1
     return {"rescored": rescored, "excluded": excluded}
+
+
+def reassess_saved_matches(conn: sqlite3.Connection, cfg: AppConfig) -> dict:
+    """Evaluate saved candidates without making requests or delivering alerts."""
+    counts = {"rescored": 0, "excluded": 0}
+    for row in db.list_items(conn, include_archived=True):
+        result = reassess_item_matches(conn, row["id"], db._item_from_row(row), cfg)
+        for key in counts:
+            counts[key] += result[key]
+    return counts
 
 
 def collect_manual_links(
@@ -151,10 +185,6 @@ def run_once(
                 stats["listings"] += len(outcome.listings)
                 source = registry[name]
                 for listing in outcome.listings:
-                    if scoring.excluded(listing, item):
-                        continue
-                    if item.max_price and listing.price > item.max_price:
-                        continue
                     # A human already said this exact listing is wrong for
                     # this item (the "Not a match" button) — never recreate
                     # the match, even though nothing about its text/price
@@ -163,8 +193,7 @@ def run_once(
                         conn, item_id, listing.source, listing.external_id
                     ):
                         continue
-                    product = catalogue.match(listing.text, products) if products else None
-                    evaluation = scoring.evaluate(listing, item, product)
+                    decision, evaluation, product = _assess(listing, item, products, None)
                     if product is not None:
                         stats["catalogue_matches"] += 1
                     if evaluation.under_target:
@@ -184,7 +213,11 @@ def run_once(
                     match_id, is_new = db.record_match(
                         conn, listing_id, item_id, evaluation,
                         product_id=product.global_product_id if product else None,
+                        match_status=decision.status, match_reason=decision.reason,
+                        search_term=outcome.term,
                     )
+                    if decision.status == "excluded":
+                        continue
                     if is_new and is_primary and product and not scoring.is_live_auction(listing):
                         # One observation per distinct listing, at first
                         # sighting only — a long-unsold listing rescanned
@@ -204,7 +237,8 @@ def run_once(
                     # identification, not endorsement: price history above
                     # still accumulates, but no alert fires and read-time
                     # gating (db._WANTED) keeps the match off deal surfaces.
-                    if is_new and is_primary and (product is None or product.wanted):
+                    if (decision.eligible and evaluation.grade != grading.SPARES
+                            and is_new and is_primary and (product is None or product.wanted)):
                         normal_price, target_deal_price, _ = scoring.effective_prices(item, product)
                         new_alerts.append(
                             MatchAlert(
@@ -226,6 +260,10 @@ def run_once(
     db.scan_duplicate_candidates(conn)
     conn.commit()
 
+    new_alerts = [
+        alert for alert in new_alerts
+        if db.match_is_current(conn, alert.extras["match_id"])
+    ]
     new_alerts.sort(key=lambda a: a.evaluation.deal_score, reverse=True)
     _send_alerts(cfg, conn, new_alerts)
     return new_alerts
