@@ -1,10 +1,11 @@
 import json
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
 from product_finder import db
-from product_finder.config import AppConfig
-from product_finder.models import Evaluation, Listing
+from product_finder.config import AppConfig, ItemConfig
+from product_finder.models import Evaluation, Listing, OfferCheck
 from product_finder.web.app import create_app
 
 
@@ -23,19 +24,16 @@ def client(cfg):
 def seed_match(cfg, flags=None, grade="A", score=85.0):
     conn = db.connect(cfg.db_path)
     project_id = db.create_project(conn, "Coachhouse Tools")
-    from product_finder.config import ItemConfig
-
     item_id = db.create_item(
         conn,
         project_id,
         ItemConfig(name="Track Saw", terms=["track saw"], normal_price=500,
                    target_deal_price=300, priority="high"),
     )
-    listing_id, _ = db.upsert_listing(
-        conn,
-        Listing(source="ebay", external_id="E1", title="Makita SP6000 saw",
-                price=245.0, url="https://example.com/1"),
-    )
+    listing = Listing(source="ebay", external_id="E1", title="Makita SP6000 saw",
+                      price=245.0, url="https://example.com/1")
+    listing_id, _ = db.upsert_listing(conn, listing)
+    db.store_offer_check(conn, listing_id, listing, OfferCheck("verified", "Fixture", 245, 0))
     db.record_match(
         conn, listing_id, item_id,
         Evaluation(grade=grade, flags=flags or [], margin_abs=255.0,
@@ -103,7 +101,7 @@ def test_project_with_only_flagged_matches_shows_idle_preview(cfg, client):
     resp = client.get("/")
     # Warned listing still appears in the warnings section, but the project
     # card falls back to the idle state rather than promoting it as a pick.
-    assert b"Still watching" in resp.data
+    assert b"No current deal to show" in resp.data
 
 
 def _set_end_time(cfg, external_id, end_time):
@@ -131,7 +129,7 @@ def test_ended_listing_disappears_from_all_browsing_surfaces(cfg, client):
     conn.close()
     resp = client.get("/")
     assert b"Makita SP6000 saw" not in resp.data
-    assert b"Still watching" in resp.data  # project card falls back to idle
+    assert b"No current deal to show" in resp.data
 
 
 def test_listing_with_future_end_time_still_shown(cfg, client):
@@ -144,6 +142,71 @@ def test_listing_with_future_end_time_still_shown(cfg, client):
     conn.close()
     resp = client.get("/")
     assert b"Makita SP6000 saw" in resp.data
+
+
+def test_stale_listing_only_appears_in_project_history(cfg, client):
+    project_id, _ = seed_match(cfg)
+    with db.connect(cfg.db_path) as conn:
+        old = (datetime.now(timezone.utc) - timedelta(hours=49)).isoformat()
+        conn.execute(
+            "UPDATE listings SET first_seen = ?, last_seen = ?, buying_options = ?",
+            (old, old, '["BEST_OFFER", "AUCTION"]'),
+        )
+        assert db.query_matches(conn) == []
+        assert db.project_summaries(conn)[0]["match_count"] == 0
+        assert db.project_top_picks(conn) == {}
+        assert db.dashboard_stats(conn)["hot_deals"] == 0
+        assert db.list_active_auctions(conn) == []
+        assert db.list_offer_listings(conn) == []
+        assert db.source_coverage(conn)["ebay"]["listings_live"] == 0
+        match_id = conn.execute("SELECT id FROM listing_matches").fetchone()["id"]
+        assert db.mark_alerted(conn, match_id, "console") is False
+
+    title = b"Makita SP6000 saw"
+    for path in ("/", "/dashboard/live", f"/projects/{project_id}", "/auctions", "/offers"):
+        assert title not in client.get(path).data
+    history = client.get(f"/projects/{project_id}?view=history").data
+    assert title in history
+    assert b"Last seen" in history
+
+    with db.connect(cfg.db_path) as conn:
+        first_seen = conn.execute("SELECT first_seen FROM listings").fetchone()["first_seen"]
+        listing = Listing(
+            source="ebay", external_id="E1", title=title.decode(),
+            price=245.0, url="https://example.com/1",
+        )
+        listing_id, _ = db.upsert_listing(conn, listing)
+        assert db.query_matches(conn)[0]["first_seen"] == first_seen
+        assert b'Makita SP6000 saw' not in client.get("/").data
+        db.store_offer_check(conn, listing_id, listing, OfferCheck("verified", "Fixture", 245, 0))
+    assert title in client.get("/").data
+    assert title not in client.get(f"/projects/{project_id}?view=history").data
+
+
+@pytest.mark.parametrize("archive_kind", ["items", "projects"])
+def test_archived_watches_disappear_from_active_surfaces(cfg, client, archive_kind):
+    project_id, item_id = seed_match(cfg)
+    object_id = item_id if archive_kind == "items" else project_id
+    with db.connect(cfg.db_path) as conn:
+        conn.execute("UPDATE listings SET buying_options = ?", ('["BEST_OFFER", "FIXED_PRICE"]',))
+        auction = Listing("ebay", "auction", "Saw for auction", 240, "https://example.com/auction",
+                          buying_options=["AUCTION"])
+        auction_id, _ = db.upsert_listing(conn, auction)
+        db.record_match(conn, auction_id, item_id, Evaluation("B", ["live auction"], 0, 0, False, 30))
+    title = b"Makita SP6000 saw"
+    assert all(title in client.get(path).data for path in ("/", "/offers"))
+    assert b"Saw for auction" in client.get("/auctions").data
+
+    assert client.post(f"/{archive_kind}/{object_id}/archive").status_code == 302
+    for path in ("/", "/dashboard/live", f"/projects/{project_id}", "/auctions", "/offers"):
+        assert title not in client.get(path).data
+    assert b"Saw for auction" not in client.get("/auctions").data
+    assert title in client.get(f"/projects/{project_id}?view=history").data
+    with db.connect(cfg.db_path) as conn:
+        match_id = conn.execute("SELECT id FROM listing_matches").fetchone()["id"]
+        assert db.mark_alerted(conn, match_id, "console") is False
+    assert client.post(f"/{archive_kind}/{object_id}/archive").status_code == 302
+    assert title in client.get("/").data
 
 
 def test_dashboard_hero_shows_best_deal(cfg, client):
@@ -260,7 +323,7 @@ def test_dashboard_project_card_shows_top_pick_preview(cfg, client):
     seed_match(cfg, score=90.0)
     resp = client.get("/")
     assert b"project-pick" in resp.data
-    assert b"Still watching" not in resp.data  # has a match, not idle
+    assert b"No current deal to show" not in resp.data
 
 
 def test_dashboard_project_card_idle_state_when_no_matches(cfg, client):
@@ -268,7 +331,7 @@ def test_dashboard_project_card_idle_state_when_no_matches(cfg, client):
     db.create_project(conn, "Quiet Project")
     conn.commit()
     resp = client.get("/")
-    assert b"Still watching" in resp.data
+    assert b"No current deal to show" in resp.data
 
 
 # --- Dashboard live refresh (no manual trigger, no full page reload) -----------
@@ -283,7 +346,10 @@ def test_no_manual_run_trigger_in_ui(client):
 def test_api_status_no_activity_yet(client):
     resp = client.get("/api/status")
     assert resp.status_code == 200
-    assert resp.get_json() == {"last_activity": None}
+    data = resp.get_json()
+    assert data["last_activity"] is None
+    assert data["last_expiry"] is None
+    assert data["search"]["state"] == "inactive"
 
 
 def test_api_status_reflects_latest_listing_activity(cfg, client):
@@ -291,6 +357,45 @@ def test_api_status_reflects_latest_listing_activity(cfg, client):
     resp = client.get("/api/status")
     data = resp.get_json()
     assert data["last_activity"] is not None
+
+
+def test_status_distinguishes_search_outcomes_from_listing_activity(cfg, client):
+    seed_match(cfg)
+    assert client.get("/api/status").get_json()["search"]["state"] == "manual"
+    cfg.sources.ebay.app_id = "test"
+    cfg.sources.ebay.cert_id = "test"
+    initial = client.get("/api/status").get_json()
+    assert initial["search"]["state"] == "waiting"
+    with db.connect(cfg.db_path) as conn:
+        db.record_source_run(conn, "ebay", searches=1, listings=0)
+        success = client.get("/api/status").get_json()
+        assert success["last_activity"] == initial["last_activity"]
+        assert success["search"]["state"] == "empty"
+        assert success["search"]["last_success"]
+        assert b"Search completed with no listings" in client.get("/").data
+
+        db.record_source_run(conn, "ebay", searches=1, errors=1)
+        failed = client.get("/api/status").get_json()["search"]
+        assert failed["state"] == "failed"
+        assert failed["last_success"] == success["search"]["last_success"]
+        old = (datetime.now(timezone.utc) - timedelta(hours=3)).isoformat()
+        conn.execute("UPDATE source_runs SET run_at = ?", (old,))
+
+    delayed = client.get("/api/status").get_json()["search"]
+    assert delayed["state"] == "delayed"
+    assert delayed["last_attempt"] == old
+    assert b"Automatic searches are delayed" in client.get("/").data
+
+
+def test_expiry_changes_results_without_a_new_sighting(cfg, client):
+    seed_match(cfg)
+    before = client.get("/api/status").get_json()
+    assert before["last_expiry"] is None
+    _set_end_time(cfg, "E1", "2020-01-01T00:00:00.000Z")
+    after = client.get("/api/status").get_json()
+    assert after["last_activity"] == before["last_activity"]
+    assert after["last_expiry"] is not None
+    assert b"Makita SP6000 saw" not in client.get("/dashboard/live").data
 
 
 def test_dashboard_live_fragment_has_no_layout(cfg, client):
@@ -633,6 +738,33 @@ def test_item_edit(cfg, client):
     assert item.sources is None  # no boxes ticked = all sources
 
 
+def test_item_edit_removes_match_that_now_fails_a_new_exclude_term(cfg, client):
+    _, item_id = seed_match(cfg)  # matched listing titled "Makita SP6000 saw"
+    resp = client.post(
+        f"/items/{item_id}/edit",
+        data={"name": "Track Saw", "terms": "track saw", "priority": "high",
+              "normal_price": "500", "target_deal_price": "300",
+              "exclude_terms": "SP6000"},
+        follow_redirects=True,
+    )
+    assert b"1 candidate(s) left out of current matches" in resp.data
+    conn = db.connect(cfg.db_path)
+    assert conn.execute(
+        "SELECT match_status FROM listing_matches WHERE item_id = ?", (item_id,)
+    ).fetchone()["match_status"] == "excluded"
+
+
+def test_item_edit_with_no_effect_on_matches_has_plain_message(cfg, client):
+    _, item_id = seed_match(cfg)
+    resp = client.post(
+        f"/items/{item_id}/edit",
+        data={"name": "Track Saw", "terms": "track saw\nMakita SP6000", "priority": "high",
+              "normal_price": "500", "target_deal_price": "300"},
+        follow_redirects=True,
+    )
+    assert b"Re-scored 1 existing match" in resp.data
+
+
 def test_item_archive_and_delete(cfg, client):
     _, item_id = seed_match(cfg)
     client.post(f"/items/{item_id}/archive")
@@ -919,6 +1051,93 @@ def test_suggestion_dismiss(cfg, client):
     conn = db.connect(cfg.db_path)
     assert db.get_product_suggestion(conn, suggestion["id"])["status"] == "dismissed"
     assert db.list_products(conn, item_id) == []
+
+
+def test_suggestion_approve_then_undo_via_route(cfg, client):
+    _, item_id = seed_match(cfg)
+    conn = db.connect(cfg.db_path)
+    suggestion = db.record_suggestion_sighting(conn, item_id, "Makita", "LS0816F/2", "https://example.com/x")
+    conn.close()
+
+    client.post(f"/suggestions/{suggestion['id']}/approve")
+    resp = client.post("/suggestions/undo", follow_redirects=True)
+
+    assert b"Undone" in resp.data
+    conn = db.connect(cfg.db_path)
+    assert db.get_product_suggestion(conn, suggestion["id"])["status"] == "pending"
+    assert db.list_products(conn, item_id) == []
+
+
+def test_suggestion_dismiss_then_undo_via_route(cfg, client):
+    _, item_id = seed_match(cfg)
+    conn = db.connect(cfg.db_path)
+    suggestion = db.record_suggestion_sighting(conn, item_id, "Makita", "LS0816F/2", "https://example.com/x")
+    conn.close()
+
+    client.post(f"/suggestions/{suggestion['id']}/dismiss")
+    client.post("/suggestions/undo")
+
+    conn = db.connect(cfg.db_path)
+    assert db.get_product_suggestion(conn, suggestion["id"])["status"] == "pending"
+
+
+def test_suggestion_bulk_approve_then_undo_via_route(cfg, client):
+    _, item_id = seed_match(cfg)
+    conn = db.connect(cfg.db_path)
+    s1 = db.record_suggestion_sighting(conn, item_id, "Makita", "LS0816F/2", "https://x/1")
+    s2 = db.record_suggestion_sighting(conn, item_id, "Bosch", "GKT55", "https://x/2")
+    conn.close()
+
+    client.post(
+        "/suggestions/bulk-approve",
+        data={"suggestion_ids": [str(s1["id"]), str(s2["id"])], "item_id": str(item_id)},
+    )
+    client.post("/suggestions/undo")
+
+    conn = db.connect(cfg.db_path)
+    assert db.get_product_suggestion(conn, s1["id"])["status"] == "pending"
+    assert db.get_product_suggestion(conn, s2["id"])["status"] == "pending"
+    assert db.list_products(conn, item_id) == []
+
+
+def test_undo_only_reverses_most_recent_action(cfg, client):
+    _, item_id = seed_match(cfg)
+    conn = db.connect(cfg.db_path)
+    s1 = db.record_suggestion_sighting(conn, item_id, "Makita", "LS0816F/2", "https://x/1")
+    s2 = db.record_suggestion_sighting(conn, item_id, "Bosch", "GKT55", "https://x/2")
+    conn.close()
+
+    client.post(f"/suggestions/{s1['id']}/dismiss")
+    client.post(f"/suggestions/{s2['id']}/dismiss")
+    client.post("/suggestions/undo")
+
+    conn = db.connect(cfg.db_path)
+    # Only the second (most recent) dismissal is undone.
+    assert db.get_product_suggestion(conn, s1["id"])["status"] == "dismissed"
+    assert db.get_product_suggestion(conn, s2["id"])["status"] == "pending"
+
+
+def test_undo_with_nothing_to_undo(cfg, client):
+    resp = client.post("/suggestions/undo", follow_redirects=True)
+    assert b"Nothing to undo" in resp.data
+
+
+def test_catalogue_review_shows_undo_button_after_dismiss(cfg, client):
+    _, item_id = seed_match(cfg)
+    conn = db.connect(cfg.db_path)
+    suggestion = db.record_suggestion_sighting(conn, item_id, "Makita", "LS0816F/2", "https://example.com/x")
+    conn.close()
+
+    client.post(f"/suggestions/{suggestion['id']}/dismiss")
+    resp = client.get("/catalogue")
+
+    assert b"Undo:" in resp.data
+    assert b"Makita LS0816F/2" in resp.data
+
+
+def test_catalogue_review_hides_undo_button_with_no_recent_action(cfg, client):
+    resp = client.get("/catalogue")
+    assert b"Undo:" not in resp.data
 
 
 def test_catalogue_settings_updates_threshold(cfg, client):

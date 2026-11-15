@@ -52,18 +52,6 @@ nav a:not(.brand) { color: var(--muted); font-weight: 500; font-size: .9rem;
                     padding: .35rem .8rem; border-radius: 8px; }
 nav a:not(.brand):hover { background: var(--surface-2); color: var(--text); text-decoration: none; }
 nav a.active { background: var(--accent-soft); color: var(--accent); }
-/* "The watcher is alive" heartbeat in the nav. Turns green and ripples for a
-   few seconds when a background run just delivered fresh results. */
-.live-dot { margin-left: auto; display: inline-flex; align-items: center; gap: .45rem;
-            color: var(--muted); font-size: .76rem; }
-.live-dot::before { content: ""; width: .55rem; height: .55rem; border-radius: 999px;
-                    background: var(--muted); }
-.live-dot.fresh { color: var(--green); }
-.live-dot.fresh::before { background: var(--green); animation: ripple 1.2s ease-out 3; }
-@keyframes ripple {
-  0% { box-shadow: 0 0 0 0 rgb(52 211 153 / .5); }
-  100% { box-shadow: 0 0 0 .55rem rgb(52 211 153 / 0); }
-}
 
 main { max-width: 78rem; margin: 1.6rem auto 3rem; padding: 0 1.4rem; }
 h1 { font-size: 1.55rem; letter-spacing: -.02em; margin: 0 0 .2rem; }
@@ -176,7 +164,7 @@ td.num { text-align: right; font-variant-numeric: tabular-nums; white-space: now
              border-radius: var(--radius); overflow: hidden; margin: .8rem 0 1rem;
              box-shadow: var(--shadow); color: var(--text);
              transition: transform .18s, border-color .18s; }
-a.spotlight:hover { text-decoration: none; border-color: var(--green); transform: translateY(-2px); }
+.spotlight:hover { border-color: var(--green); transform: translateY(-2px); }
 /* The text column defines the card's height; the photo crops to fill its
    own column (absolute + cover). Without this, a tall portrait eBay photo
    in normal flow stretches the whole card and leaves a dead gap under the
@@ -199,10 +187,19 @@ a.spotlight:hover { text-decoration: none; border-color: var(--green); transform
        background: var(--green); color: #06231a; font-weight: 700; font-size: .92rem;
        padding: .6rem 1.15rem; border-radius: 10px; }
 a:hover .cta { filter: brightness(1.08); }
+.spotlight-link:hover, .deal-card-link:hover { text-decoration: none; }
 @media (max-width: 44rem) {
   .spotlight { grid-template-columns: 1fr; }
   .spotlight .thumb { min-height: 11rem; aspect-ratio: 16 / 9; }
 }
+
+/* Match-correction buttons ("Not a match" / "This is a part") — outside the
+   card's own <a> (buttons can't nest inside a link), so they sit as a
+   sibling row instead. Spans both spotlight grid columns as its own row;
+   deal-card is already a single column so no override needed there. */
+.pf-match-actions { display: flex; gap: .5rem; padding: .5rem 1rem .8rem;
+                    border-top: 1px solid var(--border); }
+.spotlight .pf-match-actions { grid-column: 1 / -1; padding: .5rem 1.5rem .9rem; }
 
 /* Runner-up product cards. */
 .hero-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(15.5rem, 1fr));
@@ -387,7 +384,6 @@ details.warnings[open] > summary::before { content: "▾ "; }
                              ('manual', 'Manual searches'), ('source_list', 'Sources')] %}
   <a href="{{ url_for(endpoint) }}"{% if request.endpoint == endpoint %} class="active"{% endif %}>{{ label }}</a>
   {% endfor %}
-  <span class="live-dot" id="live-dot" title="Search runs in the background; this page updates itself">watching</span>
 </nav>
 <main>
 {% with messages = get_flashed_messages() %}
@@ -456,19 +452,70 @@ function pfEnhance(root) {
   pfCountdownTick();
 }
 
-// Flash the nav heartbeat green when a live refresh just landed.
-function pfFreshPulse() {
-  var dot = document.getElementById("live-dot");
-  if (!dot) return;
-  dot.classList.add("fresh");
-  dot.textContent = "fresh results";
-  setTimeout(function () {
-    dot.classList.remove("fresh");
-    dot.textContent = "watching";
-  }, 8000);
+// "This is a part" deal-card action: prompts for (editable) confirmation of
+// the exclude term rather than silently applying the guessed keyword, then
+// posts it as a normal form submit — no fetch/JSON, so it behaves exactly
+// like every other action button (full page redirect, flash message).
+// Delegated (not an inline onclick): the guess string is user-generated
+// listing-title text, and mixing an onclick="..." attribute with a Jinja
+// |tojson value inside it is a real quoting collision, not just untidy —
+// the JSON string's own double quotes terminate the attribute early and
+// silently produce a dead handler. data-part-guess (plain, HTML-escaped by
+// Jinja) sidesteps that entirely.
+document.addEventListener("click", function (e) {
+  var btn = e.target.closest(".pf-mark-part");
+  if (!btn) return;
+  var term = window.prompt("Exclude listings mentioning:", btn.dataset.partGuess || "");
+  if (!term) return;
+  var form = document.createElement("form");
+  form.method = "post";
+  form.action = btn.dataset.partAction;
+  form.style.display = "none";
+  [["term", term], ["next", window.location.pathname]].forEach(function (pair) {
+    var input = document.createElement("input");
+    input.type = "hidden"; input.name = pair[0]; input.value = pair[1];
+    form.appendChild(input);
+  });
+  document.body.appendChild(form);
+  form.submit();
+});
+
+function pfWatchResults(container, status) {
+  var refreshing = false;
+  setInterval(async function () {
+    if (refreshing) return;
+    refreshing = true;
+    try {
+      var response = await fetch(container.dataset.statusUrl, {cache: "no-store"});
+      if (!response.ok) throw new Error("Status request failed");
+      var data = await response.json();
+      if (status.textContent !== data.search.message) status.textContent = data.search.message;
+      var activity = data.last_activity || "";
+      var expiry = data.last_expiry;
+      var previousExpiry = container.dataset.expiry ? Number(container.dataset.expiry) : null;
+      if (activity === container.dataset.activity && expiry === previousExpiry) return;
+      response = await fetch(container.dataset.liveUrl + window.location.search, {cache: "no-store"});
+      if (!response.ok) return;
+      container.innerHTML = await response.text();
+      container.dataset.activity = activity;
+      container.dataset.expiry = expiry ?? "";
+      container.classList.remove("swap-in");
+      void container.offsetWidth;
+      container.classList.add("swap-in");
+      pfEnhance(container);
+    } catch {
+      status.textContent = "Search status temporarily unavailable";
+    } finally {
+      refreshing = false;
+    }
+  }, 15000);
 }
 
-document.addEventListener("DOMContentLoaded", function () { pfEnhance(document); });
+document.addEventListener("DOMContentLoaded", function () {
+  pfEnhance(document);
+  var container = document.querySelector("[data-live-url]");
+  if (container) pfWatchResults(container, document.getElementById("search-status"));
+});
 </script>
 </body>
 </html>

@@ -80,7 +80,7 @@ def test_write_helpers_commit_before_returning(tmp_path):
     # The three historical stragglers (upsert_listing, record_match,
     # record_source_run) plus mark_alerted, pinned individually so a future
     # "optimisation" can't quietly reintroduce the lock-across-network bug.
-    from product_finder.models import Evaluation
+    from product_finder.models import Evaluation, OfferCheck
 
     cfg = AppConfig(db_path=str(tmp_path / "t.db"))
     conn = db.connect(cfg.db_path)
@@ -108,5 +108,8 @@ def test_write_helpers_commit_before_returning(tmp_path):
     db.record_source_run(conn, "s", searches=1, listings=1)
     assert conn.in_transaction is False
 
+    db.store_offer_check(conn, listing_id, Listing("s", "e1", "Saw", 11, "https://x/1"),
+                         OfferCheck("verified", "Fixture", 11, 0))
+    assert conn.in_transaction is False
     assert db.mark_alerted(conn, match_id, "console") is True
     assert conn.in_transaction is False

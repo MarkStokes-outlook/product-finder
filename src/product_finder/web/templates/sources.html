@@ -268,6 +268,32 @@
 </table>
 </div>
 
+<h2>Recent search queries</h2>
+{% if search_queries %}
+<div class="card table-card">
+<table>
+<thead><tr>
+  <th>Watch</th><th>Source</th><th>Query</th><th>Returned</th><th>Reported total</th><th>Unique</th>
+  <th>Passed matching</th><th>More results</th><th>Search time</th>
+</tr></thead>
+<tbody>
+{% for query in search_queries %}
+<tr>
+  <td>{{ query.watch_name }}</td><td>{{ query.source }}</td><td>{{ query.term }}</td>
+  <td>{{ 'Failed' if query.failed else query.returned }}</td>
+  <td>{{ query.total if query.total is not none else '—' }}</td>
+  <td>{{ query.candidates }}</td><td>{{ query.relevant }}</td>
+  <td>{{ 'Yes' if query.has_more else 'No' if query.has_more is not none else 'Unknown' }}</td>
+  <td>{{ query.duration_ms ~ ' ms' if query.requests else 'Reused' }}</td>
+</tr>
+{% endfor %}
+</tbody>
+</table>
+</div>
+{% else %}
+<p class="meta">Search details appear here after the next watch cycle.</p>
+{% endif %}
+
 <h2>eBay API credentials</h2>
 <p class="hint">
   Free developer keys from <a href="https://developer.ebay.com" target="_blank" rel="noopener">developer.ebay.com</a>

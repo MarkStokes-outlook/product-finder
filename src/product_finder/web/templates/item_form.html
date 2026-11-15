@@ -13,6 +13,12 @@
 
   <label for="terms">Search terms (one per line)</label>
   <textarea id="terms" name="terms" rows="4" required>{{ v.get('terms', item_cfg.terms | join('\n') if item else '') }}</textarea>
+  <label for="required_terms">Required listing phrases (one per line)</label>
+  <textarea id="required_terms" name="required_terms" rows="2">{{ v.get('required_terms', item_cfg.required_terms | join('\n') if item else '') }}</textarea>
+  <p class="hint">Each phrase must describe the item being sold, for example “SFX” or “240V”.</p>
+  <label for="alternatives">Acceptable models (one per line)</label>
+  <textarea id="alternatives" name="alternatives" rows="2">{{ v.get('alternatives', item_cfg.alternatives | join('\n') if item else '') }}</textarea>
+  <p class="hint">These models still need to meet the watch's requirements.</p>
 
   <label for="exclude_terms">Exclude terms (one per line)</label>
   <textarea id="exclude_terms" name="exclude_terms" rows="2">{{ v.get('exclude_terms', item_cfg.exclude_terms | join('\n') if item else '') }}</textarea>
@@ -177,7 +183,12 @@
     <td class="meta">{{ (pr['match_terms'] | parse_flags) | join(', ') }}</td>
     <td class="num">{% if pr['msrp'] %}£{{ '%.0f' | format(pr['msrp']) }}{% else %}&mdash;{% endif %}</td>
     <td class="num">{% if pr['typical_new_price'] %}£{{ '%.0f' | format(pr['typical_new_price']) }}{% else %}&mdash;{% endif %}</td>
-    <td class="num">{% if pr['typical_used_price'] %}£{{ '%.0f' | format(pr['typical_used_price']) }}{% else %}<span class="meta">learning&hellip;</span>{% endif %}</td>
+    <td class="num">
+      {% if pr['typical_used_price'] %}
+      £{{ '%.0f' | format(pr['typical_used_price']) }}
+      <br><span class="meta">{{ pr['used_price_basis'] }} · {{ pr['used_price_samples'] }} · Latest {{ pr['used_price_latest_at'] | timeago }}</span>
+      {% else %}<span class="meta">No current comparables</span>{% endif %}
+    </td>
     <td class="num">{% if pr['target_deal_price'] %}£{{ '%.0f' | format(pr['target_deal_price']) }}{% else %}&mdash;{% endif %}</td>
     <td class="meta">
       <a href="{{ url_for('product_edit', product_id=pr['id']) }}">Edit</a>

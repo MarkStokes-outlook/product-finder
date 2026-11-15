@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 
 
@@ -43,11 +44,44 @@ class Listing:
     # API always does (thumbnailImages[0] is the large render, ~1200-1600px;
     # `image` is the 225px one); RSS feeds sometimes carry media:thumbnail.
     image_url: str | None = None
+    category: str = ""
+    variation_group: bool = False
+    variation_group_id: str | None = None
+    variant_capacity_gb: float | None = None
 
     @property
     def text(self) -> str:
         """Combined text used for grading and warning-flag detection."""
         return " ".join(p for p in (self.title, self.condition, self.description) if p)
+
+    @classmethod
+    def from_row(cls, row) -> "Listing":
+        """Reconstruct a Listing from a `listings` table row (db.get_listing)
+        — the inverse of how a source builds one at fetch time. For
+        re-evaluating an already-stored listing against current
+        matching/scoring code without a network round-trip (see
+        runner.reassess_item_matches)."""
+        return cls(
+            source=row["source"],
+            external_id=row["external_id"],
+            title=row["title"],
+            price=row["price"],
+            url=row["url"],
+            currency=row["currency"],
+            location=row["location"] or "",
+            description=row["description"] or "",
+            condition=row["condition"] or "",
+            buying_options=json.loads(row["buying_options"] or "[]"),
+            bid_count=row["bid_count"],
+            end_time=row["end_time"],
+            current_bid_price=row["current_bid_price"],
+            buy_it_now_price=row["buy_it_now_price"],
+            image_url=row["image_url"],
+            category=row["category"],
+            variation_group=bool(row["variation_group"]),
+            variation_group_id=row["variation_group_id"],
+            variant_capacity_gb=row["variant_capacity_gb"],
+        )
 
 
 @dataclass
@@ -89,6 +123,28 @@ class AuctionSnapshot:
     watch_count: int | None = None
     view_count: int | None = None
     raw: dict | None = None
+
+
+@dataclass(frozen=True)
+class SearchPage:
+    listings: list[Listing]
+    returned: int
+    total: int | None = None
+    has_more: bool | None = None
+
+
+@dataclass(frozen=True)
+class OfferCheck:
+    status: str
+    reason: str
+    item_price: float | None = None
+    postage: float | None = None
+
+    @property
+    def total(self) -> float | None:
+        if self.status == "verified" and self.item_price is not None and self.postage is not None:
+            return round(self.item_price + self.postage, 2)
+        return None
 
 
 @dataclass

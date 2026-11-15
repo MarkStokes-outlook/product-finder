@@ -30,7 +30,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 
 from ..config import AppConfig, ItemConfig
-from ..models import Listing, ManualLink
+from ..models import Listing, ManualLink, OfferCheck, SearchPage
 
 #: account_risk values, low to high. Scheduling policy (sources/__init__.py)
 #: treats anything above "low" as requiring explicit per-source opt-in.
@@ -160,6 +160,7 @@ class SourceCapabilities:
     # --- declared fields available ---
     #: get_item_details() can fetch structured per-listing detail.
     supports_enrichment: bool = False
+    supports_offer_verification: bool = False
     #: Listings carry an image URL (even best-effort).
     provides_images: bool = False
     #: Listings carry end/expiry semantics (auction end, listing expiry).
@@ -303,6 +304,12 @@ class ConnectorKnowledge:
 
 
 class Source(ABC):
+    def verify_offer(self, listing: Listing) -> OfferCheck:
+        return OfferCheck("review", "This source does not confirm a payable total.")
+
+    def resolve_nvme_variants(self, group: Listing, capacity_gb: float) -> list[tuple[Listing, OfferCheck]]:
+        return []
+
     #: Unique key. Used for listing dedup, per-item source filters, and config.
     name: str
 
@@ -342,6 +349,14 @@ class Source(ABC):
         """Fetch listings for one search term. Automated sources override this.
         May raise on network/auth errors — the runner catches per-term."""
         return []
+
+    def search_page(self, term: str, item: ItemConfig) -> SearchPage:
+        listings = self.search(term, item)
+        return SearchPage(listings, len(listings))
+
+    def search_identity(self, term: str, item: ItemConfig) -> tuple | None:
+        """Return a cache key only when identical inputs can share a page."""
+        return None
 
     def manual_links(self, item: ItemConfig) -> list[ManualLink]:
         """Pre-filtered search links. Manual-assisted sources override this."""

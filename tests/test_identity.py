@@ -1,6 +1,6 @@
 from product_finder import db, identity, runner, sources
 from product_finder.config import AppConfig, ExtraSourceConfig, ItemConfig
-from product_finder.models import Listing
+from product_finder.models import Listing, OfferCheck
 from product_finder.sources.base import Source, SourceCapabilities
 
 
@@ -161,7 +161,10 @@ class FakeSource(Source):
         self._listings = listings
 
     def capabilities(self):
-        return SourceCapabilities(automated=True, compliance="test fake")
+        return SourceCapabilities(automated=True, compliance="test fake", supports_offer_verification=True)
+
+    def verify_offer(self, listing):
+        return OfferCheck("verified", "Fixture", listing.price, 0)
 
     def search(self, term, item):
         return self._listings

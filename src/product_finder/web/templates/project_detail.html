@@ -5,9 +5,9 @@
   <div>
     <h1>{{ project['name'] }}{% if project['archived'] %} <span class="badge grade-unknown">archived</span>{% endif %}</h1>
     <p class="meta">
-      Updates automatically as <code>watch</code> finds new results.
       <a href="{{ url_for('project_edit', project_id=project['id']) }}">Edit project &amp; sources</a>
     </p>
+    <p class="meta" id="search-status" role="status">{{ search_status.message }}</p>
   </div>
   <div class="actions">
     <a class="button" href="{{ url_for('project_export', project_id=project['id'], format='yaml') }}">Export YAML</a>
@@ -16,39 +16,9 @@
   </div>
 </div>
 
-<div id="project-live" data-activity="{{ last_activity or '' }}">
+<div id="project-live" data-activity="{{ last_activity or '' }}" data-expiry="{{ last_expiry or '' }}"
+     data-live-url="{{ url_for('project_detail_live', project_id=project['id']) }}"
+     data-status-url="{{ url_for('api_status', project_id=project['id']) }}">
 {% include "_project_detail_live.html" %}
 </div>
-
-<script>
-(function () {
-  var container = document.getElementById("project-live");
-  var lastActivity = container.dataset.activity;
-  var liveUrl = "{{ url_for('project_detail_live', project_id=project['id']) }}" + window.location.search;
-
-  function poll() {
-    fetch("{{ url_for('api_status') }}")
-      .then(function (r) { return r.json(); })
-      .then(function (data) {
-        var activity = data.last_activity || "";
-        if (!activity || activity === lastActivity) return;
-        lastActivity = activity;
-        return fetch(liveUrl)
-          .then(function (r) { return r.text(); })
-          .then(function (html) {
-            container.innerHTML = html;
-            container.dataset.activity = lastActivity;
-            container.classList.remove("swap-in");
-            void container.offsetWidth;  // restart the fade-up animation
-            container.classList.add("swap-in");
-            pfEnhance(container);
-            pfFreshPulse();
-          });
-      })
-      .catch(function () { /* offline or transient — just try again next tick */ });
-  }
-
-  setInterval(poll, 15000);
-})();
-</script>
 {% endblock %}

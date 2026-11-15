@@ -71,12 +71,12 @@ def test_listing_counts_live_new_and_stale(conn):
     # Ended auction: not live, not stale (its absence is explained).
     _add_listing(conn, "ebay", "ended", first_seen=_iso(days=2),
                  last_seen=_iso(days=1), end_time=_iso(days=1))
-    # No end_time and not seen for 3 days: live by the read-path rule, but stale.
+    # No end_time and not seen for 3 days: stale and excluded from live counts.
     _add_listing(conn, "ebay", "lingering", first_seen=_iso(days=6), last_seen=_iso(days=3))
 
     cov = db.source_coverage(conn)["ebay"]
     assert cov["listings_total"] == 4
-    assert cov["listings_live"] == 3  # ended one excluded
+    assert cov["listings_live"] == 2
     assert cov["new_24h"] == 1
     assert cov["new_7d"] == 4
     assert cov["stale"] == 1  # only "lingering": no end_time, unseen 48h+

@@ -269,7 +269,7 @@ def normalize_suggestion(manufacturer: str, model: str | None) -> tuple[str, str
 ACCESSORY_KEYWORDS = (
     "bag", "bags", "filter", "filters", "tip", "tips", "nozzle", "nozzles",
     "hose", "seal", "gasket", "kit", "spare", "spares", "replacement",
-    "attachment", "adapter", "adaptor", "cable", "bracket", "mount",
+    "attachment", "adapter", "adaptor", "cable", "cables", "bracket", "mount",
     "cover", "lid", "brush", "brushes", "pad", "pads", "belt", "blade",
     "blades", "wheel", "castor", "detector", "stand", "tripod", "battery",
     "charger", "case", "sticker", "manual",
@@ -300,6 +300,19 @@ def accessory_title_share(titles: Sequence[str]) -> float:
         if any(_matches(title.lower(), kw) for kw in ACCESSORY_KEYWORDS)
     )
     return hits / len(titles)
+
+
+def find_accessory_keyword(text: str) -> str | None:
+    """First ACCESSORY_KEYWORDS word found in text (word-boundary matched),
+    if any — used to pre-fill a guessed exclude term when a human flags an
+    unmatched listing as "this is a part" rather than the wanted item (see
+    web/app.py's guess_accessory_term template filter). Same word-boundary
+    matching as accessory_title_share; just returns which word matched."""
+    text = (text or "").lower()
+    for kw in ACCESSORY_KEYWORDS:
+        if _matches(text, kw):
+            return kw
+    return None
 
 
 def match(text: str, products: Sequence[Product]) -> Product | None:

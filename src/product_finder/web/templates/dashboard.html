@@ -6,43 +6,14 @@
     <h1>Dashboard</h1>
     <p class="meta">
       {{ cfg.postcode or '—' }} · {{ cfg.radius_miles }}-mile radius ·
-      watching <a href="{{ url_for('source_list') }}">{{ known_sources | join(', ') }}</a>
+      <a href="{{ url_for('source_list') }}">Sources</a>
     </p>
+    <p class="meta" id="search-status" role="status">{{ search_status.message }}</p>
   </div>
 </div>
 
-<div id="dashboard-live" data-activity="{{ last_activity or '' }}">
+<div id="dashboard-live" data-activity="{{ last_activity or '' }}" data-expiry="{{ last_expiry or '' }}"
+     data-live-url="{{ url_for('dashboard_live') }}" data-status-url="{{ url_for('api_status') }}">
 {% include "_dashboard_live.html" %}
 </div>
-
-<script>
-(function () {
-  var container = document.getElementById("dashboard-live");
-  var lastActivity = container.dataset.activity;
-
-  function poll() {
-    fetch("{{ url_for('api_status') }}")
-      .then(function (r) { return r.json(); })
-      .then(function (data) {
-        var activity = data.last_activity || "";
-        if (!activity || activity === lastActivity) return;
-        lastActivity = activity;
-        return fetch("{{ url_for('dashboard_live') }}")
-          .then(function (r) { return r.text(); })
-          .then(function (html) {
-            container.innerHTML = html;
-            container.dataset.activity = lastActivity;
-            container.classList.remove("swap-in");
-            void container.offsetWidth;  // restart the fade-up animation
-            container.classList.add("swap-in");
-            pfEnhance(container);
-            pfFreshPulse();
-          });
-      })
-      .catch(function () { /* offline or transient — just try again next tick */ });
-  }
-
-  setInterval(poll, 15000);
-})();
-</script>
 {% endblock %}

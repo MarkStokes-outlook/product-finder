@@ -91,6 +91,110 @@ def test_approve_suggestion_without_model_uses_single_match_term(tmp_path):
     assert json.loads(item_product["match_terms"]) == ["Makita"]
 
 
+# --- Undo (last suggestion action only) ------------------------------------------
+
+
+def test_undo_reverses_an_approval(tmp_path):
+    cfg, conn, item_id = _setup(tmp_path)
+    row = db.record_suggestion_sighting(conn, item_id, "Makita", "LS0816F/2", "https://x/1")
+    product_id = db.approve_suggestion(conn, row["id"])
+    item_product = db.get_item_product(conn, item_id, product_id)
+    db.record_last_suggestion_action(conn, {
+        "kind": "approve",
+        "suggestion_id": row["id"],
+        "item_product_id": item_product["id"],
+        "description": 'approved "Makita LS0816F/2" for Mitre Saw',
+    })
+
+    message = db.undo_last_suggestion_action(conn)
+
+    assert message == 'approved "Makita LS0816F/2" for Mitre Saw'
+    assert db.get_product_suggestion(conn, row["id"])["status"] == "pending"
+    assert db.get_item_product(conn, item_id, product_id) is None
+    # The global product itself (shared platform-wide identity/price history)
+    # is left alone — only this item's tracking of it is undone.
+    assert db.get_product(conn, product_id) is not None
+
+
+def test_undo_reverses_a_dismissal(tmp_path):
+    cfg, conn, item_id = _setup(tmp_path)
+    row = db.record_suggestion_sighting(conn, item_id, "Makita", "LS0816F/2", "https://x/1")
+    db.dismiss_suggestion(conn, row["id"])
+    db.record_last_suggestion_action(conn, {
+        "kind": "dismiss",
+        "suggestion_id": row["id"],
+        "description": 'dismissed "Makita LS0816F/2" for Mitre Saw',
+    })
+
+    message = db.undo_last_suggestion_action(conn)
+
+    assert message == 'dismissed "Makita LS0816F/2" for Mitre Saw'
+    assert db.get_product_suggestion(conn, row["id"])["status"] == "pending"
+
+
+def test_undo_reverses_a_bulk_approval(tmp_path):
+    cfg, conn, item_id = _setup(tmp_path)
+    s1 = db.record_suggestion_sighting(conn, item_id, "Makita", "LS0816F/2", "https://x/1")
+    s2 = db.record_suggestion_sighting(conn, item_id, "Bosch", "GKT55", "https://x/2")
+    p1 = db.approve_suggestion(conn, s1["id"])
+    p2 = db.approve_suggestion(conn, s2["id"])
+    ip1 = db.get_item_product(conn, item_id, p1)
+    ip2 = db.get_item_product(conn, item_id, p2)
+    db.record_last_suggestion_action(conn, {
+        "kind": "bulk_approve",
+        "items": [
+            {"suggestion_id": s1["id"], "item_product_id": ip1["id"]},
+            {"suggestion_id": s2["id"], "item_product_id": ip2["id"]},
+        ],
+        "description": "approved 2 suggestion(s)",
+    })
+
+    db.undo_last_suggestion_action(conn)
+
+    assert db.get_product_suggestion(conn, s1["id"])["status"] == "pending"
+    assert db.get_product_suggestion(conn, s2["id"])["status"] == "pending"
+    assert db.list_products(conn, item_id) == []
+
+
+def test_undo_reverses_a_bulk_dismissal(tmp_path):
+    cfg, conn, item_id = _setup(tmp_path)
+    s1 = db.record_suggestion_sighting(conn, item_id, "Makita", "LS0816F/2", "https://x/1")
+    s2 = db.record_suggestion_sighting(conn, item_id, "Bosch", "GKT55", "https://x/2")
+    db.dismiss_suggestion(conn, s1["id"])
+    db.dismiss_suggestion(conn, s2["id"])
+    db.record_last_suggestion_action(conn, {
+        "kind": "bulk_dismiss",
+        "suggestion_ids": [s1["id"], s2["id"]],
+        "description": "dismissed 2 suggestion(s)",
+    })
+
+    db.undo_last_suggestion_action(conn)
+
+    assert db.get_product_suggestion(conn, s1["id"])["status"] == "pending"
+    assert db.get_product_suggestion(conn, s2["id"])["status"] == "pending"
+
+
+def test_undo_is_single_use(tmp_path):
+    cfg, conn, item_id = _setup(tmp_path)
+    row = db.record_suggestion_sighting(conn, item_id, "Makita", "LS0816F/2", "https://x/1")
+    db.dismiss_suggestion(conn, row["id"])
+    db.record_last_suggestion_action(conn, {
+        "kind": "dismiss",
+        "suggestion_id": row["id"],
+        "description": "dismissed it",
+    })
+
+    assert db.undo_last_suggestion_action(conn) == "dismissed it"
+    assert db.undo_last_suggestion_action(conn) is None
+    assert db.get_last_suggestion_action(conn) is None
+
+
+def test_no_undo_available_by_default(tmp_path):
+    cfg, conn, item_id = _setup(tmp_path)
+    assert db.get_last_suggestion_action(conn) is None
+    assert db.undo_last_suggestion_action(conn) is None
+
+
 def test_list_product_suggestions_filters_by_status(tmp_path):
     cfg, conn, item_id = _setup(tmp_path)
     pending = db.record_suggestion_sighting(conn, item_id, "Makita", "LS0816F/2", "https://x/1")
@@ -327,6 +431,45 @@ def test_ollama_fallback_not_used_when_structured_brand_present(tmp_path):
     extract.assert_not_called()
     suggestions = db.list_product_suggestions(conn, item_id)
     assert len(suggestions) == 1
+    assert suggestions[0]["source"] == "ebay-structured"
+
+
+def test_ollama_fallback_used_when_structured_model_blank(tmp_path):
+    # eBay's own brand field is filled in but MPN was left blank by the
+    # seller — the model should come from title extraction, keeping eBay's
+    # brand rather than whatever the LLM guesses.
+    cfg, conn, item_id = _setup(tmp_path)
+    cfg.ollama.enabled = True
+    listing = Listing(source="ebay", external_id="e1", title="Corsair RM1000x 1000W PSU",
+                       price=52.70, url="https://x/e1")
+    with mock.patch(
+        "product_finder.runner.extraction.extract_brand_model",
+        return_value={"brand": "Corsair", "model": "RM1000x"},
+    ) as extract:
+        _run_with_fake_ebay(cfg, conn, [listing], details={"e1": {"brand": "Corsair", "model": ""}})
+
+    extract.assert_called_once()
+    suggestions = db.list_product_suggestions(conn, item_id)
+    assert len(suggestions) == 1
+    assert suggestions[0]["manufacturer"] == "Corsair"
+    assert suggestions[0]["model"] == "RM1000x"
+    assert suggestions[0]["source"] == "ollama"
+
+
+def test_brand_only_kept_when_structured_model_blank_and_extraction_finds_nothing(tmp_path):
+    cfg, conn, item_id = _setup(tmp_path)
+    cfg.ollama.enabled = True
+    listing = Listing(source="ebay", external_id="e1", title="PSU, barely used",
+                       price=52.70, url="https://x/e1")
+    with mock.patch(
+        "product_finder.runner.extraction.extract_brand_model", return_value=None
+    ):
+        _run_with_fake_ebay(cfg, conn, [listing], details={"e1": {"brand": "Corsair", "model": ""}})
+
+    suggestions = db.list_product_suggestions(conn, item_id)
+    assert len(suggestions) == 1
+    assert suggestions[0]["manufacturer"] == "Corsair"
+    assert suggestions[0]["model"] == ""
     assert suggestions[0]["source"] == "ebay-structured"
 
 

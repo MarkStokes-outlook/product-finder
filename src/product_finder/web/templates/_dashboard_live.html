@@ -4,7 +4,7 @@
 <div class="stat-strip">
   <span class="stat-tile"><span class="num">{{ stats.hot_deals }}</span><span class="lbl">hot deals</span></span>
   <span class="stat-tile"><span class="num">{{ stats.new_today }}</span><span class="lbl">new in 24h</span></span>
-  <span class="stat-tile"><span class="num">{{ stats.clean_matches }}</span><span class="lbl">live matches</span></span>
+  <span class="stat-tile"><span class="num">{{ stats.clean_matches }}</span><span class="lbl">current matches</span></span>
   <span class="stat-tile"><span class="num">{{ stats.projects }}</span><span class="lbl">projects watched</span></span>
 </div>
 
@@ -18,7 +18,7 @@
 </div>
 {% endif %}
 {% else %}
-<div class="hero-empty">Nothing standing out yet — still watching for deals across your projects.</div>
+<div class="hero-empty">No current deals across your projects.</div>
 {% endif %}
 
 <h2>Your projects</h2>
@@ -38,12 +38,12 @@
         loading="lazy" referrerpolicy="no-referrer" onerror="this.remove()">{% endif %}
       <div class="pick-text">
         <span class="pick-title">{{ pick['title'] }}</span>
-        <span class="pick-price">£{{ '%.2f' | format(pick['price']) }}</span>
+        <span class="pick-price">£{{ '%.2f' | format(pick['price']) }} delivered</span>
         {% if pick['margin_pct'] %}<span class="pick-saving"> &middot; save {{ '%.0f' | format(pick['margin_pct']) }}%</span>{% endif %}
       </div>
     </div>
     {% else %}
-    <div class="project-pick idle">Still watching — no matches yet.</div>
+    <div class="project-pick idle">No current deal to show.</div>
     {% endif %}
     {% set dupes = pending_duplicates.get(p['id']) %}
     {% if dupes %}

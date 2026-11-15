@@ -54,6 +54,60 @@ def test_list_price_observations(tmp_path):
     assert [r["source"] for r in rows] == ["ebay", "gumtree"]
 
 
+def test_expired_comparables_disappear_until_remaining_evidence_is_refreshed(tmp_path):
+    conn, item_id, product_id = _setup(tmp_path)
+    db.record_price_observation(conn, product_id, 100, "ebay")
+    db.record_price_observation(conn, product_id, 200, "ebay")
+    assert db.list_products_for_matching(conn, item_id)[0].typical_used_price == 150
+    conn.execute("UPDATE product_price_observations SET observed_at = '2020-01-01T00:00:00+00:00' WHERE price = 100")
+    conn.execute("UPDATE products SET used_price_expires_at = '2020-04-01T00:00:00+00:00'")
+    conn.commit()
+
+    assert db.list_products_for_matching(conn, item_id)[0].typical_used_price is None
+    db.refresh_market_references(conn)
+    row = db.list_products(conn, item_id)[0]
+    assert row["typical_used_price"] == 200
+    assert row["used_price_samples"] == 1
+    assert len(db.list_price_observations(conn, product_id)) == 2
+
+
+def test_auction_close_comparables_are_kept_separate_from_asking_prices(tmp_path):
+    conn, item_id, product_id = _setup(tmp_path)
+    db.record_price_observation(conn, product_id, 250, "ebay")
+    for price in (100, 110):
+        db.record_price_observation(conn, product_id, price, "ebay-close")
+    assert db.list_products(conn, item_id)[0]["typical_used_price"] == 250
+    db.record_price_observation(conn, product_id, 120, "ebay-close")
+    row = db.list_products(conn, item_id)[0]
+    assert row["typical_used_price"] == 110
+    assert row["used_price_samples"] == 3
+    assert row["used_price_basis"] == "Auction closes"
+
+
+def test_observations_track_and_deduplicate_the_same_listing(tmp_path):
+    conn, _, product_id = _setup(tmp_path)
+    listing = Listing("ebay", "known", "Makita LS1019L", 150, "https://example.com/known")
+    listing_id, _ = db.upsert_listing(conn, listing)
+    db.record_price_observation(conn, product_id, 150, "ebay", listing_id=listing_id)
+    db.record_price_observation(conn, product_id, 100, "ebay", listing_id=listing_id)
+    [row] = db.list_price_observations(conn, product_id)
+    assert row["listing_id"] == listing_id
+    assert row["price"] == 150
+
+
+def test_old_retailer_reference_falls_back_to_msrp(tmp_path):
+    conn, item_id, product_id = _setup(tmp_path)
+    conn.execute(
+        "UPDATE products SET typical_new_price = 500, canonical_price_url = 'https://example.com/p', "
+        "last_price_check_ok = 1, last_price_check_at = '2020-01-01T00:00:00+00:00' WHERE id = ?",
+        (product_id,),
+    )
+    conn.commit()
+    product = db.list_products_for_matching(conn, item_id)[0]
+    assert product.typical_new_price is None
+    assert product.msrp == 900
+
+
 def test_deleting_product_deletes_its_observations(tmp_path):
     conn, _, product_id = _setup(tmp_path)
     db.record_price_observation(conn, product_id, 100, "ebay")

@@ -98,6 +98,7 @@ projects:
 
 ```bash
 python -m product_finder run-once        # one search cycle, alert on new matches
+python -m product_finder reassess-matches # reassess saved listings without marketplace requests or alerts
 python -m product_finder watch           # run continuously at interval_minutes
 python -m product_finder web             # local web UI at http://127.0.0.1:8765
 python -m product_finder import-config   # merge YAML projects/items into the database
@@ -107,6 +108,30 @@ python -m product_finder list-items      # show items
 
 All commands accept `-c path/to/config.yaml` (default `config.yaml`) and `-v`
 for debug logging. `web` also accepts `--port`.
+
+After upgrading an existing database to watch matching with required phrases
+and acceptable models, run `reassess-matches` once to classify saved candidates.
+Current candidates awaiting assessment appear under **Review candidates** in
+their project. Past listings remain available under **Past listings**.
+
+Deal cards and alerts use a recently checked eBay fixed-price offer with a
+confirmed delivery cost. The watcher attempts up to 12 checks per cycle and
+reuses unchanged checks for six hours. A new title or asking price requires a
+fresh check. The watcher also checks up to two eBay groups per cycle for watches
+that specify an NVMe drive capacity. Only the individual variant's price, stock
+and link can qualify. Listings with incomplete prices, unresolved variants and
+collection-only offers can be inspected under **Review candidates**.
+
+Used-price references expire as observations leave the 90-day window. The
+catalogue shows the number and age of observations and whether the reference
+comes from asking prices or auction closes. Automated retailer references
+require a successful check within the last 30 days.
+
+The Sources page shows the most recent search queries with returned and unique
+counts, matches, and whether the source reported more results. Identical eBay
+queries with the same price limit can share a response within one watch cycle.
+Use `scripts/benchmark-search.py` to capture or score the eight-watch discovery
+pilot without running the watcher or sending alerts.
 
 ### Running on a schedule
 

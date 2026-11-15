@@ -8,7 +8,7 @@ import pytest
 
 from product_finder import db, runner, sources
 from product_finder.config import AppConfig, EbayConfig, ExtraSourceConfig, ItemConfig, SourcesConfig
-from product_finder.models import Listing
+from product_finder.models import Listing, OfferCheck, SearchPage
 from product_finder.sources.base import ConnectorKnowledge, MATURITY_LEVELS, Source, SourceCapabilities
 
 
@@ -67,7 +67,10 @@ class HealthyFake(Source):
         self._listings = listings
 
     def capabilities(self):
-        return SourceCapabilities(automated=True, compliance="test fake")
+        return SourceCapabilities(automated=True, compliance="test fake", supports_offer_verification=True)
+
+    def verify_offer(self, listing):
+        return OfferCheck("verified", "Fixture", listing.price, 0)
 
     def search(self, term, item):
         return self._listings
@@ -267,13 +270,40 @@ def test_run_once_records_new_listings_catalogue_matches_and_deals(tmp_path):
     assert run_row["new_listings"] == 1
     assert run_row["catalogue_matches"] == 1
     assert run_row["deals_found"] == 1  # 150 <= target_deal_price 200
+    [query] = db.recent_search_queries(conn)
+    assert query["watch_name"] == "Track Saw"
+    assert (query["term"], query["requests"], query["returned"], query["candidates"], query["relevant"]) == (
+        "track saw", 1, 1, 1, 1,
+    )
 
-    # Rescanning the same listing again: no longer "new".
+    # Rescanning the same listing again is no longer new.
     _run_with(cfg, conn, {"good": HealthyFake(cfg, "good", [listing])})
     second_run_row = conn.execute(
         "SELECT * FROM source_runs WHERE source = 'good' ORDER BY id DESC LIMIT 1"
     ).fetchone()
     assert second_run_row["new_listings"] == 0
+
+
+def test_runner_shows_raw_page_counts_and_search_reuse_per_watch(tmp_path):
+    cfg = _cfg(tmp_path)
+    conn = db.connect(cfg.db_path)
+    project = db.create_project(conn, "Workshop")
+    for name in ("Track Saw", "Plunge Saw"):
+        db.create_item(conn, project, ItemConfig(name, ["track saw", "track saw"], max_price=400))
+
+    class SourceWithPages(HealthyFake):
+        def search_page(self, term, item):
+            return SearchPage(self.search(term, item), returned=3, total=25, has_more=True)
+
+        def search_identity(self, term, item):
+            return term, item.max_price
+
+    listing = Listing("ebay", "same", "Makita track saw", 190, "https://x/1")
+    _run_with(cfg, conn, {"ebay": SourceWithPages(cfg, "ebay", [listing, listing])})
+    first, second = sorted(db.recent_search_queries(conn), key=lambda row: row["id"])
+    assert (first["requests"], second["requests"]) == (1, 0)
+    for row in (first, second):
+        assert (row["returned"], row["candidates"], row["relevant"], row["total"], row["has_more"]) == (3, 1, 1, 25, 1)
 
 
 def test_run_once_records_duplicates_for_secondary_cross_source_sighting(tmp_path):

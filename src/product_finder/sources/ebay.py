@@ -9,14 +9,18 @@ from __future__ import annotations
 
 import base64
 import logging
+import math
+import re
 import time
-from urllib.parse import quote, urlencode
+from dataclasses import replace
+from datetime import datetime, timezone
+from urllib.parse import parse_qs, quote, urlencode, urlparse
 
 import requests
 
-from .. import rate_limit
+from .. import identity, rate_limit
 from ..config import ItemConfig
-from ..models import AuctionSnapshot, Listing, ManualLink
+from ..models import AuctionSnapshot, Listing, ManualLink, OfferCheck, SearchPage
 from .base import ConnectorKnowledge, Source, SourceCapabilities
 
 log = logging.getLogger(__name__)
@@ -83,6 +87,86 @@ def _current_bid_and_bin(data: dict) -> tuple[float | None, float | None]:
     return current_bid, buy_it_now_price
 
 
+def _gbp_amount(amount: dict) -> float | None:
+    if amount.get("currency") != "GBP":
+        return None
+    try:
+        value = float(amount["value"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    return value if math.isfinite(value) and value >= 0 else None
+
+
+def _group_id(url: str) -> str | None:
+    ids = parse_qs(urlparse(url).query).get("item_group_id", [])
+    return ids[0] if len(ids) == 1 else None
+
+
+def _nvme_variant_capacity(data: dict) -> float | None:
+    item_id = data.get("itemId") or ""
+    parts = item_id.split("|")
+    url = data.get("itemWebUrl") or ""
+    parsed = urlparse(url)
+    if (len(parts) != 3 or parts[0] != "v1" or not parts[2].isdigit() or not parts[2].strip("0")
+            or parsed.scheme != "https" or parsed.hostname not in ("www.ebay.co.uk", "www.ebay.com")
+            or identity.derive_canonical_key(url) != f"ebay:{parts[1]}:{parts[2]}"):
+        return None
+    aspects = {row["name"].casefold(): row.get("value") or "" for row in data.get("localizedAspects", [])}
+    capacity = re.fullmatch(r"\s*(\d+(?:\.\d+)?)\s*(tb|gb)\s*", aspects.get("storage capacity", ""), re.I)
+    if not capacity or not re.search(r"\bnvme\b", aspects.get("interface", ""), re.I):
+        return None
+    amount, unit = capacity.groups()
+    return float(amount) * (1024 if unit.casefold() == "tb" else 1)
+
+
+def _verify_fixed_price(listing: Listing, data: dict, postcode: str = "") -> OfferCheck:
+    if data.get("itemId") != listing.external_id or not data.get("title"):
+        return OfferCheck("review", "The exact eBay item could not be confirmed.")
+    availability = data.get("estimatedAvailabilities") or []
+    if availability and all(row.get("estimatedAvailabilityStatus") == "OUT_OF_STOCK" for row in availability):
+        return OfferCheck("unavailable", "eBay reports this item is out of stock.")
+    if end_time := data.get("itemEndDate"):
+        try:
+            expiry = datetime.fromisoformat(end_time.replace("Z", "+00:00"))
+            if expiry.tzinfo is None or expiry <= datetime.now(timezone.utc):
+                return OfferCheck("unavailable", "eBay did not confirm this offer is still open.")
+        except (AttributeError, ValueError):
+            return OfferCheck("review", "Check the listing end time on eBay.")
+    if ("FIXED_PRICE" not in (data.get("buyingOptions") or [])
+            or "AUCTION" in data["buyingOptions"]):
+        return OfferCheck("review", "Check the purchase options on eBay.")
+    if listing.variant_capacity_gb:
+        if _nvme_variant_capacity(data) != listing.variant_capacity_gb:
+            return OfferCheck("review", "eBay did not confirm the selected NVMe capacity and variant link.")
+    elif data.get("itemGroupHref") or data.get("itemGroupType") or listing.variation_group:
+        return OfferCheck("review", "The price for the exact variant still needs checking.")
+    price = _gbp_amount(data.get("price") or {})
+    if price != listing.price or data["title"].strip().casefold() != listing.title.strip().casefold():
+        return OfferCheck("review", "eBay returned a different title or price. Check again after the next scan.")
+    if not any(row.get("estimatedAvailabilityStatus") in ("IN_STOCK", "LIMITED_STOCK")
+               and "SHIP_TO_HOME" in (row.get("deliveryOptions") or []) for row in availability):
+        if any(row.get("estimatedAvailabilityStatus") in ("IN_STOCK", "LIMITED_STOCK")
+               and "SELLER_ARRANGED_LOCAL_PICKUP" in (row.get("deliveryOptions") or []) for row in availability):
+            city = (data.get("itemLocation") or {}).get("city")
+            place = f" in {city}" if city else ""
+            return OfferCheck("review", f"Collection only{place}. Check handover details and total on eBay.")
+        return OfferCheck("review", "eBay did not confirm availability for delivery. Check collection terms if offered.")
+    postage = [
+        cost for shipping in (data.get("shippingOptions") or [])
+        if (shipping.get("shipToLocationUsedForEstimate") or {}).get("country") == "GB"
+        and (not postcode or "".join(
+            (shipping["shipToLocationUsedForEstimate"].get("postalCode") or "").upper().split()
+        ) == "".join(postcode.upper().split()))
+        and shipping.get("quantityUsedForEstimate", 1) == 1
+        and (cost := _gbp_amount(shipping.get("shippingCost") or {})) is not None
+    ]
+    if not postage:
+        return OfferCheck("review", "eBay did not return a confirmed UK delivery charge.")
+    if any(data.get(field) for field in ("importCharges", "deliveryFees")):
+        return OfferCheck("review", "Check additional purchase fees on eBay.")
+    return OfferCheck("verified", "Item price and UK delivery checked on eBay.", price, min(postage))
+
+
 class EbaySource(Source):
     name = "ebay"
 
@@ -106,6 +190,7 @@ class EbaySource(Source):
             recommended_schedule="every watch cycle",
             freshness="realtime",
             supports_enrichment=True,
+            supports_offer_verification=True,
             provides_images=True,
             provides_end_time=True,
             provides_structured_attributes=True,
@@ -191,9 +276,26 @@ class EbaySource(Source):
         return self._token
 
     def search(self, term: str, item: ItemConfig) -> list[Listing]:
+        return self.search_page(term, item).listings
+
+    def search_identity(self, term: str, item: ItemConfig) -> tuple:
+        return term, item.max_price
+
+    def search_page(
+        self, term: str, item: ItemConfig, *, limit: int = 50, offset: int = 0, sort: str | None = "watch",
+    ) -> SearchPage:
         filters = ["itemLocationCountry:GB", "priceCurrency:GBP"]
         if item.max_price:
             filters.append(f"price:[..{item.max_price:g}]")
+        params = {"q": term, "limit": str(limit), "filter": ",".join(filters)}
+        if offset:
+            params["offset"] = str(offset)
+        if sort == "watch":
+            # The discovery replay found recent sliding mitre saws buried
+            # below the Best Match page. Keep model aliases on Best Match.
+            sort = "newlyListed" if term.strip().casefold() == "sliding mitre saw" else None
+        if sort:
+            params["sort"] = sort
 
         def _do_request():
             resp = requests.get(
@@ -202,17 +304,20 @@ class EbaySource(Source):
                     "Authorization": f"Bearer {self._get_token()}",
                     "X-EBAY-C-MARKETPLACE-ID": "EBAY_GB",
                 },
-                params={"q": term, "limit": "50", "filter": ",".join(filters)},
+                params=params,
                 timeout=30,
             )
             resp.raise_for_status()
             return resp
 
         resp = rate_limit.request_with_backoff(self._limiter, _do_request, self.name)
+        payload = resp.json()
+        summaries = payload.get("itemSummaries") or []
         listings = []
-        for summary in resp.json().get("itemSummaries", []):
+        for summary in summaries:
             priced = _price_value(summary)
-            if priced is None:
+            external_id = summary.get("itemId")
+            if priced is None or not external_id:
                 continue
             price, currency = priced
             location = summary.get("itemLocation") or {}
@@ -227,7 +332,7 @@ class EbaySource(Source):
             listings.append(
                 Listing(
                     source=self.name,
-                    external_id=str(summary.get("itemId", "")),
+                    external_id=str(external_id),
                     title=str(summary.get("title", "")),
                     price=price,
                     currency=currency,
@@ -243,25 +348,77 @@ class EbaySource(Source):
                     image_url=image_url,
                     current_bid_price=current_bid,
                     buy_it_now_price=buy_it_now_price,
+                    category=" / ".join(
+                        category["categoryName"] for category in (summary.get("categories") or [])
+                        if category.get("categoryName")
+                    ),
+                    variation_group=bool(summary.get("itemGroupHref") or summary.get("itemGroupType")),
+                    variation_group_id=_group_id(summary.get("itemGroupHref") or ""),
                 )
             )
-        return listings
+        total = payload.get("total")
+        total = total if isinstance(total, int) and total >= 0 else None
+        has_more = True if payload.get("next") else (offset + len(summaries) < total if total is not None else None)
+        return SearchPage(listings, len(summaries), total, has_more)
 
-    def _fetch_item(self, external_id: str) -> dict | None:
-        """Raw single-item lookup (Browse API getItem) — the shared fetch
-        behind get_item() and get_item_details(). None if the item can no
-        longer be fetched (e.g. eBay has since removed it)."""
+    def _item_headers(self, delivery_context: bool = False) -> dict:
+        headers = {
+            "Authorization": f"Bearer {self._get_token()}",
+            "X-EBAY-C-MARKETPLACE-ID": "EBAY_GB",
+        }
+        if delivery_context and self.cfg.postcode:
+            location = quote(f"country=GB,zip={self.cfg.postcode}", safe="")
+            headers["X-EBAY-C-ENDUSERCTX"] = f"contextualLocation={location}"
+        return headers
+
+    def _fetch_item(self, external_id: str, *, delivery_context: bool = False) -> dict | None:
+        """Shared Browse API lookup for one concrete item."""
         resp = requests.get(
             f"{_ENDPOINTS[self.cfg.sources.ebay.env]['item']}/{quote(external_id, safe='')}",
-            headers={
-                "Authorization": f"Bearer {self._get_token()}",
-                "X-EBAY-C-MARKETPLACE-ID": "EBAY_GB",
-            },
-            timeout=20,
+            headers=self._item_headers(delivery_context),
+            timeout=8 if delivery_context else 20,
         )
         if resp.status_code != 200:
             return None
         return resp.json()
+
+    def verify_offer(self, listing: Listing) -> OfferCheck:
+        try:
+            data = self._fetch_item(listing.external_id, delivery_context=True)
+        except requests.RequestException:
+            data = None
+        if data is None:
+            return OfferCheck("review", "eBay offer verification is temporarily unavailable.")
+        return _verify_fixed_price(listing, data, self.cfg.postcode)
+
+    def resolve_nvme_variants(self, group: Listing, capacity_gb: float) -> list[tuple[Listing, OfferCheck]]:
+        if not group.variation_group_id:
+            return []
+        try:
+            endpoint = _ENDPOINTS[self.cfg.sources.ebay.env]["item"]
+            response = requests.get(
+                f"{endpoint}/get_items_by_item_group",
+                params={"item_group_id": group.variation_group_id},
+                headers=self._item_headers(delivery_context=True),
+                timeout=8,
+            )
+            response.raise_for_status()
+            items = response.json().get("items") or []
+        except requests.RequestException:
+            return []
+        result = []
+        for data in items:
+            price = _gbp_amount(data.get("price") or {})
+            if price is None or _nvme_variant_capacity(data) != capacity_gb or not data.get("title"):
+                continue
+            variant = replace(
+                group, external_id=data["itemId"], title=data["title"], price=price, url=data["itemWebUrl"],
+                buying_options=list(data.get("buyingOptions") or []), end_time=data.get("itemEndDate"),
+                condition=data.get("condition") or "", description="", variation_group=False,
+                variant_capacity_gb=capacity_gb,
+            )
+            result.append((variant, _verify_fixed_price(variant, data, self.cfg.postcode)))
+        return result
 
     def get_item(self, external_id: str) -> AuctionSnapshot | None:
         """Single-item lookup for tracking an auction toward its close (see

@@ -24,7 +24,7 @@ from statistics import median
 
 from . import catalogue, duplicates, identity, price_trend
 from .config import AppConfig, ItemConfig, ProjectConfig
-from .models import Evaluation, Listing
+from .models import Evaluation, Listing, OfferCheck
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS projects (
@@ -147,6 +147,19 @@ CREATE TABLE IF NOT EXISTS alerts_sent (
     sent_at TEXT NOT NULL,
     UNIQUE(match_id, channel)
 );
+CREATE TABLE IF NOT EXISTS listing_match_exclusions (
+    -- A human said "this specific listing is wrong for this item" (the
+    -- "Not a match" button) — permanent, per (listing, item) pair, checked
+    -- by run_once() alongside scoring.excluded() so a future rescan of the
+    -- same still-active listing doesn't quietly re-create the match. The
+    -- systemic version of this is an item's exclude_terms (see the "This is
+    -- a part" button); this is for the one-off case with no shared keyword
+    -- worth excluding item-wide.
+    listing_id INTEGER NOT NULL REFERENCES listings(id),
+    item_id INTEGER NOT NULL REFERENCES items(id),
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (listing_id, item_id)
+);
 CREATE TABLE IF NOT EXISTS source_settings (
     name TEXT PRIMARY KEY,
     enabled INTEGER,               -- NULL = inherit the YAML default
@@ -209,6 +222,22 @@ CREATE TABLE IF NOT EXISTS source_runs (
     errors INTEGER NOT NULL DEFAULT 0,
     last_error TEXT
 );
+CREATE TABLE IF NOT EXISTS search_query_runs (
+    id INTEGER PRIMARY KEY,
+    ran_at TEXT NOT NULL,
+    item_id INTEGER NOT NULL,
+    source TEXT NOT NULL,
+    term TEXT NOT NULL,
+    requests INTEGER NOT NULL,
+    duration_ms INTEGER NOT NULL,
+    returned INTEGER NOT NULL,
+    candidates INTEGER NOT NULL,
+    relevant INTEGER NOT NULL,
+    total INTEGER,
+    has_more INTEGER,
+    failed INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_search_query_runs_ran_at ON search_query_runs(ran_at);
 CREATE INDEX IF NOT EXISTS idx_source_runs_source ON source_runs(source, run_at);
 -- One row per GET /out/<listing_id> redirect attempt (Marketplace Outbound
 -- Gateway — see outbound.py, ARCHITECTURE.md "Marketplace outbound
@@ -285,6 +314,28 @@ _MIGRATIONS = [
     # retention pruning — set once on a source's first recorded run, never
     # overwritten (see record_source_run).
     ("source_settings", "first_seen", "TEXT"),
+    ("items", "required_terms", "TEXT NOT NULL DEFAULT '[]'"),
+    ("items", "alternatives", "TEXT NOT NULL DEFAULT '[]'"),
+    ("listings", "category", "TEXT NOT NULL DEFAULT ''"),
+    ("listings", "variation_group", "INTEGER NOT NULL DEFAULT 0"),
+    ("listing_matches", "match_status", "TEXT NOT NULL DEFAULT 'review'"),
+    ("listing_matches", "match_reason", "TEXT NOT NULL DEFAULT 'Saved candidate awaiting reassessment.'"),
+    ("listing_matches", "search_term", "TEXT"),
+    ("listings", "offer_state", "TEXT"),
+    ("listings", "offer_reason", "TEXT"),
+    ("listings", "offer_checked_at", "TEXT"),
+    ("listings", "offer_checked_title", "TEXT"),
+    ("listings", "offer_checked_price", "REAL"),
+    ("listings", "offer_postage", "REAL"),
+    ("listings", "offer_destination", "TEXT NOT NULL DEFAULT ''"),
+    ("products", "used_price_expires_at", "TEXT"),
+    ("products", "used_price_latest_at", "TEXT"),
+    ("products", "used_price_samples", "INTEGER NOT NULL DEFAULT 0"),
+    ("products", "used_price_basis", "TEXT"),
+    ("products", "price_trend_expires_at", "TEXT"),
+    ("listings", "variation_group_id", "TEXT"),
+    ("listings", "variant_capacity_gb", "REAL"),
+    ("product_price_observations", "listing_id", "INTEGER REFERENCES listings(id)"),
 ]
 
 
@@ -469,7 +520,12 @@ def _migrate_catalogue_globalization(conn: sqlite3.Connection) -> None:
                 last_price_check_at TEXT,
                 last_price_check_ok INTEGER,
                 price_trend_pct REAL,
-                price_trend_confidence REAL NOT NULL DEFAULT 0
+                price_trend_confidence REAL NOT NULL DEFAULT 0,
+                used_price_expires_at TEXT,
+                used_price_latest_at TEXT,
+                used_price_samples INTEGER NOT NULL DEFAULT 0,
+                used_price_basis TEXT,
+                price_trend_expires_at TEXT
             )
             """
         )
@@ -511,25 +567,15 @@ def import_config(conn: sqlite3.Connection, cfg: AppConfig) -> int:
         for item in project.items:
             conn.execute(
                 "INSERT INTO items (project_id, name, priority, max_price, normal_price, "
-                "target_deal_price, notes, terms, exclude_terms, sources) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+                "target_deal_price, notes, terms, exclude_terms, sources, required_terms, alternatives) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
                 "ON CONFLICT(project_id, name) DO UPDATE SET "
                 "priority = excluded.priority, max_price = excluded.max_price, "
                 "normal_price = excluded.normal_price, target_deal_price = excluded.target_deal_price, "
                 "notes = excluded.notes, terms = excluded.terms, "
-                "exclude_terms = excluded.exclude_terms, sources = excluded.sources",
-                (
-                    project_id,
-                    item.name,
-                    item.priority,
-                    item.max_price,
-                    item.normal_price,
-                    item.target_deal_price,
-                    item.notes,
-                    json.dumps(item.terms),
-                    json.dumps(item.exclude_terms),
-                    json.dumps(item.sources) if item.sources is not None else None,
-                ),
+                "exclude_terms = excluded.exclude_terms, sources = excluded.sources, "
+                "required_terms = excluded.required_terms, alternatives = excluded.alternatives",
+                (project_id, *_item_params(item)),
             )
             count += 1
     conn.commit()
@@ -632,6 +678,8 @@ def _item_from_row(row: sqlite3.Row) -> ItemConfig:
         exclude_terms=json.loads(row["exclude_terms"] or "[]"),
         sources=json.loads(sources) if sources else None,
         id=row["id"],
+        required_terms=json.loads(row["required_terms"]),
+        alternatives=json.loads(row["alternatives"]),
     )
 
 
@@ -765,14 +813,16 @@ def _item_params(item: ItemConfig) -> tuple:
         json.dumps(item.terms),
         json.dumps(item.exclude_terms),
         json.dumps(item.sources) if item.sources is not None else None,
+        json.dumps(item.required_terms),
+        json.dumps(item.alternatives),
     )
 
 
 def create_item(conn: sqlite3.Connection, project_id: int, item: ItemConfig) -> int:
     cur = conn.execute(
         "INSERT INTO items (project_id, name, priority, max_price, normal_price, "
-        "target_deal_price, notes, terms, exclude_terms, sources) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "target_deal_price, notes, terms, exclude_terms, sources, required_terms, alternatives) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (project_id, *_item_params(item)),
     )
     conn.commit()
@@ -782,7 +832,8 @@ def create_item(conn: sqlite3.Connection, project_id: int, item: ItemConfig) -> 
 def update_item(conn: sqlite3.Connection, item_id: int, item: ItemConfig) -> None:
     conn.execute(
         "UPDATE items SET name = ?, priority = ?, max_price = ?, normal_price = ?, "
-        "target_deal_price = ?, notes = ?, terms = ?, exclude_terms = ?, sources = ? "
+        "target_deal_price = ?, notes = ?, terms = ?, exclude_terms = ?, sources = ?, "
+        "required_terms = ?, alternatives = ? "
         "WHERE id = ?",
         (*_item_params(item), item_id),
     )
@@ -824,16 +875,35 @@ def delete_item(conn: sqlite3.Connection, item_id: int, _commit: bool = True) ->
 # match terms, its target-deal-price override, and whether it's still
 # archived/wanted *for that item* — never global state.
 
-_ITEM_PRODUCT_SELECT = """
+def _market_price_fields(alias: str) -> str:
+    usable = f"julianday({alias}.used_price_expires_at) > julianday('now')"
+    trend_usable = f"julianday({alias}.price_trend_expires_at) > julianday('now')"
+    return f"""
+        CASE WHEN {usable} THEN {alias}.typical_used_price END AS typical_used_price,
+        CASE WHEN {usable} THEN {alias}.used_price_samples END AS used_price_samples,
+        CASE WHEN {usable} THEN {alias}.used_price_latest_at END AS used_price_latest_at,
+        CASE WHEN {usable} THEN {alias}.used_price_basis END AS used_price_basis,
+        CASE WHEN {trend_usable} THEN {alias}.price_trend_pct END AS price_trend_pct,
+        CASE WHEN {trend_usable} THEN {alias}.price_trend_confidence ELSE 0 END AS price_trend_confidence
+    """
+
+
+def _new_price_reference(alias: str) -> str:
+    return f"""CASE WHEN COALESCE({alias}.canonical_price_url, '') = ''
+              OR ({alias}.last_price_check_ok = 1
+                  AND julianday({alias}.last_price_check_at, '+30 days') > julianday('now'))
+              THEN {alias}.typical_new_price END"""
+
+
+_ITEM_PRODUCT_SELECT = f"""
 SELECT ip.id AS id, ip.item_id AS item_id, p.id AS product_id,
        p.manufacturer AS manufacturer, p.model AS model,
        ip.match_terms AS match_terms,
        p.msrp AS msrp, p.typical_new_price AS typical_new_price,
-       p.typical_used_price AS typical_used_price,
+       {_new_price_reference("p")} AS reference_new_price,
+       {_market_price_fields("p")},
        ip.target_deal_price AS target_deal_price,
        ip.archived AS archived, ip.wanted AS wanted,
-       p.price_trend_pct AS price_trend_pct,
-       p.price_trend_confidence AS price_trend_confidence,
        p.canonical_price_url AS canonical_price_url,
        p.price_search_checked AS price_search_checked,
        p.last_price_check_at AS last_price_check_at,
@@ -848,6 +918,9 @@ def _product_from_row(row: sqlite3.Row) -> catalogue.Product:
     — no item context, so the item-scoped fields (match_terms,
     target_deal_price, archived, wanted) take their neutral defaults. Used
     where only global market data is needed (price history, price trend)."""
+    now = _now()
+    used_fresh = bool(row["used_price_expires_at"] and row["used_price_expires_at"] > now)
+    trend_fresh = bool(row["price_trend_expires_at"] and row["price_trend_expires_at"] > now)
     return catalogue.Product(
         id=row["id"],
         global_product_id=row["id"],
@@ -858,11 +931,11 @@ def _product_from_row(row: sqlite3.Row) -> catalogue.Product:
         match_terms=[],
         msrp=row["msrp"],
         typical_new_price=row["typical_new_price"],
-        typical_used_price=row["typical_used_price"],
+        typical_used_price=row["typical_used_price"] if used_fresh else None,
         target_deal_price=None,
         archived=False,
-        price_trend_pct=row["price_trend_pct"],
-        price_trend_confidence=row["price_trend_confidence"],
+        price_trend_pct=row["price_trend_pct"] if trend_fresh else None,
+        price_trend_confidence=row["price_trend_confidence"] if trend_fresh else 0,
         wanted=True,
     )
 
@@ -885,7 +958,7 @@ def _item_product_from_row(row: sqlite3.Row) -> catalogue.Product:
         model=row["model"] or "",
         match_terms=json.loads(row["match_terms"] or "[]"),
         msrp=row["msrp"],
-        typical_new_price=row["typical_new_price"],
+        typical_new_price=row["reference_new_price"],
         typical_used_price=row["typical_used_price"],
         target_deal_price=row["target_deal_price"],
         archived=bool(row["archived"]),
@@ -1286,9 +1359,13 @@ def delete_product(conn: sqlite3.Connection, product_id: int) -> None:
 # Only observations from the last N days feed the rolling "typical used
 # price" — old asking prices shouldn't anchor today's market.
 _PRICE_HISTORY_WINDOW_DAYS = 90
+_MIN_AUCTION_CLOSE_COMPARABLES = 3
 
 
-def record_price_observation(conn: sqlite3.Connection, product_id: int, price: float, source: str) -> None:
+def record_price_observation(
+    conn: sqlite3.Connection, product_id: int, price: float, source: str,
+    *, listing_id: int | None = None,
+) -> None:
     """Log one used-market price sighting for a product and recompute its
     rolling `typical_used_price` (median of observations from the last
     `_PRICE_HISTORY_WINDOW_DAYS` days) plus its used-price trend (see
@@ -1296,12 +1373,16 @@ def record_price_observation(conn: sqlite3.Connection, product_id: int, price: f
     scoring time. Call once per distinct listing a product resolves
     against — not on every rescan of an already-seen listing, or a single
     stale unsold listing would dominate the average."""
-    conn.execute(
-        "INSERT INTO product_price_observations (product_id, price, source, observed_at) "
-        "VALUES (?, ?, ?, ?)",
-        (product_id, price, source, _now()),
+    inserted = conn.execute(
+        """INSERT INTO product_price_observations (product_id, price, source, observed_at, listing_id)
+           SELECT ?, ?, ?, ?, ? WHERE NOT EXISTS (
+               SELECT 1 FROM product_price_observations
+               WHERE listing_id = ? AND product_id = ? AND source = ?
+           )""",
+        (product_id, price, source, _now(), listing_id, listing_id, product_id, source),
     )
-    _recompute_used_price(conn, product_id)
+    if inserted.rowcount:
+        _recompute_used_price(conn, product_id)
     conn.commit()
 
 
@@ -1309,27 +1390,58 @@ def _recompute_used_price(conn: sqlite3.Connection, product_id: int) -> None:
     """Recompute the cached typical_used_price + trend from the observation
     window. Shared by record_price_observation (every new sighting) and
     merge_products (observations just changed owner). Caller commits."""
-    cutoff = (datetime.now(timezone.utc) - timedelta(days=_PRICE_HISTORY_WINDOW_DAYS)).isoformat(
-        timespec="seconds"
-    )
+    now = datetime.now(timezone.utc)
+    window = timedelta(days=_PRICE_HISTORY_WINDOW_DAYS)
+    cutoff = (now - window).isoformat(timespec="seconds")
     rows = conn.execute(
         "SELECT price, source, observed_at FROM product_price_observations "
-        "WHERE product_id = ? AND observed_at >= ?",
+        "WHERE product_id = ? AND observed_at >= ? ORDER BY observed_at",
         (product_id, cutoff),
     ).fetchall()
-    prices = sorted(r["price"] for r in rows)
-    typical = median(prices) if prices else None
+    closed = [r for r in rows if r["source"].endswith(price_trend.SOLD_SOURCE_SUFFIX)]
+    asking = [r for r in rows if not r["source"].endswith(price_trend.SOLD_SOURCE_SUFFIX)]
+    primary = closed if len(closed) >= _MIN_AUCTION_CLOSE_COMPARABLES or not asking else asking
+    typical = median(r["price"] for r in primary) if primary else None
+    basis = ("Auction closes" if primary is closed else "Asking prices") if primary else None
+    expires = (datetime.fromisoformat(primary[0]["observed_at"].replace("Z", "+00:00")) + window
+               if primary else None)
     # _PRICE_HISTORY_WINDOW_DAYS (90) comfortably covers the trend module's
     # own two-window lookback (2 * price_trend.WINDOW_DAYS = 60), so this
     # reuses the same rows already fetched above rather than a second query.
     trend = price_trend.compute_trend(
-        [(r["observed_at"], r["price"], r["source"]) for r in rows]
+        [(r["observed_at"], r["price"], r["source"]) for r in rows], now=now,
     )
+    trend_steps = []
+    if trend.pct is not None:
+        span = timedelta(days=price_trend.WINDOW_DAYS)
+        for row in rows:
+            observed = datetime.fromisoformat(row["observed_at"].replace("Z", "+00:00"))
+            for boundary in (observed + span, observed + 2 * span):
+                if boundary > now:
+                    trend_steps.append(boundary)
     conn.execute(
         "UPDATE products SET typical_used_price = ?, price_trend_pct = ?, "
-        "price_trend_confidence = ? WHERE id = ?",
-        (typical, trend.pct, trend.confidence, product_id),
+        "price_trend_confidence = ?, used_price_expires_at = ?, used_price_latest_at = ?, "
+        "used_price_samples = ?, used_price_basis = ?, price_trend_expires_at = ? WHERE id = ?",
+        (typical, trend.pct, trend.confidence, expires.isoformat() if expires else None,
+         primary[-1]["observed_at"] if primary else None, len(primary), basis,
+         min(trend_steps).isoformat() if trend_steps else None, product_id),
     )
+
+
+def refresh_market_references(conn: sqlite3.Connection) -> None:
+    """Refresh expired or pre-migration caches between watch cycles."""
+    rows = conn.execute(
+        """SELECT id FROM products
+           WHERE (typical_used_price IS NOT NULL
+                  AND COALESCE(julianday(used_price_expires_at), 0) <= julianday('now'))
+              OR (price_trend_pct IS NOT NULL
+                  AND COALESCE(julianday(price_trend_expires_at), 0) <= julianday('now'))"""
+    ).fetchall()
+    for row in rows:
+        _recompute_used_price(conn, row["id"])
+    if rows:
+        conn.commit()
 
 
 def list_price_observations(conn: sqlite3.Connection, product_id: int) -> list[sqlite3.Row]:
@@ -1810,6 +1922,75 @@ def dismiss_suggestion(conn: sqlite3.Connection, suggestion_id: int) -> None:
     conn.commit()
 
 
+# --- Undo (last suggestion action only) ----------------------------------------
+#
+# A single slot, not a history stack: catalogue review is a fast, high-volume
+# clicking task and mistakes get noticed immediately (a mis-click on the very
+# next row, not five actions later) — see the operator's own report of
+# approving a listing under the wrong item. Stored via the existing
+# app_settings key/value store rather than a new table; a second action
+# overwrites the slot, and Undo consumes it so it never fires twice.
+
+_LAST_SUGGESTION_ACTION_KEY = "last_suggestion_action"
+
+
+def record_last_suggestion_action(conn: sqlite3.Connection, action: dict) -> None:
+    """Remember one reversible suggestion action (approve/dismiss, single or
+    bulk) as the Undo target. `action` must include "kind" and a
+    human-readable "description" the UI can show on the Undo button/tooltip
+    without any further lookups."""
+    set_setting(conn, _LAST_SUGGESTION_ACTION_KEY, json.dumps(action))
+
+
+def get_last_suggestion_action(conn: sqlite3.Connection) -> dict | None:
+    """The pending Undo target, if any — read-only, for rendering the Undo
+    button's label/tooltip. Does not consume it."""
+    raw = get_setting(conn, _LAST_SUGGESTION_ACTION_KEY)
+    return json.loads(raw) if raw else None
+
+
+def clear_last_suggestion_action(conn: sqlite3.Connection) -> None:
+    set_setting(conn, _LAST_SUGGESTION_ACTION_KEY, None)
+
+
+def undo_last_suggestion_action(conn: sqlite3.Connection) -> str | None:
+    """Reverse the most recently recorded approve/dismiss (single or bulk)
+    and clear the slot. An approval is undone the same way a human would
+    correct it by hand: stop this item tracking the product
+    (delete_item_product — the shared global product and any other item's
+    tracking of it are untouched) and put the suggestion back to pending. A
+    dismissal is undone by putting it back to pending too. Returns a
+    human-readable summary, or None if there's nothing to undo (already
+    used, or nothing actioned yet)."""
+    action = get_last_suggestion_action(conn)
+    if action is None:
+        return None
+
+    def _repend(suggestion_id: int) -> None:
+        conn.execute(
+            "UPDATE product_suggestions SET status = 'pending' WHERE id = ?", (suggestion_id,)
+        )
+
+    kind = action["kind"]
+    if kind == "approve":
+        if action["item_product_id"] is not None:
+            delete_item_product(conn, action["item_product_id"])
+        _repend(action["suggestion_id"])
+    elif kind == "dismiss":
+        _repend(action["suggestion_id"])
+    elif kind == "bulk_approve":
+        for entry in action["items"]:
+            if entry["item_product_id"] is not None:
+                delete_item_product(conn, entry["item_product_id"])
+            _repend(entry["suggestion_id"])
+    elif kind == "bulk_dismiss":
+        for suggestion_id in action["suggestion_ids"]:
+            _repend(suggestion_id)
+    conn.commit()
+    clear_last_suggestion_action(conn)
+    return action["description"]
+
+
 # --- Auction close tracking (see auction_watch.py) -----------------------------
 
 
@@ -1928,13 +2109,20 @@ def upsert_listing(conn: sqlite3.Connection, listing: Listing) -> tuple[int, boo
     ).fetchone()
     if row:
         conn.execute(
-            "UPDATE listings SET last_seen = ?, price = ?, title = ?, "
+            "UPDATE listings SET last_seen = ?, price = ?, title = ?, currency = ?, "
             "buying_options = ?, bid_count = ?, end_time = ?, "
             "current_bid_price = ?, buy_it_now_price = ?, "
-            "image_url = COALESCE(?, image_url) WHERE id = ?",
-            (now, listing.price, listing.title, buying_options, listing.bid_count,
+            "image_url = COALESCE(?, image_url), description = ?, condition = ?, "
+            "category = ?, variation_group = ?, variation_group_id = ?, variant_capacity_gb = ?, "
+            "offer_checked_at = CASE WHEN title IS ? AND price IS ? AND currency IS ? "
+            "AND buying_options IS ? AND condition IS ? AND variation_group IS ? AND variant_capacity_gb IS ? "
+            "THEN offer_checked_at END WHERE id = ?",
+            (now, listing.price, listing.title, listing.currency, buying_options, listing.bid_count,
              listing.end_time, listing.current_bid_price, listing.buy_it_now_price,
-             listing.image_url, row["id"]),
+             listing.image_url, listing.description, listing.condition,
+             listing.category, int(listing.variation_group), listing.variation_group_id, listing.variant_capacity_gb,
+             listing.title, listing.price, listing.currency, buying_options, listing.condition,
+             int(listing.variation_group), listing.variant_capacity_gb, row["id"]),
         )
         # Commit immediately (as every db.py write function must): the watch
         # loop calls this between network requests, and an uncommitted write
@@ -1947,8 +2135,8 @@ def upsert_listing(conn: sqlite3.Connection, listing: Listing) -> tuple[int, boo
         "INSERT INTO listings (source, external_id, title, price, currency, url, "
         "location, description, condition, first_seen, last_seen, "
         "buying_options, bid_count, end_time, image_url, "
-        "current_bid_price, buy_it_now_price) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "current_bid_price, buy_it_now_price, category, variation_group, variation_group_id, variant_capacity_gb) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (
             listing.source,
             listing.external_id,
@@ -1967,6 +2155,10 @@ def upsert_listing(conn: sqlite3.Connection, listing: Listing) -> tuple[int, boo
             listing.image_url,
             listing.current_bid_price,
             listing.buy_it_now_price,
+            listing.category,
+            int(listing.variation_group),
+            listing.variation_group_id,
+            listing.variant_capacity_gb,
         ),
     )
     conn.commit()
@@ -2121,9 +2313,8 @@ def scan_duplicate_candidates(conn: sqlite3.Connection) -> int:
     rows = conn.execute(
         f"""
         SELECT DISTINCT m.item_id, l.id, l.title, l.price, l.source, l.location, l.image_url
-        FROM listing_matches m
-        JOIN listings l ON l.id = m.listing_id
-        WHERE l.is_primary_sighting = 1 AND {_NOT_ENDED}
+        {_MATCH_FROM}
+        WHERE {_CURRENT_MATCH}
         ORDER BY m.item_id, l.id
         """
     ).fetchall()
@@ -2187,6 +2378,7 @@ SELECT d.*, i.name AS item_name, i.project_id,
        lb.url AS b_url, lb.end_time AS b_end_time
 FROM listing_duplicates d
 JOIN items i ON i.id = d.item_id
+JOIN projects p ON p.id = i.project_id
 JOIN listings la ON la.id = d.listing_a
 JOIN listings lb ON lb.id = d.listing_b
 """
@@ -2207,9 +2399,10 @@ def list_duplicate_candidates(
     clauses = ["d.status = ?"]
     params: list = [status]
     if status == "pending":
+        clauses.append(_ACTIVE_WATCH)
         clauses.append("la.is_primary_sighting = 1 AND lb.is_primary_sighting = 1")
         for alias in ("la", "lb"):
-            clauses.append(_NOT_ENDED.replace("l.", f"{alias}."))
+            clauses.append(_CURRENT_LISTING.replace("l.", f"{alias}."))
     if project_id is not None:
         clauses.append("i.project_id = ?")
         params.append(project_id)
@@ -2302,18 +2495,20 @@ def pending_duplicate_counts(conn: sqlite3.Connection) -> dict[int, int]:
     """Reviewable pending pairs per project id (same both-live-and-primary
     visibility rule as list_duplicate_candidates), for the dashboard's
     per-project "possible duplicates" note."""
-    not_ended_a = _NOT_ENDED.replace("l.", "la.")
-    not_ended_b = _NOT_ENDED.replace("l.", "lb.")
+    current_a = _CURRENT_LISTING.replace("l.", "la.")
+    current_b = _CURRENT_LISTING.replace("l.", "lb.")
     rows = conn.execute(
         f"""
         SELECT i.project_id, COUNT(*) AS c
         FROM listing_duplicates d
         JOIN items i ON i.id = d.item_id
+        JOIN projects p ON p.id = i.project_id
         JOIN listings la ON la.id = d.listing_a
         JOIN listings lb ON lb.id = d.listing_b
         WHERE d.status = 'pending'
+          AND {_ACTIVE_WATCH}
           AND la.is_primary_sighting = 1 AND lb.is_primary_sighting = 1
-          AND {not_ended_a} AND {not_ended_b}
+          AND {current_a} AND {current_b}
         GROUP BY i.project_id
         """
     ).fetchall()
@@ -2326,6 +2521,10 @@ def record_match(
     item_id: int,
     evaluation: Evaluation,
     product_id: int | None = None,
+    *,
+    match_status: str = "exact",
+    match_reason: str = "",
+    search_term: str | None = None,
 ) -> tuple[int, bool]:
     """Record a listing/item match. Returns (match_id, is_new_match).
 
@@ -2339,7 +2538,8 @@ def record_match(
     if row:
         conn.execute(
             "UPDATE listing_matches SET grade = ?, deal_score = ?, margin_abs = ?, "
-            "margin_pct = ?, under_target = ?, flags = ?, product_id = ? WHERE id = ?",
+            "margin_pct = ?, under_target = ?, flags = ?, product_id = ?, "
+            "match_status = ?, match_reason = ?, search_term = COALESCE(?, search_term) WHERE id = ?",
             (
                 evaluation.grade,
                 evaluation.deal_score,
@@ -2348,6 +2548,7 @@ def record_match(
                 int(evaluation.under_target),
                 json.dumps(evaluation.flags),
                 product_id,
+                match_status, match_reason, search_term,
                 row["id"],
             ),
         )
@@ -2359,8 +2560,8 @@ def record_match(
         return row["id"], False
     cur = conn.execute(
         "INSERT INTO listing_matches (listing_id, item_id, grade, deal_score, "
-        "margin_abs, margin_pct, under_target, flags, matched_at, product_id) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "margin_abs, margin_pct, under_target, flags, matched_at, product_id, "
+        "match_status, match_reason, search_term) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (
             listing_id,
             item_id,
@@ -2372,39 +2573,77 @@ def record_match(
             json.dumps(evaluation.flags),
             _now(),
             product_id,
+            match_status, match_reason, search_term,
         ),
     )
     conn.commit()
     return cur.lastrowid, True
 
 
+def delete_listing_match(conn: sqlite3.Connection, match_id: int) -> None:
+    """Remove a single listing/item match outright — e.g. a listing that
+    fails the item's exclude_terms/max_price after an edit (see
+    runner.reassess_item_matches). The listing itself, any other item's
+    match against it, and the product's price history are untouched."""
+    conn.execute("DELETE FROM alerts_sent WHERE match_id = ?", (match_id,))
+    conn.execute("DELETE FROM listing_matches WHERE id = ?", (match_id,))
+    conn.commit()
+
+
+def get_listing_match(conn: sqlite3.Connection, match_id: int) -> sqlite3.Row | None:
+    return conn.execute("SELECT * FROM listing_matches WHERE id = ?", (match_id,)).fetchone()
+
+
+def exclude_listing_from_item(conn: sqlite3.Connection, listing_id: int, item_id: int) -> None:
+    """The "Not a match" action: permanently stop this one listing from ever
+    matching this item again, with no assumption about *why* (contrast with
+    an item's exclude_terms, which excludes by keyword and so also catches
+    future similar listings — see runner.reassess_item_matches). Removes
+    the existing match immediately; run_once() checks
+    listing_excluded_from_item() before creating a new one, so a future
+    rescan of the same still-active listing doesn't quietly recreate it."""
+    row = conn.execute(
+        "SELECT id FROM listing_matches WHERE listing_id = ? AND item_id = ?",
+        (listing_id, item_id),
+    ).fetchone()
+    if row:
+        delete_listing_match(conn, row["id"])
+    conn.execute(
+        "INSERT OR IGNORE INTO listing_match_exclusions (listing_id, item_id, created_at) "
+        "VALUES (?, ?, ?)",
+        (listing_id, item_id, _now()),
+    )
+    conn.commit()
+
+
+def listing_excluded_from_item(conn: sqlite3.Connection, item_id: int, source: str, external_id: str) -> bool:
+    """True if a human has already said this (source, external_id) listing
+    is not a match for this item — checked before a match would otherwise
+    be (re)created, both at ingest (run_once) and on reassessment."""
+    return conn.execute(
+        "SELECT 1 FROM listing_match_exclusions x JOIN listings l ON l.id = x.listing_id "
+        "WHERE x.item_id = ? AND l.source = ? AND l.external_id = ?",
+        (item_id, source, external_id),
+    ).fetchone() is not None
+
+
 def mark_alerted(conn: sqlite3.Connection, match_id: int, channel: str) -> bool:
-    """Record an alert. Returns False if already sent on this channel."""
+    """Claim a current match for alerting once per channel."""
     try:
-        conn.execute(
-            "INSERT INTO alerts_sent (match_id, channel, sent_at) VALUES (?, ?, ?)",
-            (match_id, channel, _now()),
+        cur = conn.execute(
+            f"""INSERT INTO alerts_sent (match_id, channel, sent_at)
+                SELECT m.id, ?, ? {_MATCH_FROM} WHERE m.id = ? AND {_RECOMMENDABLE}""",
+            (channel, _now(), match_id),
         )
         # Committed before the caller fires the (possibly slow) webhook —
         # never hold the writer lock across network I/O.
         conn.commit()
-        return True
+        return cur.rowcount == 1
     except sqlite3.IntegrityError:
         return False
 
 
-_MATCH_SELECT = """
-SELECT p.name AS project_name, p.slug AS project_slug, p.id AS project_id,
-       i.name AS item_name, i.id AS item_id,
-       COALESCE(pr.typical_new_price, pr.msrp, i.normal_price) AS normal_price,
-       COALESCE(ip.target_deal_price, i.target_deal_price) AS target_deal_price,
-       pr.typical_used_price, i.priority,
-       pr.manufacturer AS product_manufacturer, pr.model AS product_model,
-       pr.price_trend_pct, pr.price_trend_confidence,
-       l.id AS listing_id, l.title, l.price, l.currency, l.url, l.source, l.location,
-       l.first_seen, l.last_seen, l.end_time, l.bid_count, l.buying_options, l.image_url,
-       l.current_bid_price, l.buy_it_now_price,
-       m.grade, m.deal_score, m.margin_abs, m.margin_pct, m.under_target, m.flags
+_MATCH_FROM = """
 FROM listing_matches m
 JOIN listings l ON l.id = m.listing_id
 JOIN items i ON i.id = m.item_id
@@ -2413,22 +2652,98 @@ LEFT JOIN products pr ON pr.id = m.product_id
 LEFT JOIN item_products ip ON ip.product_id = m.product_id AND ip.item_id = m.item_id
 """
 
+_OFFER_EXPIRY = "julianday(l.offer_checked_at, '+6 hours')"
+_OFFER_RECENT = f"""(
+    {_OFFER_EXPIRY} > julianday('now')
+    AND l.offer_checked_title = l.title AND l.offer_checked_price = l.price
+    AND l.offer_destination = COALESCE(
+        (SELECT value FROM app_settings WHERE key = 'offer_destination'), ''
+    )
+)"""
+_OFFER_TOTAL = "round(l.offer_checked_price + l.offer_postage, 2)"
+_VERIFIED_OFFER = f"""(
+    {_OFFER_RECENT} AND l.offer_state = 'verified' AND l.currency = 'GBP'
+    AND l.offer_postage IS NOT NULL AND l.variation_group = 0
+    AND l.buying_options NOT LIKE '%AUCTION%'
+)"""
+
+def _destination_key(postcode: str) -> str:
+    return "".join(postcode.upper().split())
+
+
+def set_offer_destination(conn: sqlite3.Connection, postcode: str) -> None:
+    destination = _destination_key(postcode)
+    if get_setting(conn, "offer_destination", "") != destination:
+        set_setting(conn, "offer_destination", destination)
+
+
+def store_offer_check(
+    conn: sqlite3.Connection, listing_id: int, listing: Listing, check: OfferCheck,
+    *, postcode: str = "",
+) -> None:
+    if check.status == "verified" and (check.total is None or check.item_price != listing.price):
+        check = OfferCheck("review", "The returned offer did not confirm the advertised price.")
+    conn.execute(
+        """UPDATE listings SET offer_state = ?, offer_reason = ?, offer_checked_at = ?,
+           offer_checked_title = ?, offer_checked_price = ?, offer_postage = ?, offer_destination = ?
+           WHERE id = ? AND title = ? AND price = ?""",
+        (check.status, check.reason, _now(), listing.title, listing.price, check.postage,
+         _destination_key(postcode), listing_id, listing.title, listing.price),
+    )
+    conn.commit()
+
+
+def recent_offer_check(conn: sqlite3.Connection, listing_id: int) -> OfferCheck | None:
+    row = conn.execute(
+        f"""SELECT offer_state, offer_reason, offer_checked_price, offer_postage
+            FROM listings l WHERE id = ? AND {_OFFER_RECENT}""",
+        (listing_id,),
+    ).fetchone()
+    if row is None:
+        return None
+    return OfferCheck(row["offer_state"], row["offer_reason"], row["offer_checked_price"], row["offer_postage"])
+
+
+_MATCH_SELECT = f"""
+SELECT p.name AS project_name, p.slug AS project_slug, p.id AS project_id,
+       i.name AS item_name, i.id AS item_id,
+       COALESCE(({_new_price_reference("pr")}), pr.msrp, i.normal_price) AS normal_price,
+       CASE WHEN ({_new_price_reference("pr")}) IS NOT NULL
+                 THEN CASE WHEN COALESCE(pr.canonical_price_url, '') = '' THEN 'Configured new price'
+                           ELSE 'Retailer reference' END
+            WHEN pr.msrp IS NOT NULL THEN 'Manufacturer price'
+            ELSE 'Watch estimate' END AS reference_basis,
+       COALESCE(ip.target_deal_price, i.target_deal_price) AS target_deal_price,
+       {_market_price_fields("pr")}, i.priority,
+       pr.manufacturer AS product_manufacturer, pr.model AS product_model,
+       l.id AS listing_id, l.title, l.price, l.currency, l.url, l.source, l.location,
+       l.first_seen, l.last_seen, l.end_time, l.bid_count, l.buying_options, l.image_url,
+       l.current_bid_price, l.buy_it_now_price,
+       m.id AS match_id, m.grade, m.deal_score, m.margin_abs, m.margin_pct, m.under_target, m.flags,
+       m.match_status, m.match_reason, m.search_term, l.variant_capacity_gb,
+       CASE WHEN {_VERIFIED_OFFER} THEN {_OFFER_TOTAL} END AS offer_total,
+       CASE WHEN {_VERIFIED_OFFER} THEN l.offer_postage END AS offer_postage,
+       CASE WHEN {_OFFER_RECENT} THEN l.offer_checked_at END AS offer_checked_at,
+       CASE WHEN {_OFFER_RECENT} THEN l.offer_reason
+            ELSE 'Price and availability still need checking.' END AS offer_reason
+{_MATCH_FROM}
+"""
+
 _SORTS = {
-    "score": "m.deal_score DESC",
+    "score": "m.deal_score DESC, l.last_seen DESC, m.id",
     "price": "l.price ASC",
     "first_seen": "l.first_seen DESC",
 }
 
-# An ended listing (auction finished, or a fixed-price listing whose end date
-# has passed) isn't buyable at any price, so it never belongs on a browsing
-# or preview surface — it should vanish the moment the clock passes, not a
-# watch cycle later. eBay end_time strings ("2026-07-06T20:51:35.000Z", UTC)
-# compare lexically against SQLite's UTC 'now' rendered in the same
-# YYYY-MM-DDTHH:MM:SS prefix format. Rows stay in the DB for provenance and
-# price history, and auction_watch deliberately keeps its own listing
-# queries — it must keep polling briefly *past* end time to capture the
-# closing price (see AuctionSnapshot.ended).
-_NOT_ENDED = "(l.end_time IS NULL OR l.end_time > strftime('%Y-%m-%dT%H:%M:%S', 'now'))"
+# An undated listing becomes stale after 48 hours without a new sighting.
+# Dated listings follow their end time. Auction close capture deliberately
+# uses its own query because it can need to poll after that time.
+_STALE_AFTER_HOURS = 48
+_LISTING_EXPIRY = (
+    f"CASE WHEN l.end_time IS NULL THEN julianday(l.last_seen, '+{_STALE_AFTER_HOURS} hours') "
+    "ELSE julianday(l.end_time) END"
+)
+_CURRENT_LISTING = f"(l.sold_captured = 0 AND COALESCE(({_LISTING_EXPIRY}) > julianday('now'), 0))"
 
 # A match against a knowledge-only tracking (item_products.wanted = 0 — this
 # item's own decision, not a global product flag) is identification, not
@@ -2436,6 +2751,21 @@ _NOT_ENDED = "(l.end_time IS NULL OR l.end_time > strftime('%Y-%m-%dT%H:%M:%S', 
 # belongs on a deal surface or in an alert. Requires item_products joined
 # as `ip` (all deal-surface queries join it, keyed by item_id+product_id).
 _WANTED = "(m.product_id IS NULL OR ip.wanted = 1)"
+_ACTIVE_WATCH = "(p.archived = 0 AND i.archived = 0)"
+_VISIBLE_MATCH = f"(l.is_primary_sighting = 1 AND {_WANTED})"
+_ELIGIBLE_MATCH = "m.match_status IN ('exact', 'substitute')"
+_CURRENT_MATCH = f"({_ACTIVE_WATCH} AND {_VISIBLE_MATCH} AND {_CURRENT_LISTING} AND {_ELIGIBLE_MATCH})"
+_RECOMMENDABLE = f"""(
+    {_CURRENT_MATCH} AND {_VERIFIED_OFFER} AND m.flags = '[]' AND m.grade != 'spares/repair'
+    AND (i.max_price IS NULL OR {_OFFER_TOTAL} <= i.max_price)
+)"""
+
+
+def match_is_current(conn: sqlite3.Connection, match_id: int, *, verified_only: bool = False) -> bool:
+    eligible = _RECOMMENDABLE if verified_only else _CURRENT_MATCH
+    return conn.execute(
+        f"SELECT 1 {_MATCH_FROM} WHERE m.id = ? AND {eligible}", (match_id,)
+    ).fetchone() is not None
 
 
 def query_matches(
@@ -2447,16 +2777,30 @@ def query_matches(
     flagged: bool | None = None,
     sort: str = "score",
     limit: int | None = None,
+    *,
+    historical: bool = False,
+    review: bool = False,
+    verified_only: bool = False,
 ) -> list[sqlite3.Row]:
     """Browse matches with optional filters. flagged=True → has warning flags
     or graded spares/repair; flagged=False → clean listings only.
 
-    Always excludes non-primary sightings (see resolve_identity()) — a
-    listing that's a confirmed duplicate of another, already-surfaced one
-    stays in the database for provenance but never appears in results.
-    Ended listings (see _NOT_ENDED) and matches against knowledge-only
-    products (see _WANTED) are likewise always excluded."""
-    clauses, params = ["l.is_primary_sighting = 1", _NOT_ENDED, _WANTED], []
+    By default only current listings from active watches are shown.
+    Historical results contain expired listings and archived watches.
+    Both views hide non-primary sightings and knowledge-only matches."""
+    visibility = (
+        f"{_VISIBLE_MATCH} AND NOT ({_ACTIVE_WATCH} AND {_CURRENT_LISTING})"
+        if historical else _CURRENT_MATCH
+    )
+    if verified_only:
+        visibility = _RECOMMENDABLE
+    elif review:
+        visibility = (
+            f"{_VISIBLE_MATCH} AND {_ACTIVE_WATCH} AND {_CURRENT_LISTING} "
+            f"AND (NOT ({_ELIGIBLE_MATCH}) OR (l.buying_options NOT LIKE '%AUCTION%' "
+            f"AND NOT COALESCE({_VERIFIED_OFFER}, 0)))"
+        )
+    clauses, params = [visibility], []
     if project_id is not None:
         clauses.append("p.id = ?")
         params.append(project_id)
@@ -2476,6 +2820,20 @@ def query_matches(
     where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
     order = _SORTS.get(sort, _SORTS["score"])
     tail = f" LIMIT {int(limit)}" if limit else ""
+    if verified_only and sort == "score":
+        return conn.execute(
+            f"""WITH eligible AS ({_MATCH_SELECT} {where}),
+                   ranked AS (
+                       SELECT eligible.*, COUNT(*) OVER (PARTITION BY listing_id) AS watch_count,
+                              ROW_NUMBER() OVER (
+                                  PARTITION BY listing_id ORDER BY deal_score DESC, last_seen DESC, match_id
+                              ) AS offer_rank
+                       FROM eligible
+                   )
+                SELECT * FROM ranked WHERE offer_rank = 1
+                ORDER BY deal_score DESC, last_seen DESC, match_id{tail}""",
+            params,
+        ).fetchall()
     return conn.execute(
         f"{_MATCH_SELECT} {where} ORDER BY {order}{tail}", params
     ).fetchall()
@@ -2491,7 +2849,7 @@ def list_active_auctions(conn: sqlite3.Connection, limit: int | None = None) -> 
     text is safe here without needing a join/subquery."""
     tail = f" LIMIT {int(limit)}" if limit else ""
     return conn.execute(
-        f"{_MATCH_SELECT} WHERE l.is_primary_sighting = 1 AND {_NOT_ENDED} AND {_WANTED} "
+        f"{_MATCH_SELECT} WHERE {_CURRENT_MATCH} "
         f"AND l.buying_options LIKE '%AUCTION%' "
         f"ORDER BY (l.end_time IS NULL), l.end_time ASC{tail}"
     ).fetchall()
@@ -2502,7 +2860,7 @@ def list_offer_listings(conn: sqlite3.Connection, limit: int | None = None) -> l
     first — for the Offers view (see offers.py)."""
     tail = f" LIMIT {int(limit)}" if limit else ""
     return conn.execute(
-        f"{_MATCH_SELECT} WHERE l.is_primary_sighting = 1 AND {_NOT_ENDED} AND {_WANTED} "
+        f"{_MATCH_SELECT} WHERE {_CURRENT_MATCH} "
         f"AND l.buying_options LIKE '%BEST_OFFER%' "
         f"ORDER BY l.last_seen DESC{tail}"
     ).fetchall()
@@ -2515,14 +2873,13 @@ def project_summaries(conn: sqlite3.Connection) -> list[sqlite3.Row]:
     resolve_identity()) via the CASE guards below, so a confirmed
     cross-source duplicate doesn't inflate the count or surface a stale
     score — the LEFT JOINs are kept as LEFT so item_count (which doesn't
-    depend on matches existing at all) is unaffected. Ended listings (see
-    _NOT_ENDED) are excluded the same way."""
+    depend on matches existing at all) is unaffected."""
     return conn.execute(
         f"""
         SELECT p.id, p.name, p.slug, p.archived,
                COUNT(DISTINCT i.id) AS item_count,
-               COUNT(CASE WHEN l.is_primary_sighting = 1 AND {_NOT_ENDED} AND {_WANTED} THEN m.id END) AS match_count,
-               MAX(CASE WHEN l.is_primary_sighting = 1 AND {_NOT_ENDED} AND {_WANTED} THEN m.deal_score END) AS best_score
+               COUNT(CASE WHEN {_CURRENT_MATCH} THEN m.id END) AS match_count,
+               MAX(CASE WHEN {_CURRENT_MATCH} THEN m.deal_score END) AS best_score
         FROM projects p
         LEFT JOIN items i ON i.project_id = p.id AND i.archived = 0
         LEFT JOIN listing_matches m ON m.item_id = i.id
@@ -2546,17 +2903,16 @@ def project_top_picks(conn: sqlite3.Connection) -> dict[int, sqlite3.Row]:
         f"""
         SELECT * FROM (
             SELECT p.id AS project_id, i.name AS item_name,
-                   l.title, l.price, l.currency, l.url, l.source, l.image_url,
+                   l.title, {_OFFER_TOTAL} AS price, l.currency, l.url, l.source, l.image_url,
                    m.grade, m.deal_score, m.margin_pct, m.under_target,
-                   ROW_NUMBER() OVER (PARTITION BY p.id ORDER BY m.deal_score DESC) AS rn
+                   ROW_NUMBER() OVER (PARTITION BY p.id
+                     ORDER BY m.deal_score DESC, l.last_seen DESC, m.id) AS rn
             FROM listing_matches m
             JOIN listings l ON l.id = m.listing_id
             JOIN items i ON i.id = m.item_id
             JOIN projects p ON p.id = i.project_id
             LEFT JOIN item_products ip ON ip.product_id = m.product_id AND ip.item_id = m.item_id
-            WHERE p.archived = 0 AND l.is_primary_sighting = 1
-              AND {_NOT_ENDED} AND {_WANTED}
-              AND m.flags = '[]' AND m.grade != 'spares/repair'
+            WHERE {_RECOMMENDABLE}
         )
         WHERE rn = 1
         """
@@ -2565,6 +2921,48 @@ def project_top_picks(conn: sqlite3.Connection) -> dict[int, sqlite3.Row]:
 
 
 _SOURCE_RUN_RETENTION_DAYS = 30
+
+
+def record_search_queries(conn: sqlite3.Connection, rows: list[tuple]) -> None:
+    if not rows:
+        return
+    now = _now()
+    conn.executemany(
+        """INSERT INTO search_query_runs (
+               ran_at, item_id, source, term, requests, duration_ms, returned,
+               candidates, relevant, total, has_more, failed
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        [(now, *row) for row in rows],
+    )
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=_SOURCE_RUN_RETENTION_DAYS)).isoformat(timespec="seconds")
+    conn.execute("DELETE FROM search_query_runs WHERE ran_at < ?", (cutoff,))
+    conn.commit()
+
+
+def recent_search_queries(conn: sqlite3.Connection, limit: int = 24) -> list[sqlite3.Row]:
+    return conn.execute(
+        """SELECT q.*, i.name AS watch_name FROM search_query_runs q
+           JOIN items i ON i.id = q.item_id
+           ORDER BY q.id DESC LIMIT ?""",
+        (limit,),
+    ).fetchall()
+
+
+def latest_search_runs(conn: sqlite3.Connection) -> dict[str, sqlite3.Row]:
+    """Latest completed attempt and most recent recorded success per source."""
+    rows = conn.execute(
+        """
+        WITH runs AS (
+            SELECT source, run_at, ok, listings,
+                   MAX(CASE WHEN ok = 1 THEN run_at END) OVER (PARTITION BY source) AS last_success,
+                   ROW_NUMBER() OVER (PARTITION BY source ORDER BY run_at DESC, id DESC) AS position
+            FROM source_runs
+            WHERE searches > 0
+        )
+        SELECT source, run_at, ok, listings, last_success FROM runs WHERE position = 1
+        """
+    ).fetchall()
+    return {row["source"]: row for row in rows}
 
 
 def record_source_run(
@@ -2754,13 +3152,6 @@ def source_health(conn: sqlite3.Connection) -> dict[str, dict]:
     return health
 
 
-# A listing with no end_time can't expire on its own — if the source stops
-# returning it (sold, delisted, filtered out) it just lingers. Not rescanned
-# for this long = probably gone; the roadmap's "source freshness /
-# stale-listing rate" metric counts exactly these.
-_STALE_AFTER_HOURS = 48
-
-
 def source_coverage(conn: sqlite3.Connection) -> dict[str, dict]:
     """Per-source data coverage, keyed by source name — the roadmap's
     "coverage should become measurable" metrics, computed from what each
@@ -2801,7 +3192,7 @@ def source_coverage(conn: sqlite3.Connection) -> dict[str, dict]:
         f"""
         SELECT l.source,
                COUNT(*) AS listings_total,
-               SUM(CASE WHEN {_NOT_ENDED} THEN 1 ELSE 0 END) AS listings_live,
+               SUM(CASE WHEN {_CURRENT_LISTING} THEN 1 ELSE 0 END) AS listings_live,
                SUM(CASE WHEN l.first_seen >= ? THEN 1 ELSE 0 END) AS new_24h,
                SUM(CASE WHEN l.first_seen >= ? THEN 1 ELSE 0 END) AS new_7d,
                SUM(CASE WHEN l.end_time IS NULL AND l.last_seen < ? THEN 1 ELSE 0 END) AS stale,
@@ -2994,13 +3385,21 @@ def source_coverage_analytics(conn: sqlite3.Connection) -> dict[str, dict]:
     return analytics
 
 
-def latest_activity(conn: sqlite3.Connection) -> str | None:
-    """Latest listing timestamp seen by `watch`/`run-once` — a cheap "did a
-    search just run" signal for the dashboard's live-polling JS. Every
-    listing touched in a cycle gets its last_seen bumped, whether new or
-    not, so this changes on any cycle that fetched at least one listing."""
-    row = conn.execute("SELECT MAX(last_seen) AS ts FROM listings").fetchone()
-    return row["ts"] if row else None
+def listing_activity(conn: sqlite3.Connection) -> dict:
+    """Signals that a sighting or expiry changed the results since the last poll."""
+    row = conn.execute(
+        f"""SELECT MAX(max(l.last_seen, COALESCE(l.offer_checked_at, l.last_seen))) AS last_activity,
+                   NULLIF(max(
+                       COALESCE(MAX(CASE WHEN l.sold_captured = 1
+                                         THEN julianday(COALESCE(l.last_poll_at, l.last_seen))
+                                         WHEN ({_LISTING_EXPIRY}) <= julianday('now')
+                                         THEN ({_LISTING_EXPIRY}) END), 0),
+                       COALESCE(MAX(CASE WHEN l.offer_state = 'verified' AND {_OFFER_EXPIRY} <= julianday('now')
+                                         THEN {_OFFER_EXPIRY} END), 0)
+                   ), 0) AS last_expiry
+            FROM listings l"""
+    ).fetchone()
+    return dict(row)
 
 
 def dashboard_stats(conn: sqlite3.Connection) -> dict:
@@ -3016,18 +3415,17 @@ def dashboard_stats(conn: sqlite3.Connection) -> dict:
         SELECT
           COUNT(CASE WHEN m.flags = '[]' AND m.grade != 'spares/repair'
                      THEN m.id END) AS clean_matches,
-          COUNT(CASE WHEN m.flags = '[]' AND m.grade != 'spares/repair'
-                          AND m.deal_score >= 70
-                     THEN m.id END) AS hot_deals,
+          COUNT(DISTINCT CASE WHEN {_RECOMMENDABLE} AND m.deal_score >= 70
+                              THEN l.id END) AS hot_deals,
           COUNT(CASE WHEN m.flags = '[]' AND m.grade != 'spares/repair'
                           AND l.first_seen >= ?
                      THEN m.id END) AS new_today
         FROM listing_matches m
         JOIN listings l ON l.id = m.listing_id
-        JOIN items i ON i.id = m.item_id AND i.archived = 0
-        JOIN projects p ON p.id = i.project_id AND p.archived = 0
+        JOIN items i ON i.id = m.item_id
+        JOIN projects p ON p.id = i.project_id
         LEFT JOIN item_products ip ON ip.product_id = m.product_id AND ip.item_id = m.item_id
-        WHERE l.is_primary_sighting = 1 AND {_NOT_ENDED} AND {_WANTED}
+        WHERE {_CURRENT_MATCH}
         """,
         (new_cutoff,),
     ).fetchone()

@@ -578,6 +578,24 @@ def _load_fixture(name: str) -> dict:
     return json.loads((_FIXTURES / name).read_text())
 
 
+def test_ebay_watch_sorts_broad_sliding_mitre_query_by_recency():
+    from product_finder.sources.ebay import EbaySource
+
+    response = mock.Mock()
+    response.json.return_value = {"itemSummaries": [], "total": 80, "next": "next page"}
+    item = make_item(name="Sliding Mitre Saw", terms=["sliding mitre saw", "DeWalt DWS780"])
+    source = EbaySource(_ebay_cfg())
+    with mock.patch.object(source, "_get_token", return_value="fixture"):
+        with mock.patch("product_finder.sources.ebay.requests.get", return_value=response) as get:
+            page = source.search_page("sliding mitre saw", item)
+            assert get.call_args.kwargs["params"]["sort"] == "newlyListed"
+            assert (page.returned, page.total, page.has_more) == (0, 80, True)
+            source.search_page("DeWalt DWS780", item)
+            assert "sort" not in get.call_args.kwargs["params"]
+            source.search_page("sliding mitre saw", item, sort=None)
+            assert "sort" not in get.call_args.kwargs["params"]
+
+
 def test_ebay_search_maps_real_auction_response():
     from product_finder.sources.ebay import EbaySource
 

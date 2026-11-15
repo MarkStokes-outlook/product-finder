@@ -19,6 +19,7 @@ from flask import (
 
 from .. import (
     auction_trajectory,
+    catalogue,
     connector_health,
     db,
     offers,
@@ -114,6 +115,8 @@ def _item_from_form(form, source_names: list[str]) -> tuple[ItemConfig | None, l
         priority=priority,
         notes=(form.get("notes") or "").strip(),
         exclude_terms=exclude_terms,
+        required_terms=[line.strip() for line in form.get("required_terms", "").splitlines() if line.strip()],
+        alternatives=[line.strip() for line in form.get("alternatives", "").splitlines() if line.strip()],
         sources=_selected_sources(form, source_names),
     )
     return (item if not errors else None), errors
@@ -158,10 +161,51 @@ def _dashboard_data(conn, cfg: AppConfig) -> dict:
     return {
         "summaries": db.project_summaries(conn),
         "top_picks": db.project_top_picks(conn),
-        "best": db.query_matches(conn, flagged=False, sort="score", limit=11),
+        "best": db.query_matches(conn, verified_only=True, sort="score", limit=11),
         "warnings": db.query_matches(conn, flagged=True, sort="score", limit=10),
         "stats": db.dashboard_stats(conn),
         "pending_duplicates": db.pending_duplicate_counts(conn),
+    }
+
+
+def _search_status(conn, cfg: AppConfig, project_id: int | None = None) -> dict:
+    registry = sources.build_registry(cfg)
+    names = {
+        name
+        for project in db.load_project_configs(conn)
+        if project_id is None or project.id == project_id
+        for item in project.items
+        for name in runner.item_sources(item, cfg, project)
+        if item.terms and name in registry
+    }
+    automated = {name for name in names if registry[name].is_automated()}
+    runs = [row for name, row in db.latest_search_runs(conn).items() if name in automated]
+    last_attempt = max((row["run_at"] for row in runs), default=None)
+    last_success = max((row["last_success"] for row in runs if row["last_success"]), default=None)
+    overdue = datetime.now(timezone.utc) - timedelta(minutes=2 * max(1, cfg.interval_minutes))
+    if not automated:
+        state, message = ("manual", "Manual searches only") if names else (
+            "inactive", "No searches configured",
+        )
+    elif not runs:
+        state, message = "waiting", "Automatic searches have yet to run"
+    elif any(datetime.fromisoformat(row["run_at"]) < overdue for row in runs):
+        state, message = "delayed", "Automatic searches are delayed"
+    elif any(not row["ok"] for row in runs):
+        state, message = "failed", "One or more automatic searches failed"
+    elif len(runs) < len(automated):
+        state, message = "waiting", "Waiting for the first search from some sources"
+    elif all(row["listings"] == 0 for row in runs):
+        state, message = "empty", "Search completed with no listings"
+    else:
+        state, message = "complete", "Automatic searches completed"
+
+    for label, timestamp in (("Last attempt", last_attempt), ("Last successful search", last_success)):
+        if timestamp:
+            formatted = datetime.fromisoformat(timestamp).astimezone(timezone.utc)
+            message += f" · {label} {formatted:%d %b %Y, %H:%M} UTC"
+    return {
+        "state": state, "message": message, "last_attempt": last_attempt, "last_success": last_success,
     }
 
 
@@ -201,7 +245,7 @@ def _auction_view(conn, row: dict) -> dict:
         snapshots[-1]["current_bid_price"] if snapshots else row["current_bid_price"]
     )
     reference_price = row["typical_used_price"] or row["normal_price"]
-    reference_label = "typical used price" if row["typical_used_price"] else "estimated normal price"
+    reference_label = row["used_price_basis"] if row["typical_used_price"] else "estimated normal price"
     trajectory = auction_trajectory.evaluate(
         current_bid=current_bid,
         bid_count=row["bid_count"],
@@ -225,7 +269,7 @@ def _auctions_data(conn) -> dict:
 
 def _offer_view(row: dict) -> dict:
     reference_price = row["typical_used_price"] or row["normal_price"]
-    reference_label = "typical used price" if row["typical_used_price"] else "estimated normal price"
+    reference_label = row["used_price_basis"] if row["typical_used_price"] else "estimated normal price"
     suggestion = offers.suggest_offers(
         listing_price=row["price"],
         reference_price=reference_price,
@@ -250,6 +294,8 @@ def _match_filters_from_request() -> dict:
         "flagged": {"yes": True, "no": False}.get(flagged_raw),
         "flagged_raw": flagged_raw,
         "sort": request.args.get("sort", "score"),
+        "historical": request.args.get("view") == "history",
+        "review": request.args.get("view") == "review",
     }
 
 
@@ -259,8 +305,10 @@ def _project_detail_data(
     project = db.get_project(conn, project_id)
     if project is None:
         return None
-    items = db.list_items(conn, project_id=project_id, include_archived=False)
     f = filters or {}
+    historical = f.get("historical", False)
+    review = f.get("review", False)
+    items = db.list_items(conn, project_id=project_id, include_archived=historical)
     # Query each item's matches separately (rather than one project-wide query
     # split afterwards) so an item with hundreds of listings can't starve a
     # sibling item's table of its own top results. Each table is paginated
@@ -280,6 +328,8 @@ def _project_detail_data(
             flagged=f.get("flagged"),
             sort=f.get("sort", "score"),
             limit=500,
+            historical=historical,
+            review=review,
         )
     # Hero deal(s) for the callout — always the true top scores, independent
     # of whatever filters the listings below are currently narrowed by. Only
@@ -289,7 +339,9 @@ def _project_detail_data(
     # auctions, whose "price" is just a current bid, not one you can commit
     # to, so a hero card should never headline one (same rule the dashboard
     # already applies to its own hero picks).
-    top_matches = db.query_matches(conn, project_id=project_id, sort="score", flagged=False, limit=4)
+    top_matches = [] if historical or review else db.query_matches(
+        conn, project_id=project_id, sort="score", verified_only=True, limit=4,
+    )
     hot = [m for m in top_matches if (m["deal_score"] or 0) >= HOT_DEAL_SCORE]
     hero_deals = hot if len(hot) > 1 else top_matches[:1]
     project_cfg = next(
@@ -324,6 +376,7 @@ def create_app(cfg: AppConfig) -> Flask:
 
     seed_conn = db.connect(cfg.db_path)
     db.seed_from_config_if_empty(seed_conn, cfg)
+    db.set_offer_destination(seed_conn, cfg.postcode)
     seed_conn.close()
 
     @app.teardown_appcontext
@@ -335,6 +388,12 @@ def create_app(cfg: AppConfig) -> Flask:
     @app.context_processor
     def _globals():
         return {"cfg": cfg, "known_sources": _effective_cfg(cfg).sources.enabled_names()}
+
+    def _reassess_catalogue_items(conn, item_ids):
+        for item_id in set(item_ids):
+            item = db.get_item(conn, item_id)
+            if item is not None:
+                runner.reassess_item_matches(conn, item_id, db._item_from_row(item), _effective_cfg(cfg))
 
     @app.template_filter("parse_flags")
     def _parse_flags(raw):
@@ -360,6 +419,14 @@ def create_app(cfg: AppConfig) -> Flask:
         if seconds < 129600:
             return f"{round(seconds / 3600)}h ago"
         return f"{round(seconds / 86400)}d ago"
+
+    @app.template_filter("guess_accessory_term")
+    def _guess_accessory_term(title):
+        """Pre-fills the "This is a part" prompt with a plausible exclude
+        term — whichever ACCESSORY_KEYWORDS word the listing's own title
+        already uses, or "" to leave the prompt blank rather than guess
+        wrong when nothing matches."""
+        return catalogue.find_accessory_keyword(title) or ""
 
     @app.template_filter("is_new")
     def _is_new(raw):
@@ -391,7 +458,8 @@ def create_app(cfg: AppConfig) -> Flask:
         conn = _get_conn(cfg)
         return render_template(
             "dashboard.html",
-            last_activity=db.latest_activity(conn),
+            **db.listing_activity(conn),
+            search_status=_search_status(conn, _effective_cfg(cfg)),
             **_dashboard_data(conn, cfg),
         )
 
@@ -404,7 +472,11 @@ def create_app(cfg: AppConfig) -> Flask:
 
     @app.route("/api/status")
     def api_status():
-        return {"last_activity": db.latest_activity(_get_conn(cfg))}
+        conn = _get_conn(cfg)
+        return {
+            **db.listing_activity(conn),
+            "search": _search_status(conn, _effective_cfg(cfg), request.args.get("project_id", type=int)),
+        }
 
     # --- Marketplace Outbound Gateway -----------------------------------------
     # See outbound.py and ARCHITECTURE.md ("Marketplace outbound gateway").
@@ -450,6 +522,50 @@ def create_app(cfg: AppConfig) -> Flask:
         if outcome == "failure":
             abort(502)
         return redirect(resolution.url, code=302)
+
+    # --- Match corrections (mismatched listings, spotted anywhere in the UI) -----
+    # Two different fixes for the same complaint ("this shouldn't be scored
+    # as my best deal"): a listing can be individually wrong for an item
+    # with no shared pattern worth acting on ("Not a match"), or it can be
+    # an accessory/part that other similar listings will keep repeating
+    # ("This is a part" — adds an exclude term instead of a one-off fix).
+
+    def _match_redirect():
+        next_url = request.form.get("next", "")
+        if next_url.startswith("/") and not next_url.startswith("//"):
+            return redirect(next_url)
+        return redirect(url_for("dashboard"))
+
+    @app.route("/matches/<int:match_id>/unmatch", methods=["POST"])
+    def match_unmatch(match_id):
+        conn = _get_conn(cfg)
+        match = db.get_listing_match(conn, match_id)
+        if match is None:
+            abort(404)
+        db.exclude_listing_from_item(conn, match["listing_id"], match["item_id"])
+        flash("This listing will no longer be matched to this item.")
+        return _match_redirect()
+
+    @app.route("/items/<int:item_id>/exclude-term", methods=["POST"])
+    def item_add_exclude_term(item_id):
+        conn = _get_conn(cfg)
+        row = db.get_item(conn, item_id)
+        if row is None:
+            abort(404)
+        term = (request.form.get("term") or "").strip()
+        if not term:
+            flash("No exclude term given — nothing changed.")
+            return _match_redirect()
+        item = db._item_from_row(row)
+        if term.lower() not in {t.lower() for t in item.exclude_terms}:
+            item.exclude_terms = item.exclude_terms + [term]
+            db.update_item(conn, item_id, item)
+        result = runner.reassess_item_matches(conn, item_id, item, _effective_cfg(cfg))
+        message = f'Added exclude term "{term}".'
+        if result["rescored"] or result["excluded"]:
+            message += f" {result['excluded']} candidate(s) left out of current matches."
+        flash(message)
+        return _match_redirect()
 
     # --- Active Auctions / Offers ------------------------------------------------
 
@@ -508,7 +624,9 @@ def create_app(cfg: AppConfig) -> Flask:
                 connector_health.evaluate(row["health"], row["analytics"])
                 if row["health"] else None
             )
-        return render_template("sources.html", rows=rows, ebay=sc.ebay)
+        return render_template(
+            "sources.html", rows=rows, ebay=sc.ebay, search_queries=db.recent_search_queries(conn),
+        )
 
     @app.route("/sources/<name>/toggle", methods=["POST"])
     def source_toggle(name):
@@ -559,13 +677,15 @@ def create_app(cfg: AppConfig) -> Flask:
     @app.route("/projects/<int:project_id>")
     def project_detail(project_id):
         conn = _get_conn(cfg)
+        activity = db.listing_activity(conn)
         data = _project_detail_data(
             conn, cfg, _effective_cfg(cfg), project_id, _match_filters_from_request()
         )
         if data is None:
             abort(404)
         return render_template(
-            "project_detail.html", last_activity=db.latest_activity(conn), **data
+            "project_detail.html", **activity,
+            search_status=_search_status(conn, _effective_cfg(cfg), project_id), **data,
         )
 
     @app.route("/projects/<int:project_id>/live")
@@ -595,6 +715,9 @@ def create_app(cfg: AppConfig) -> Flask:
                 source_names = _effective_cfg(cfg).sources.enabled_names()
                 proj_sources = _selected_sources(request.form, source_names)
                 db.update_project(conn, project_id, name, proj_sources)
+                if proj_sources != (json.loads(project["sources"]) if project["sources"] else None):
+                    for row in db.list_items(conn, project_id=project_id):
+                        runner.reassess_item_matches(conn, row["id"], db._item_from_row(row), _effective_cfg(cfg))
                 flash("Project updated.")
                 return redirect(url_for("project_detail", project_id=project_id))
         raw_sources = project["sources"]
@@ -742,7 +865,14 @@ def create_app(cfg: AppConfig) -> Flask:
                 flash(error)
             if not errors:
                 db.update_item(conn, item_id, item)
-                flash("Item updated.")
+                result = runner.reassess_item_matches(conn, item_id, item, _effective_cfg(cfg))
+                message = "Item updated."
+                if result["rescored"] or result["excluded"]:
+                    message += (
+                        f" Re-scored {result['rescored']} existing match(es), "
+                        f"{result['excluded']} candidate(s) left out of current matches."
+                    )
+                flash(message)
                 return redirect(url_for("project_detail", project_id=row["project_id"]))
         return render_template(
             "item_form.html",
@@ -789,6 +919,7 @@ def create_app(cfg: AppConfig) -> Flask:
                 flash(error)
             if not errors:
                 db.create_product(conn, item_id, **fields)
+                _reassess_catalogue_items(conn, [item_id])
                 flash(f"Product '{fields['manufacturer']}' added.")
                 return redirect(url_for("item_edit", item_id=item_id))
         return render_template("product_form.html", product=None, item=item, form=request.form)
@@ -813,6 +944,8 @@ def create_app(cfg: AppConfig) -> Flask:
                 flash(error)
             if not errors:
                 db.update_product(conn, product_id, **fields)
+                tracked = conn.execute("SELECT item_id FROM item_products WHERE product_id = ?", (row["product_id"],))
+                _reassess_catalogue_items(conn, (tracking["item_id"] for tracking in tracked))
                 flash("Product updated.")
                 return redirect(url_for("item_edit", item_id=row["item_id"]))
         return render_template(
@@ -832,6 +965,7 @@ def create_app(cfg: AppConfig) -> Flask:
         if row is None:
             abort(404)
         db.set_product_archived(conn, product_id, not row["archived"])
+        _reassess_catalogue_items(conn, [row["item_id"]])
         flash(("Unarchived" if row["archived"] else "Archived") + f" '{row['manufacturer']}'.")
         return redirect(url_for("item_edit", item_id=row["item_id"]))
 
@@ -844,6 +978,7 @@ def create_app(cfg: AppConfig) -> Flask:
         # Stops this item tracking the product; the shared catalogue entry
         # and its price history are kept (see db.delete_item_product).
         db.delete_item_product(conn, product_id)
+        _reassess_catalogue_items(conn, [row["item_id"]])
         flash(f"Removed '{row['manufacturer']}' from this item's catalogue.")
         return redirect(url_for("item_edit", item_id=row["item_id"]))
 
@@ -922,21 +1057,34 @@ def create_app(cfg: AppConfig) -> Flask:
             verdict_counts=verdict_counts,
             suspects=db.find_suspect_products(conn),
             auto_approve_threshold=db.get_auto_approve_threshold(conn),
+            last_action=db.get_last_suggestion_action(conn),
         )
+
+    @app.route("/suggestions/undo", methods=["POST"])
+    def suggestion_undo():
+        conn = _get_conn(cfg)
+        action = db.get_last_suggestion_action(conn) or {}
+        approvals = action.get("items", []) if action.get("kind") == "bulk_approve" else (
+            [action] if action.get("kind") == "approve" else []
+        )
+        suggestions = [db.get_product_suggestion(conn, entry["suggestion_id"]) for entry in approvals]
+        message = db.undo_last_suggestion_action(conn)
+        if message:
+            _reassess_catalogue_items(conn, (row["item_id"] for row in suggestions if row is not None))
+        flash(f"Undone: {message}" if message else "Nothing to undo.")
+        return _suggestion_redirect(None)
 
     @app.route("/products/bulk-archive", methods=["POST"])
     def product_bulk_archive():
         conn = _get_conn(cfg)
-        count = 0
+        affected = []
         for product_id in request.form.getlist("product_ids", type=int):
-            if db.get_item_product_by_id(conn, product_id) is not None:
+            row = db.get_item_product_by_id(conn, product_id)
+            if row is not None:
                 db.set_product_archived(conn, product_id, True)
-                count += 1
-        flash(
-            f"Archived {count} product(s) — they stop matching immediately and "
-            "existing matches un-verify on each listing's next rescan."
-            if count else "No products selected."
-        )
+                affected.append(row["item_id"])
+        _reassess_catalogue_items(conn, affected)
+        flash(f"Archived {len(affected)} product(s)." if affected else "No products selected.")
         return _suggestion_redirect(None)
 
     @app.route("/products/bulk-knowledge-only", methods=["POST"])
@@ -978,8 +1126,17 @@ def create_app(cfg: AppConfig) -> Flask:
         # Optional model correction at approval time (e.g. seller field held
         # an article number, human knows the real model name).
         model = (request.form.get("model") or "").strip()
-        db.approve_suggestion(conn, suggestion_id, model=model or None)
+        product_id = db.approve_suggestion(conn, suggestion_id, model=model or None)
+        _reassess_catalogue_items(conn, [suggestion["item_id"]])
         label = f"{suggestion['manufacturer']} {model or suggestion['model']}".strip()
+        item = db.get_item(conn, suggestion["item_id"])
+        item_product = db.get_item_product(conn, suggestion["item_id"], product_id)
+        db.record_last_suggestion_action(conn, {
+            "kind": "approve",
+            "suggestion_id": suggestion_id,
+            "item_product_id": item_product["id"] if item_product else None,
+            "description": f'approved "{label}" for {item["name"] if item else "an item"}',
+        })
         flash(f"Added '{label}' to the catalogue.")
         return _suggestion_redirect(suggestion["item_id"])
 
@@ -990,6 +1147,13 @@ def create_app(cfg: AppConfig) -> Flask:
         if suggestion is None:
             abort(404)
         db.dismiss_suggestion(conn, suggestion_id)
+        label = f"{suggestion['manufacturer']} {suggestion['model']}".strip()
+        item = db.get_item(conn, suggestion["item_id"])
+        db.record_last_suggestion_action(conn, {
+            "kind": "dismiss",
+            "suggestion_id": suggestion_id,
+            "description": f'dismissed "{label}" for {item["name"] if item else "an item"}',
+        })
         flash("Suggestion dismissed.")
         return _suggestion_redirect(suggestion["item_id"])
 
@@ -998,6 +1162,8 @@ def create_app(cfg: AppConfig) -> Flask:
         conn = _get_conn(cfg)
         item_id = request.form.get("item_id", type=int)
         count = skipped = 0
+        undo_items = []
+        affected = set()
         for suggestion_id in request.form.getlist("suggestion_ids", type=int):
             suggestion = db.get_product_suggestion(conn, suggestion_id)
             if suggestion is None or suggestion["status"] != "pending":
@@ -1010,14 +1176,27 @@ def create_app(cfg: AppConfig) -> Flask:
             if not suggestion["model"]:
                 skipped += 1
                 continue
-            db.approve_suggestion(conn, suggestion_id)
+            product_id = db.approve_suggestion(conn, suggestion_id)
+            affected.add(suggestion["item_id"])
+            item_product = db.get_item_product(conn, suggestion["item_id"], product_id)
+            undo_items.append({
+                "suggestion_id": suggestion_id,
+                "item_product_id": item_product["id"] if item_product else None,
+            })
             count += 1
+        _reassess_catalogue_items(conn, affected)
         message = f"Approved {count} suggestion(s)." if count else "No suggestions selected."
         if skipped:
             message += (
                 f" Skipped {skipped} brand-only suggestion(s) — a bare brand makes a"
                 " poor product; approve individually if you really want it."
             )
+        if undo_items:
+            db.record_last_suggestion_action(conn, {
+                "kind": "bulk_approve",
+                "items": undo_items,
+                "description": f"approved {len(undo_items)} suggestion(s)",
+            })
         flash(message)
         return _suggestion_redirect(item_id)
 
@@ -1025,13 +1204,19 @@ def create_app(cfg: AppConfig) -> Flask:
     def suggestion_bulk_dismiss():
         conn = _get_conn(cfg)
         item_id = request.form.get("item_id", type=int)
-        count = 0
+        dismissed_ids = []
         for suggestion_id in request.form.getlist("suggestion_ids", type=int):
             suggestion = db.get_product_suggestion(conn, suggestion_id)
             if suggestion is not None and suggestion["status"] == "pending":
                 db.dismiss_suggestion(conn, suggestion_id)
-                count += 1
-        flash(f"Dismissed {count} suggestion(s)." if count else "No suggestions selected.")
+                dismissed_ids.append(suggestion_id)
+        if dismissed_ids:
+            db.record_last_suggestion_action(conn, {
+                "kind": "bulk_dismiss",
+                "suggestion_ids": dismissed_ids,
+                "description": f"dismissed {len(dismissed_ids)} suggestion(s)",
+            })
+        flash(f"Dismissed {len(dismissed_ids)} suggestion(s)." if dismissed_ids else "No suggestions selected.")
         return _suggestion_redirect(item_id)
 
     @app.route("/catalogue-settings", methods=["POST"])
