@@ -11,7 +11,7 @@ from unittest import mock
 import pytest
 
 from product_finder.config import AppConfig, ItemConfig
-from product_finder.models import Listing
+from product_finder.models import Listing, SearchPage
 from product_finder.orchestrator import (
     DefaultExecutionPolicy,
     ExecutionPolicy,
@@ -306,6 +306,31 @@ def test_zero_retries_means_a_single_attempt():
     outcome = next(orch.run([WorkItem(source_name="ebay", term="t", item=_item())]))
     assert outcome.attempts == 1
     assert fake.call_count == 1
+
+
+def test_identical_queries_reuse_a_page_only_within_one_cycle():
+    listing = Listing("ebay", "1", "Track saw", 100, "https://x/1")
+
+    class BudgetedSource(FixedSource):
+        def search_page(self, term, item):
+            return SearchPage(self.search(term, item), returned=2, total=7, has_more=True)
+
+        def search_identity(self, term, item):
+            return term, item.max_price
+
+    source = BudgetedSource(_cfg(), "ebay", [listing])
+    orch = SearchOrchestrator({"ebay": source})
+    first = WorkItem("ebay", "saw", _item(max_price=200))
+    second = WorkItem("ebay", "saw", _item(name="Other watch", max_price=200))
+    different = WorkItem("ebay", "saw", _item(max_price=300))
+    outcomes = list(orch.run([first, second, different]))
+    assert source.calls == ["saw", "saw"]
+    assert [row.attempts for row in outcomes] == [1, 0, 1]
+    assert outcomes[1].item is second.item
+    assert (outcomes[1].returned, outcomes[1].total, outcomes[1].has_more) == (2, 7, True)
+    orch.begin_cycle()
+    assert next(orch.run([first])).attempts == 1
+    assert source.calls == ["saw", "saw", "saw"]
 
 
 def test_backoff_seconds_consulted_between_retries_not_before_first_attempt():

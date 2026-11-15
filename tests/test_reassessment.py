@@ -1,6 +1,6 @@
 from product_finder import db, runner, scoring
 from product_finder.config import AppConfig, ItemConfig
-from product_finder.models import Listing
+from product_finder.models import Listing, OfferCheck
 
 
 def _setup(tmp_path):
@@ -19,6 +19,7 @@ def _seed_listing_match(conn, item_id, title, price, external_id="e1"):
     listing = Listing(source="ebay", external_id=external_id, title=title, price=price,
                        url=f"https://example.com/{external_id}")
     listing_id, _ = db.upsert_listing(conn, listing)
+    db.store_offer_check(conn, listing_id, listing, OfferCheck("verified", "Fixture", price, 0))
     item = db._item_from_row(db.get_item(conn, item_id))
     evaluation = scoring.evaluate(listing, item)
     match_id, _ = db.record_match(conn, listing_id, item_id, evaluation)

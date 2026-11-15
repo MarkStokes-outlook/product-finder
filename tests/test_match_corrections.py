@@ -191,7 +191,7 @@ def test_exclude_term_route_adds_term_and_removes_matching_listing(tmp_path):
     assert "cables" in item.exclude_terms
     remaining = db.query_matches(conn, item_id=item_id)
     assert [r["title"] for r in remaining] == ["be quiet! 1000W PSU"]
-    assert db.query_matches(conn, item_id=item_id, review=True)[0]["match_status"] == "excluded"
+    assert any(row["match_status"] == "excluded" for row in db.query_matches(conn, item_id=item_id, review=True))
 
 
 def test_exclude_term_route_requires_a_term(tmp_path):

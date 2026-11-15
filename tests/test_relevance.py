@@ -2,7 +2,7 @@ import pytest
 
 from product_finder import db, relevance, runner, sources
 from product_finder.config import AppConfig, ItemConfig
-from product_finder.models import Listing
+from product_finder.models import Listing, OfferCheck
 from product_finder.sources.base import Source, SourceCapabilities
 from product_finder.web.app import create_app
 
@@ -20,6 +20,16 @@ from product_finder.web.app import create_app
     ("Samsung Odyssey Neo G9 57", 'Samsung Odyssey Neo G9 57in Curved Gaming Monitor', "exact"),
     ("RTX 3080 12GB", "Dell RTX 3080 10GB GDDR6X graphics card", "excluded"),
     ("128GB DDR5 RAM", "Kingston Fury Beast 4x32GB DDR5 RAM", "exact"),
+    ("Track Saw", "Makita 199141-8 Guide Rail 1500mm Track Saw SP6000 DSP600 DSP601", "excluded"),
+    ("Track Saw", "Makita DVC750L vacuum extractor hose adaptor to Makita SP6000 Plunge Track Saw", "excluded"),
+    ("Track Saw", "Makita Plunge Track Saw Blade Depth Gauge Offset SP6000 230v 110v", "excluded"),
+    ("Track Saw", "Track Saw Dust Cover for Makita SP6000J Corded Track Saw Pack of Two", "excluded"),
+    ("Track Saw", "Makita SP6000 SP6000J Plunge Track Saw Dust Extraction Adapter for Karcher Hose", "excluded"),
+    ("Track Saw", "Makita SP6000J Plunge Saw Carbon Brushes 165mm 240v & 110V CB303", "excluded"),
+    ("Track Saw", "Makita SP6000 Track Saw with 1500mm Guide Rail", "exact"),
+    ("Track Saw", "Makita SP6000J 240v Plunge Cut Circular Saw 165mm with Makita MAKPAC Case", "exact"),
+    ("NVIDIA RTX 4090", "ZOTAC Gaming GeForce RTX 4090 Trinity 24GB Original Empty Box Packaging ONLY", "excluded"),
+    ("NVIDIA RTX 4090", "MSI NVIDIA GeForce RTX 4090 Gaming X TRIO Full Card Without Core, and Memory", "excluded"),
 ])
 def test_labelled_shopping_cases(watch, title, status):
     candidate = Listing("ebay", "case", title, 200, "https://example.test/case")
@@ -51,7 +61,10 @@ def test_watch_reassesses_saved_candidates_and_only_alerts_eligible_listings(tmp
         name = "ebay"
 
         def capabilities(self):
-            return SourceCapabilities(automated=True, compliance="fixture")
+            return SourceCapabilities(automated=True, compliance="fixture", supports_offer_verification=True)
+
+        def verify_offer(self, listing):
+            return OfferCheck("verified", "Fixture", listing.price, 0)
 
         def search(self, term, item):
             return [

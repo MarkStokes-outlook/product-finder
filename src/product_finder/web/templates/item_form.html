@@ -183,7 +183,12 @@
     <td class="meta">{{ (pr['match_terms'] | parse_flags) | join(', ') }}</td>
     <td class="num">{% if pr['msrp'] %}£{{ '%.0f' | format(pr['msrp']) }}{% else %}&mdash;{% endif %}</td>
     <td class="num">{% if pr['typical_new_price'] %}£{{ '%.0f' | format(pr['typical_new_price']) }}{% else %}&mdash;{% endif %}</td>
-    <td class="num">{% if pr['typical_used_price'] %}£{{ '%.0f' | format(pr['typical_used_price']) }}{% else %}<span class="meta">learning&hellip;</span>{% endif %}</td>
+    <td class="num">
+      {% if pr['typical_used_price'] %}
+      £{{ '%.0f' | format(pr['typical_used_price']) }}
+      <br><span class="meta">{{ pr['used_price_basis'] }} · {{ pr['used_price_samples'] }} · Latest {{ pr['used_price_latest_at'] | timeago }}</span>
+      {% else %}<span class="meta">No current comparables</span>{% endif %}
+    </td>
     <td class="num">{% if pr['target_deal_price'] %}£{{ '%.0f' | format(pr['target_deal_price']) }}{% else %}&mdash;{% endif %}</td>
     <td class="meta">
       <a href="{{ url_for('product_edit', product_id=pr['id']) }}">Edit</a>

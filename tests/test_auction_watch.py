@@ -146,7 +146,7 @@ def test_poll_and_capture_records_observation_when_ended(tmp_path):
 
     with mock.patch(
         "product_finder.sources.ebay.EbaySource.get_item",
-        return_value=AuctionSnapshot(price=22.0, bid_count=5, ended=True),
+        return_value=AuctionSnapshot(price=40.0, current_bid=22.0, bid_count=5, ended=True),
     ):
         captured = auction_watch.poll_and_capture(cfg, conn)
 
@@ -155,8 +155,22 @@ def test_poll_and_capture_records_observation_when_ended(tmp_path):
     assert len(rows) == 1
     assert rows[0]["price"] == 22.0
     assert rows[0]["source"] == "ebay-close"
+    assert rows[0]["listing_id"] == listing_id
     listing = conn.execute("SELECT sold_captured FROM listings WHERE id = ?", (listing_id,)).fetchone()
     assert listing["sold_captured"] == 1
+
+
+def test_ended_auction_without_bids_does_not_create_a_close_comparable(tmp_path):
+    cfg, conn, item_id, product_id = _setup(tmp_path)
+    end = (datetime.now(timezone.utc) - timedelta(seconds=30)).isoformat()
+    listing_id = _seed_auction_listing(conn, item_id, end)
+    _attach_product(conn, listing_id, item_id, product_id)
+    with mock.patch(
+        "product_finder.sources.ebay.EbaySource.get_item",
+        return_value=AuctionSnapshot(price=22.0, bid_count=0, ended=True),
+    ):
+        assert auction_watch.poll_and_capture(cfg, conn) == 1
+    assert db.list_price_observations(conn, product_id) == []
 
 
 def test_poll_and_capture_skips_when_not_yet_due(tmp_path):

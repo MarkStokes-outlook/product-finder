@@ -1,5 +1,5 @@
 from product_finder import db
-from product_finder.models import Evaluation, Listing
+from product_finder.models import Evaluation, Listing, OfferCheck
 
 
 def make_listing(external_id="e1", price=250.0):
@@ -74,6 +74,7 @@ def test_match_only_alerts_once(tmp_path):
     _, is_new_again = db.record_match(conn, listing_id, item_id, make_evaluation())
     assert is_new_again is False
 
+    db.store_offer_check(conn, listing_id, make_listing(), OfferCheck("verified", "Fixture", 250, 0))
     assert db.mark_alerted(conn, match_id, "console") is True
     assert db.mark_alerted(conn, match_id, "console") is False
     assert db.mark_alerted(conn, match_id, "webhook") is True

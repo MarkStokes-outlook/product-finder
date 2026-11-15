@@ -15,7 +15,7 @@ docs/strategy/roadmap.md, "Identity resolution".
 from __future__ import annotations
 
 import re
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
 # (host suffix, path pattern). Path pattern's one capture group must be the
 # platform's own stable numeric ID — never a slug, never a feed-specific GUID.
@@ -36,13 +36,15 @@ def derive_canonical_key(url: str) -> str | None:
     anywhere) so an unrelated URL can never be mistaken for a match."""
     if not url:
         return None
-    host = (urlparse(url).hostname or "").lower()
-    path = urlparse(url).path
+    parsed = urlparse(url)
+    host = (parsed.hostname or "").lower()
     for platform, path_pattern in _PATTERNS:
         host_pattern = _HOST_PLATFORM[platform]
         if not host_pattern.search(host):
             continue
-        match = path_pattern.search(path)
+        match = path_pattern.search(parsed.path)
         if match:
-            return f"{platform}:{match.group(1)}"
+            variant = parse_qs(parsed.query).get("var", [""])[0]
+            suffix = f":{variant}" if variant.isascii() and variant.isdigit() and variant.strip("0") else ""
+            return f"{platform}:{match.group(1)}{suffix}"
     return None

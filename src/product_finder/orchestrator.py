@@ -51,7 +51,7 @@ import logging
 import time
 from abc import ABC, abstractmethod
 from collections.abc import Iterator, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 from .config import ItemConfig
 from .models import Listing
@@ -86,6 +86,9 @@ class SearchOutcome:
     error: Exception | None = None
     duration_ms: int = 0
     attempts: int = 1
+    returned: int = 0
+    total: int | None = None
+    has_more: bool | None = None
 
 
 class ExecutionPolicy(ABC):
@@ -178,6 +181,10 @@ class SearchOrchestrator:
         self.registry = registry
         self.policy = policy or DefaultExecutionPolicy()
         self.health = health or {}
+        self._pages: dict[tuple[str, tuple], SearchOutcome] = {}
+
+    def begin_cycle(self) -> None:
+        self._pages.clear()
 
     def run(self, work_items: Sequence[WorkItem]) -> Iterator[SearchOutcome]:
         """Executes work_items sequentially (concurrency is declared on
@@ -199,6 +206,10 @@ class SearchOrchestrator:
 
     def _execute(self, work_item: WorkItem) -> SearchOutcome:
         source = self.registry[work_item.source_name]
+        identity = source.search_identity(work_item.term, work_item.item)
+        cache_key = (work_item.source_name, identity) if identity is not None else None
+        if cache_key is not None and cache_key in self._pages:
+            return replace(self._pages[cache_key], item=work_item.item, attempts=0, duration_ms=0)
         max_attempts = self.policy.max_retries(work_item.source_name) + 1
         total_duration_ms = 0
         last_error: Exception | None = None
@@ -211,7 +222,7 @@ class SearchOrchestrator:
                     time.sleep(delay)
             started = time.perf_counter()
             try:
-                listings = source.search(work_item.term, work_item.item)
+                page = source.search_page(work_item.term, work_item.item)
             except Exception as exc:
                 # A connector failure must never crash the run.
                 total_duration_ms += round((time.perf_counter() - started) * 1000)
@@ -221,15 +232,21 @@ class SearchOrchestrator:
                 )
                 continue
             total_duration_ms += round((time.perf_counter() - started) * 1000)
-            return SearchOutcome(
+            outcome = SearchOutcome(
                 source_name=work_item.source_name,
                 term=work_item.term,
                 item=work_item.item,
-                listings=listings,
+                listings=page.listings,
                 error=None,
                 duration_ms=total_duration_ms,
                 attempts=attempts,
+                returned=page.returned,
+                total=page.total,
+                has_more=page.has_more,
             )
+            if cache_key is not None:
+                self._pages[cache_key] = outcome
+            return outcome
         return SearchOutcome(
             source_name=work_item.source_name,
             term=work_item.term,

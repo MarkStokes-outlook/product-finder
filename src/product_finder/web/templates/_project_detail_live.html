@@ -219,7 +219,7 @@
         &middot; best <strong>£{{ '%.2f' | format(item_rows[0]['price']) }}</strong> (score {{ '%.0f' | format(item_rows[0]['deal_score'] or 0) }})
         {% endif %}
       {% else %}
-        {{ 'No past listings' if filters.historical else 'No current listings' }}
+        {{ 'No past listings' if filters.historical else 'No candidates to review' if filters.review else 'No current listings' }}
       {% endif %}
     </summary>
     <div class="card table-card">{{ match_table(item_rows, show_item=False, paginate=True, context='project', historical=filters.historical, review=filters.review) }}</div>

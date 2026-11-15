@@ -32,6 +32,7 @@ _STORAGE = re.compile(r"\b(?:ssd|nvme|solid state drive)\b", re.I)
 _NVME = re.compile(r"\bnvme\b", re.I)
 _SATA = re.compile(r"\bsata\b", re.I)
 _SAW = re.compile(r"\bmit(?:re|er) saw\b", re.I)
+_TRACK_SAW = re.compile(r"\b(?:track|plunge(?:[ -]+cut)?(?:[ -]+circular)?)[ -]+saw\b", re.I)
 _SLIDING_SAW = re.compile(r"\bslid(?:e|ing)\b.{0,36}\bmit(?:re|er) saw\b", re.I)
 _SYSTEM = re.compile(
     r"\b(?:(?:gaming|desktop|complete) pc|workstation|poweredge|server|laptop|notebook)\b", re.I,
@@ -41,6 +42,11 @@ _PC_ACCESSORY = re.compile(
 )
 _UNRELATED = re.compile(r"\b(?:gearbox|clutch kit|thread roller|distro plate)\b", re.I)
 _SAW_ACCESSORY = re.compile(r"\b(?:stands?|blades?|mounting brackets?)\b", re.I)
+_TRACK_SAW_ACCESSORY = re.compile(
+    r"\b(?:guide rails?|track rails?|hose adapt[eo]rs?|depth (?:gauges?|stops?)|"
+    r"dust (?:covers?|extraction adapt[eo]rs?)|carbon brushes?)\b",
+    re.I,
+)
 _INCH_SIZE = re.compile(r'(?<=\d)\s*(?:-?inch\b|in\b|")', re.I)
 
 
@@ -58,9 +64,20 @@ def _sizes(title: str) -> set[float]:
             for value, unit in _STORAGE_SIZE.findall(title)}
 
 
+def required_nvme_capacity(item: ItemConfig) -> float | None:
+    sizes = _sizes(item.name)
+    extra = re.sub(r"\b(?:nvme|ssd|m\.2|solid state drive)\b", "", _STORAGE_SIZE.sub("", item.name), flags=re.I)
+    if _NVME.search(item.name) and len(sizes) == 1 and not extra.strip(" ,-"):
+        return next(iter(sizes))
+    return None
+
+
 def assess(listing: Listing, item: ItemConfig, products: list[catalogue.Product]) -> tuple[Decision, catalogue.Product | None]:
     """Use evidence about the advertised product, before compatibility and extras."""
     title = _RELATED.split(listing.title, maxsplit=1)[0].strip()
+    if listing.variant_capacity_gb:
+        title = _STORAGE_SIZE.sub("", title)
+        title += f" {listing.variant_capacity_gb / 1024:g} TB NVMe"
     wanted = item.name
     gpu = _gpu_models(wanted)
     psu = bool(_PSU.search(wanted) or re.search(r"\bpsu\b", " ".join(item.required_terms), re.I))
@@ -76,7 +93,12 @@ def assess(listing: Listing, item: ItemConfig, products: list[catalogue.Product]
             return Decision("excluded", "The listing describes a complete computer."), None
         if _UNRELATED.search(title):
             return Decision("excluded", "The listing is for a different product category."), None
-        if _PC_ACCESSORY.search(title):
+        if gpu and re.search(r"\b(?:empty (?:box|packaging)|packaging only|without (?:the )?core)\b", title, re.I):
+            return Decision("excluded", "The listing is missing the graphics card or its core."), None
+        accessories = {part.group().casefold().rstrip("s") for part in _PC_ACCESSORY.finditer(title)}
+        if storage and listing.variant_capacity_gb:
+            accessories.discard("heatsink")
+        if accessories:
             return Decision("excluded", "The listing describes a part or accessory."), None
         if re.search(r"\b(?:components? & parts|cables? & connectors)\b", category, re.I) and re.search(
             r"\b(?:parts only|replacement|repair kit)\b", title, re.I,
@@ -84,12 +106,18 @@ def assess(listing: Listing, item: ItemConfig, products: list[catalogue.Product]
             return Decision("excluded", "The marketplace category and title identify a replacement part."), None
     if _SAW.search(wanted) and _SAW_ACCESSORY.search(title):
         return Decision("excluded", "The listing describes a saw accessory."), None
-    if listing.variation_group or (storage and len(_sizes(listing.title)) > 1):
+    if _TRACK_SAW.search(wanted):
+        if _TRACK_SAW_ACCESSORY.search(title):
+            return Decision("excluded", "The listing describes a track saw accessory."), None
+        if re.search(r"\bsaw accessories\b", category, re.I):
+            return Decision("review", "The marketplace categorised this as a saw accessory."), None
+    if listing.variation_group or (storage and not listing.variant_capacity_gb and len(_sizes(listing.title)) > 1):
         return Decision("review", "The listing advertises multiple variants."), None
 
     product = catalogue.match(title, products)
     alternatives = [phrase for phrase in item.alternatives if _contains(title, phrase)]
-    required_missing = [phrase for phrase in item.required_terms if not _contains(title, phrase)]
+    required_evidence = f"{listing.variant_capacity_gb / 1024:g} TB NVMe" if listing.variant_capacity_gb else title
+    required_missing = [phrase for phrase in item.required_terms if not _contains(required_evidence, phrase)]
     if required_missing:
         return Decision("review", "Required evidence missing: " + ", ".join(required_missing)), None
 
@@ -120,6 +148,12 @@ def assess(listing: Listing, item: ItemConfig, products: list[catalogue.Product]
             return Decision("excluded", "The advertised power supply wattage differs."), None
         evidence = bool(watts in advertised and _PSU.search(title))
     if storage and _NVME.search(wanted):
+        if listing.variant_capacity_gb:
+            if listing.variant_capacity_gb not in _sizes(wanted):
+                return Decision("excluded", "The exact variant has a different capacity."), None
+            if required_nvme_capacity(item) is None:
+                return Decision("review", "The selected variant does not confirm the watch's exact model."), None
+            return Decision("exact", f"eBay identifies this as the {listing.variant_capacity_gb / 1024:g} TB NVMe variant."), product
         if _SATA.search(title):
             return Decision("excluded", "The drive uses SATA rather than NVMe."), None
         if _sizes(wanted) and _sizes(title) and not _sizes(wanted) & _sizes(title):
@@ -138,6 +172,8 @@ def assess(listing: Listing, item: ItemConfig, products: list[catalogue.Product]
         )
     if _SLIDING_SAW.search(wanted):
         evidence = bool(_SLIDING_SAW.search(title))
+    if _TRACK_SAW.fullmatch(wanted.strip()) and _TRACK_SAW.search(title):
+        evidence = True
     monitor_size = re.search(r'\b(\d{2})\s*(?:-?inch\b|in\b|")|\bg9\s+(49|57)\b', wanted, re.I)
     if monitor_size:
         size = monitor_size.group(1) or monitor_size.group(2)

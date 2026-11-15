@@ -46,6 +46,8 @@ class Listing:
     image_url: str | None = None
     category: str = ""
     variation_group: bool = False
+    variation_group_id: str | None = None
+    variant_capacity_gb: float | None = None
 
     @property
     def text(self) -> str:
@@ -77,6 +79,8 @@ class Listing:
             image_url=row["image_url"],
             category=row["category"],
             variation_group=bool(row["variation_group"]),
+            variation_group_id=row["variation_group_id"],
+            variant_capacity_gb=row["variant_capacity_gb"],
         )
 
 
@@ -119,6 +123,28 @@ class AuctionSnapshot:
     watch_count: int | None = None
     view_count: int | None = None
     raw: dict | None = None
+
+
+@dataclass(frozen=True)
+class SearchPage:
+    listings: list[Listing]
+    returned: int
+    total: int | None = None
+    has_more: bool | None = None
+
+
+@dataclass(frozen=True)
+class OfferCheck:
+    status: str
+    reason: str
+    item_price: float | None = None
+    postage: float | None = None
+
+    @property
+    def total(self) -> float | None:
+        if self.status == "verified" and self.item_price is not None and self.postage is not None:
+            return round(self.item_price + self.postage, 2)
+        return None
 
 
 @dataclass

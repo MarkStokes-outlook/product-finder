@@ -14,21 +14,22 @@
 
 {% macro price_block(row) %}
 <div class="price-row">
-  <span class="price-now">£{{ '%.2f' | format(row['price']) }}</span>
-  {% if row['normal_price'] and row['normal_price'] > row['price'] %}
-  <span class="price-was">£{{ '%.0f' | format(row['normal_price']) }}</span>
+  <span class="price-now">£{{ '%.2f' | format(row['offer_total']) }} delivered</span>
+  {% if row['normal_price'] and row['normal_price'] > row['offer_total'] %}
+  <span class="meta">{{ row['reference_basis'] }} £{{ '%.0f' | format(row['normal_price']) }}</span>
   {% endif %}
   {% if row['margin_pct'] and row['margin_pct'] > 0 %}
-  <span class="pct-off">-{{ '%.0f' | format(row['margin_pct']) }}%</span>
+  <span class="pct-off">{{ '%.0f' | format(row['margin_pct']) }}% below reference</span>
   {% endif %}
 </div>
+<p class="meta">{% if row['variant_capacity_gb'] %}{{ '%g' | format(row['variant_capacity_gb'] / 1024) }} TB NVMe variant · {% endif %}£{{ '%.2f' | format(row['price']) }} item · £{{ '%.2f' | format(row['offer_postage']) }} delivery · Checked {{ row['offer_checked_at'] | timeago }}{% if row['watch_count'] | default(0) > 1 %} · Fits {{ row['watch_count'] }} watches{% endif %}</p>
 {% endmacro %}
 
 {% macro target_bar(row) %}
 {% set normal = row['normal_price'] %}
 {% set target = row['target_deal_price'] %}
 {% if normal and target and normal > target %}
-  {% set progress = ((normal - row['price']) / (normal - target) * 100) %}
+  {% set progress = ((normal - row['offer_total']) / (normal - target) * 100) %}
   {% set progress = 100 if progress > 100 else (0 if progress < 0 else progress) %}
   <div class="target-bar" title="How far below the £{{ '%.0f' | format(normal) }} normal price this sits — full bar = at/under your £{{ '%.0f' | format(target) }} target">
     <span class="fill" style="width: {{ '%.0f' | format(progress) }}%"></span>

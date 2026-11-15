@@ -161,7 +161,7 @@ def _dashboard_data(conn, cfg: AppConfig) -> dict:
     return {
         "summaries": db.project_summaries(conn),
         "top_picks": db.project_top_picks(conn),
-        "best": db.query_matches(conn, flagged=False, sort="score", limit=11),
+        "best": db.query_matches(conn, verified_only=True, sort="score", limit=11),
         "warnings": db.query_matches(conn, flagged=True, sort="score", limit=10),
         "stats": db.dashboard_stats(conn),
         "pending_duplicates": db.pending_duplicate_counts(conn),
@@ -245,7 +245,7 @@ def _auction_view(conn, row: dict) -> dict:
         snapshots[-1]["current_bid_price"] if snapshots else row["current_bid_price"]
     )
     reference_price = row["typical_used_price"] or row["normal_price"]
-    reference_label = "typical used price" if row["typical_used_price"] else "estimated normal price"
+    reference_label = row["used_price_basis"] if row["typical_used_price"] else "estimated normal price"
     trajectory = auction_trajectory.evaluate(
         current_bid=current_bid,
         bid_count=row["bid_count"],
@@ -269,7 +269,7 @@ def _auctions_data(conn) -> dict:
 
 def _offer_view(row: dict) -> dict:
     reference_price = row["typical_used_price"] or row["normal_price"]
-    reference_label = "typical used price" if row["typical_used_price"] else "estimated normal price"
+    reference_label = row["used_price_basis"] if row["typical_used_price"] else "estimated normal price"
     suggestion = offers.suggest_offers(
         listing_price=row["price"],
         reference_price=reference_price,
@@ -340,7 +340,7 @@ def _project_detail_data(
     # to, so a hero card should never headline one (same rule the dashboard
     # already applies to its own hero picks).
     top_matches = [] if historical or review else db.query_matches(
-        conn, project_id=project_id, sort="score", flagged=False, limit=4,
+        conn, project_id=project_id, sort="score", verified_only=True, limit=4,
     )
     hot = [m for m in top_matches if (m["deal_score"] or 0) >= HOT_DEAL_SCORE]
     hero_deals = hot if len(hot) > 1 else top_matches[:1]
@@ -376,6 +376,7 @@ def create_app(cfg: AppConfig) -> Flask:
 
     seed_conn = db.connect(cfg.db_path)
     db.seed_from_config_if_empty(seed_conn, cfg)
+    db.set_offer_destination(seed_conn, cfg.postcode)
     seed_conn.close()
 
     @app.teardown_appcontext
@@ -623,7 +624,9 @@ def create_app(cfg: AppConfig) -> Flask:
                 connector_health.evaluate(row["health"], row["analytics"])
                 if row["health"] else None
             )
-        return render_template("sources.html", rows=rows, ebay=sc.ebay)
+        return render_template(
+            "sources.html", rows=rows, ebay=sc.ebay, search_queries=db.recent_search_queries(conn),
+        )
 
     @app.route("/sources/<name>/toggle", methods=["POST"])
     def source_toggle(name):

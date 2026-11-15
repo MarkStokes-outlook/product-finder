@@ -120,9 +120,10 @@ def poll_and_capture(cfg: AppConfig, conn: sqlite3.Connection) -> int:
                 raw_payload=snapshot.raw,
             )
         if snapshot is not None and snapshot.ended:
-            if row["product_id"] is not None:
+            if row["product_id"] is not None and (snapshot.bid_count or 0) > 0 and snapshot.current_bid is not None:
                 db.record_price_observation(
-                    conn, row["product_id"], snapshot.price, source=f"{source.name}-close"
+                    conn, row["product_id"], snapshot.current_bid, source=f"{source.name}-close",
+                    listing_id=row["id"],
                 )
             db.mark_sold_captured(conn, row["id"])
             captured += 1

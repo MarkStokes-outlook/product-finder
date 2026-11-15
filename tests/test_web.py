@@ -5,7 +5,7 @@ import pytest
 
 from product_finder import db
 from product_finder.config import AppConfig, ItemConfig
-from product_finder.models import Evaluation, Listing
+from product_finder.models import Evaluation, Listing, OfferCheck
 from product_finder.web.app import create_app
 
 
@@ -30,11 +30,10 @@ def seed_match(cfg, flags=None, grade="A", score=85.0):
         ItemConfig(name="Track Saw", terms=["track saw"], normal_price=500,
                    target_deal_price=300, priority="high"),
     )
-    listing_id, _ = db.upsert_listing(
-        conn,
-        Listing(source="ebay", external_id="E1", title="Makita SP6000 saw",
-                price=245.0, url="https://example.com/1"),
-    )
+    listing = Listing(source="ebay", external_id="E1", title="Makita SP6000 saw",
+                      price=245.0, url="https://example.com/1")
+    listing_id, _ = db.upsert_listing(conn, listing)
+    db.store_offer_check(conn, listing_id, listing, OfferCheck("verified", "Fixture", 245, 0))
     db.record_match(
         conn, listing_id, item_id,
         Evaluation(grade=grade, flags=flags or [], margin_abs=255.0,
@@ -172,11 +171,14 @@ def test_stale_listing_only_appears_in_project_history(cfg, client):
 
     with db.connect(cfg.db_path) as conn:
         first_seen = conn.execute("SELECT first_seen FROM listings").fetchone()["first_seen"]
-        db.upsert_listing(conn, Listing(
+        listing = Listing(
             source="ebay", external_id="E1", title=title.decode(),
             price=245.0, url="https://example.com/1",
-        ))
+        )
+        listing_id, _ = db.upsert_listing(conn, listing)
         assert db.query_matches(conn)[0]["first_seen"] == first_seen
+        assert b'Makita SP6000 saw' not in client.get("/").data
+        db.store_offer_check(conn, listing_id, listing, OfferCheck("verified", "Fixture", 245, 0))
     assert title in client.get("/").data
     assert title not in client.get(f"/projects/{project_id}?view=history").data
 
@@ -186,13 +188,19 @@ def test_archived_watches_disappear_from_active_surfaces(cfg, client, archive_ki
     project_id, item_id = seed_match(cfg)
     object_id = item_id if archive_kind == "items" else project_id
     with db.connect(cfg.db_path) as conn:
-        conn.execute("UPDATE listings SET buying_options = ?", ('["BEST_OFFER", "AUCTION"]',))
+        conn.execute("UPDATE listings SET buying_options = ?", ('["BEST_OFFER", "FIXED_PRICE"]',))
+        auction = Listing("ebay", "auction", "Saw for auction", 240, "https://example.com/auction",
+                          buying_options=["AUCTION"])
+        auction_id, _ = db.upsert_listing(conn, auction)
+        db.record_match(conn, auction_id, item_id, Evaluation("B", ["live auction"], 0, 0, False, 30))
     title = b"Makita SP6000 saw"
-    assert all(title in client.get(path).data for path in ("/", "/auctions", "/offers"))
+    assert all(title in client.get(path).data for path in ("/", "/offers"))
+    assert b"Saw for auction" in client.get("/auctions").data
 
     assert client.post(f"/{archive_kind}/{object_id}/archive").status_code == 302
     for path in ("/", "/dashboard/live", f"/projects/{project_id}", "/auctions", "/offers"):
         assert title not in client.get(path).data
+    assert b"Saw for auction" not in client.get("/auctions").data
     assert title in client.get(f"/projects/{project_id}?view=history").data
     with db.connect(cfg.db_path) as conn:
         match_id = conn.execute("SELECT id FROM listing_matches").fetchone()["id"]

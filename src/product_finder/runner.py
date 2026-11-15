@@ -5,16 +5,21 @@ from __future__ import annotations
 import json
 import logging
 import sqlite3
+from collections import deque
 from collections.abc import Iterable
+from dataclasses import replace
 
 from . import catalogue, db, extraction, grading, relevance, retailer_price, scoring, sources
 from .alerts import console as console_alerts
 from .alerts import webhook as webhook_alerts
 from .config import AppConfig, ItemConfig, OllamaConfig, ProjectConfig
-from .models import Evaluation, Listing, ManualLink, MatchAlert
+from .models import Evaluation, Listing, ManualLink, MatchAlert, OfferCheck
 from .orchestrator import SearchOrchestrator, WorkItem
 
 log = logging.getLogger(__name__)
+
+_OFFER_CHECKS_PER_CYCLE = 12
+_VARIANT_GROUPS_PER_CYCLE = 2
 
 
 def item_sources(
@@ -42,7 +47,9 @@ def _assess(
     permitted_sources: Iterable[str] | None,
     *,
     manually_excluded: bool = False,
+    offer: OfferCheck | None = None,
 ) -> tuple[relevance.Decision, Evaluation, catalogue.Product | None]:
+    total = offer.total if offer else None
     if manually_excluded:
         decision = relevance.Decision("excluded", "This listing was dismissed for this watch.")
         product = None
@@ -52,15 +59,21 @@ def _assess(
     elif scoring.excluded(listing, item):
         decision = relevance.Decision("excluded", "The title matches a watch exclusion.")
         product = None
-    elif item.max_price is not None and listing.price > item.max_price:
-        decision = relevance.Decision("excluded", "The listing price exceeds the watch budget.")
+    elif item.max_price is not None and (total if total is not None else listing.price) > item.max_price:
+        decision = relevance.Decision(
+            "excluded",
+            "The delivered total exceeds the watch budget." if total is not None
+            else "The listing price exceeds the watch budget.",
+        )
         product = None
     else:
         decision, product = relevance.assess(listing, item, products)
     evaluation = (
-        scoring.evaluate(listing, item, product)
+        scoring.evaluate(replace(listing, price=total) if total is not None else listing, item, product)
         if decision.eligible else Evaluation(grading.classify(listing.text), [], 0, 0, False, 0)
     )
+    if total is None:
+        evaluation.under_target = False
     return decision, evaluation, product
 
 
@@ -90,6 +103,7 @@ def reassess_item_matches(
         listing = Listing.from_row(row)
         decision, evaluation, product = _assess(
             listing, item, products, permitted, manually_excluded=bool(row["manually_excluded"]),
+            offer=db.recent_offer_check(conn, row["id"]),
         )
         db.record_match(
             conn, row["id"], item_id, evaluation,
@@ -105,6 +119,7 @@ def reassess_item_matches(
 
 def reassess_saved_matches(conn: sqlite3.Connection, cfg: AppConfig) -> dict:
     """Evaluate saved candidates without making requests or delivering alerts."""
+    db.refresh_market_references(conn)
     counts = {"rescored": 0, "excluded": 0}
     for row in db.list_items(conn, include_archived=True):
         result = reassess_item_matches(conn, row["id"], db._item_from_row(row), cfg)
@@ -144,25 +159,35 @@ def run_once(
     one as a parameter is the seam a future scheduler/policy plugs into —
     without this function changing again."""
     cfg = db.effective_config(conn, cfg)
+    db.set_offer_destination(conn, cfg.postcode)
+    db.refresh_market_references(conn)
     projects = load_projects(cfg, conn)
     registry = sources.build_registry(cfg)
     if orchestrator is None:
         orchestrator = SearchOrchestrator(registry)
+    orchestrator.begin_cycle()
     new_alerts: list[MatchAlert] = []
     # Per-connector outcome for this cycle, recorded via record_source_run()
     # at the end — feeds the Sources page's health column and the coverage
     # metrics the roadmap wants ("active and failing sources").
     health: dict[str, dict] = {}
+    query_rows = []
+    checks_remaining = _OFFER_CHECKS_PER_CYCLE
+    groups_remaining = _VARIANT_GROUPS_PER_CYCLE
+    resolved_groups: dict[tuple[str, str, float], list[tuple[Listing, OfferCheck]]] = {}
 
     for project in projects:
         for item in project.items:
+            checks_for_item = 0
+            groups_for_item: set[tuple[str, str, float]] = set()
+            capacity = relevance.required_nvme_capacity(item)
             item_id = item.id
             products = db.list_products_for_matching(conn, item_id) if item_id else []
             work_items = [
                 WorkItem(source_name=name, term=term, item=item)
                 for name in item_sources(item, cfg, project)
                 if (source := registry.get(name)) is not None and source.is_automated()
-                for term in item.terms
+                for term in dict.fromkeys(item.terms)
             ]
             for outcome in orchestrator.run(work_items):
                 name = outcome.source_name
@@ -176,15 +201,21 @@ def run_once(
                 )
                 stats["searches"] += 1
                 stats["duration_ms"] += outcome.duration_ms
+                relevant_ids = set()
                 if outcome.error is not None:
                     # Source failures must never crash the run — the
                     # orchestrator already logged this; just record it.
                     stats["errors"] += 1
                     stats["last_error"] = str(outcome.error)
+                    query_rows.append((item_id, name, outcome.term, outcome.attempts, outcome.duration_ms,
+                                       0, 0, 0, None, None, True))
                     continue
                 stats["listings"] += len(outcome.listings)
                 source = registry[name]
-                for listing in outcome.listings:
+                capabilities = source.capabilities()
+                candidates = deque((listing, None) for listing in outcome.listings)
+                while candidates:
+                    listing, resolved_offer = candidates.popleft()
                     # A human already said this exact listing is wrong for
                     # this item (the "Not a match" button) — never recreate
                     # the match, even though nothing about its text/price
@@ -193,11 +224,6 @@ def run_once(
                         conn, item_id, listing.source, listing.external_id
                     ):
                         continue
-                    decision, evaluation, product = _assess(listing, item, products, None)
-                    if product is not None:
-                        stats["catalogue_matches"] += 1
-                    if evaluation.under_target:
-                        stats["deals_found"] += 1
                     listing_id, is_new_listing = db.upsert_listing(conn, listing)
                     if is_new_listing:
                         stats["new_listings"] += 1
@@ -210,6 +236,43 @@ def run_once(
                     _, is_primary = db.resolve_identity(conn, listing_id, listing)
                     if not is_primary:
                         stats["duplicates"] += 1
+                    offer = db.recent_offer_check(conn, listing_id)
+                    if (is_primary and listing.variation_group and listing.variation_group_id and capacity
+                            and capabilities.supports_offer_verification):
+                        key = listing.source, listing.variation_group_id, capacity
+                        if key not in groups_for_item:
+                            groups_for_item.add(key)
+                            if key not in resolved_groups and groups_remaining and offer is None:
+                                groups_remaining -= 1
+                                resolved_groups[key] = source.resolve_nvme_variants(listing, capacity)
+                                db.store_offer_check(
+                                    conn, listing_id, listing,
+                                    OfferCheck("review", "Use a separately priced variant from this group."),
+                                    postcode=cfg.postcode,
+                                )
+                            candidates.extend(resolved_groups.get(key, []))
+                    if is_primary and resolved_offer is not None:
+                        db.store_offer_check(conn, listing_id, listing, resolved_offer, postcode=cfg.postcode)
+                        offer = db.recent_offer_check(conn, listing_id)
+                    decision, evaluation, product = _assess(listing, item, products, None, offer=offer)
+                    checked_now = bool(resolved_offer and offer and offer.total is not None)
+                    if (is_primary and decision.eligible and offer is None and checks_remaining
+                            and checks_for_item < 2 and capabilities.supports_offer_verification
+                            and not evaluation.flags and evaluation.grade != grading.SPARES
+                            and (product is None or product.wanted)):
+                        checks_remaining -= 1
+                        checks_for_item += 1
+                        offer = source.verify_offer(listing)
+                        db.store_offer_check(conn, listing_id, listing, offer, postcode=cfg.postcode)
+                        offer = db.recent_offer_check(conn, listing_id)
+                        decision, evaluation, product = _assess(listing, item, products, None, offer=offer)
+                        checked_now = offer is not None and offer.total is not None
+                    if product is not None:
+                        stats["catalogue_matches"] += 1
+                    if evaluation.under_target:
+                        stats["deals_found"] += 1
+                    if decision.eligible:
+                        relevant_ids.add(listing.external_id)
                     match_id, is_new = db.record_match(
                         conn, listing_id, item_id, evaluation,
                         product_id=product.global_product_id if product else None,
@@ -225,32 +288,39 @@ def run_once(
                         # product id: this observation feeds the shared
                         # catalogue entry, not just this item's view of it.
                         db.record_price_observation(
-                            conn, product.global_product_id, listing.price, listing.source
+                            conn, product.global_product_id, listing.price, listing.source, listing_id=listing_id,
                         )
                     if (
                         product is None
                         and item_id
-                        and source.capabilities().supports_enrichment
+                        and capabilities.supports_enrichment
                     ):
                         _maybe_suggest_product(conn, source, listing_id, item_id, cfg.ollama)
                     # Knowledge-only products (wanted=False) are
                     # identification, not endorsement: price history above
                     # still accumulates, but no alert fires and read-time
                     # gating (db._WANTED) keeps the match off deal surfaces.
-                    if (decision.eligible and evaluation.grade != grading.SPARES
-                            and is_new and is_primary and (product is None or product.wanted)):
+                    if (decision.eligible and offer is not None and offer.total is not None
+                            and (is_new or checked_now) and is_primary and (product is None or product.wanted)):
                         normal_price, target_deal_price, _ = scoring.effective_prices(item, product)
                         new_alerts.append(
                             MatchAlert(
                                 project_name=project.name,
                                 item_name=item.name,
-                                listing=listing,
+                                listing=replace(listing, price=offer.total),
                                 evaluation=evaluation,
                                 normal_price=normal_price,
                                 target_deal_price=target_deal_price,
                                 extras={"match_id": match_id},
                             )
                         )
+                query_rows.append((
+                    item_id, name, outcome.term, outcome.attempts, outcome.duration_ms, outcome.returned,
+                    len({listing.external_id for listing in outcome.listings}),
+                    len(relevant_ids.intersection(listing.external_id for listing in outcome.listings)),
+                    outcome.total, outcome.has_more, False,
+                ))
+    db.record_search_queries(conn, query_rows)
     for name, stats in health.items():
         db.record_source_run(conn, name, **stats)
     retailer_price.run_discovery_and_refresh(conn, cfg)
@@ -262,7 +332,7 @@ def run_once(
 
     new_alerts = [
         alert for alert in new_alerts
-        if db.match_is_current(conn, alert.extras["match_id"])
+        if db.match_is_current(conn, alert.extras["match_id"], verified_only=True)
     ]
     new_alerts.sort(key=lambda a: a.evaluation.deal_score, reverse=True)
     _send_alerts(cfg, conn, new_alerts)
