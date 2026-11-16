@@ -31,7 +31,8 @@ jobs:
         run: |
           for environment in sandbox production; do
             python deploy/render.py "$environment" --image "ghcr.io/${GITHUB_REPOSITORY,,}/truenas:${GITHUB_SHA}" > "/tmp/product-finder-$environment.json"
-            docker compose -f "/tmp/product-finder-$environment.json" config --no-env-resolution --quiet
+            jq -r '.services[].env_file[]?' "/tmp/product-finder-$environment.json" | xargs -r -n 1 sudo install -D -m 0600 /dev/null
+            docker compose -f "/tmp/product-finder-$environment.json" config --quiet
           done
 
   docker:
