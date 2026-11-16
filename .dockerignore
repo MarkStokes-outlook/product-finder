@@ -1,0 +1,7 @@
+**
+!pyproject.toml
+!src/
+!src/**
+!deploy/
+!deploy/Dockerfile
+!deploy/serve.py

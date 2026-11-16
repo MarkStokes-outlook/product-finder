@@ -11,6 +11,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=8.0"]
+truenas = ["flask>=3.1", "waitress>=3.0.2,<4"]
 
 [project.scripts]
 product-finder = "product_finder.cli:main"
