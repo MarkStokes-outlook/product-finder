@@ -8,10 +8,12 @@ from ..models import MatchAlert
 def format_alert(alert: MatchAlert) -> str:
     ev = alert.evaluation
     listing = alert.listing
+    mode = alert.extras.get("purchase_mode")
+    purchase_label = {"buy_it_now": " Buy It Now delivered", "fixed_price": " delivered"}.get(mode, "")
     parts = [
         f"[{ev.deal_score:.0f}] {alert.project_name} / {alert.item_name}",
         f"  {listing.title}",
-        f"  £{listing.price:,.2f}"
+        f"  £{listing.price:,.2f}{purchase_label}"
         + (f" (normal £{alert.normal_price:,.0f}, save {ev.margin_pct:.0f}%)" if alert.normal_price else ""),
         f"  Grade: {ev.grade}"
         + (" | UNDER TARGET" if ev.under_target else "")

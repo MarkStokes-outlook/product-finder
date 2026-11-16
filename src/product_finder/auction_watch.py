@@ -102,6 +102,13 @@ def poll_and_capture(cfg: AppConfig, conn: sqlite3.Connection) -> int:
 
         db.mark_listing_polled(conn, row["id"])
         if snapshot is not None:
+            details = snapshot.raw or {}
+            options = details.get("buyingOptions")
+            if details.get("itemId") == row["external_id"] and isinstance(options, list) and options:
+                buy_it_now = (
+                    snapshot.buy_it_now_price if "FIXED_PRICE" in options and snapshot.currency == "GBP" else None
+                )
+                db.update_polled_buy_it_now(conn, row, buy_it_now)
             # Record this observation regardless of ended/not-ended — this is
             # what builds the snapshot history for trajectory scoring, not
             # just the closing capture below.

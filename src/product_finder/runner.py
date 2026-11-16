@@ -68,9 +68,15 @@ def _assess(
         product = None
     else:
         decision, product = relevance.assess(listing, item, products)
-    evaluation = (
-        scoring.evaluate(replace(listing, price=total) if total is not None else listing, item, product)
-        if decision.eligible else Evaluation(grading.classify(listing.text), [], 0, 0, False, 0)
+    priced_listing = listing
+    if total is not None:
+        # Score the verified fixed-price purchase. The original listing still
+        # carries the auction and bid for display and tracking.
+        priced_listing = replace(listing, price=total, buying_options=[
+            option for option in listing.buying_options if option != "AUCTION"
+        ])
+    evaluation = scoring.evaluate(priced_listing, item, product) if decision.eligible else Evaluation(
+        grading.classify(listing.text), [], 0, 0, False, 0,
     )
     if total is None:
         evaluation.under_target = False
@@ -256,9 +262,13 @@ def run_once(
                         offer = db.recent_offer_check(conn, listing_id)
                     decision, evaluation, product = _assess(listing, item, products, None, offer=offer)
                     checked_now = bool(resolved_offer and offer and offer.total is not None)
+                    blocking_flags = set(evaluation.flags)
+                    if ("FIXED_PRICE" in listing.buying_options and listing.end_time
+                            and listing.buy_it_now_price == listing.price):
+                        blocking_flags.discard(scoring.FLAG_LIVE_AUCTION)
                     if (is_primary and decision.eligible and offer is None and checks_remaining
                             and checks_for_item < 2 and capabilities.supports_offer_verification
-                            and not evaluation.flags and evaluation.grade != grading.SPARES
+                            and not blocking_flags and evaluation.grade != grading.SPARES
                             and (product is None or product.wanted)):
                         checks_remaining -= 1
                         checks_for_item += 1
@@ -311,7 +321,13 @@ def run_once(
                                 evaluation=evaluation,
                                 normal_price=normal_price,
                                 target_deal_price=target_deal_price,
-                                extras={"match_id": match_id},
+                                extras={
+                                    "match_id": match_id,
+                                    "purchase_mode": (
+                                        "buy_it_now" if scoring.is_live_auction(listing) else "fixed_price"
+                                    ),
+                                    "postage": offer.postage,
+                                },
                             )
                         )
                 query_rows.append((

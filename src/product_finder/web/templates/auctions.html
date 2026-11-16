@@ -26,7 +26,15 @@
     <td class="meta">{{ row['project_name'] }} / {{ row['item_name'] }}</td>
     <td class="num"><strong>{% if a.current_bid is not none %}£{{ '%.2f' | format(a.current_bid) }}{% else %}&mdash;{% endif %}</strong>
       {% if row['bid_count'] is not none %}<br><span class="meta">{{ row['bid_count'] }} bid{{ 's' if row['bid_count'] != 1 else '' }}</span>{% endif %}</td>
-    <td class="num">{% if a.buy_it_now_price %}£{{ '%.2f' | format(a.buy_it_now_price) }}{% else %}&mdash;{% endif %}</td>
+    <td class="num">
+      {% if row['offer_total'] is not none %}
+      £{{ '%.2f' | format(row['offer_total']) }} delivered
+      <br><span class="meta">Checked {{ row['offer_checked_at'] | timeago }}</span>
+      {% elif a.buy_it_now_price is not none %}
+      £{{ '%.2f' | format(a.buy_it_now_price) }}
+      <br><span class="meta">{{ row['offer_reason'] }}</span>
+      {% else %}&mdash;{% endif %}
+    </td>
     <td class="meta">{% if row['end_time'] %}<span class="badge auction" data-ends="{{ row['end_time'] }}">…</span>{% else %}&mdash;{% endif %}</td>
     <td><span class="badge {{ a.trajectory_css }}">{{ t.label }}</span>
       <div class="meta">{{ t.explanation }}</div></td>
