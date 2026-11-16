@@ -14,7 +14,7 @@
 
 {% macro price_block(row) %}
 <div class="price-row">
-  <span class="price-now">£{{ '%.2f' | format(row['offer_total']) }} delivered</span>
+  <span class="price-now">{% if row['is_auction'] %}Buy It Now · {% endif %}£{{ '%.2f' | format(row['offer_total']) }} delivered</span>
   {% if row['normal_price'] and row['normal_price'] > row['offer_total'] %}
   <span class="meta">{{ row['reference_basis'] }} £{{ '%.0f' | format(row['normal_price']) }}</span>
   {% endif %}

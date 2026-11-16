@@ -132,9 +132,12 @@ def _verify_fixed_price(listing: Listing, data: dict, postcode: str = "") -> Off
                 return OfferCheck("unavailable", "eBay did not confirm this offer is still open.")
         except (AttributeError, ValueError):
             return OfferCheck("review", "Check the listing end time on eBay.")
-    if ("FIXED_PRICE" not in (data.get("buyingOptions") or [])
-            or "AUCTION" in data["buyingOptions"]):
-        return OfferCheck("review", "Check the purchase options on eBay.")
+    options = data.get("buyingOptions") or []
+    if "FIXED_PRICE" not in options:
+        return OfferCheck("review", "eBay did not confirm a Buy It Now option.")
+    auction = "AUCTION" in options
+    if auction != ("AUCTION" in listing.buying_options):
+        return OfferCheck("review", "The purchase options changed. Check again after the next scan.")
     if listing.variant_capacity_gb:
         if _nvme_variant_capacity(data) != listing.variant_capacity_gb:
             return OfferCheck("review", "eBay did not confirm the selected NVMe capacity and variant link.")
@@ -143,6 +146,17 @@ def _verify_fixed_price(listing: Listing, data: dict, postcode: str = "") -> Off
     price = _gbp_amount(data.get("price") or {})
     if price != listing.price or data["title"].strip().casefold() != listing.title.strip().casefold():
         return OfferCheck("review", "eBay returned a different title or price. Check again after the next scan.")
+    if auction:
+        if price != listing.buy_it_now_price or not end_time or not listing.end_time:
+            return OfferCheck("review", "eBay did not confirm the Buy It Now price and auction end time.")
+        try:
+            search_expiry = datetime.fromisoformat(listing.end_time.replace("Z", "+00:00"))
+        except ValueError:
+            return OfferCheck("review", "Check the auction end time on eBay.")
+        if search_expiry != expiry:
+            return OfferCheck("review", "The auction end time changed. Check again after the next scan.")
+    if listing.condition and (data.get("condition") or "").strip().casefold() != listing.condition.strip().casefold():
+        return OfferCheck("review", "eBay returned a different condition. Check again after the next scan.")
     if not any(row.get("estimatedAvailabilityStatus") in ("IN_STOCK", "LIMITED_STOCK")
                and "SHIP_TO_HOME" in (row.get("deliveryOptions") or []) for row in availability):
         if any(row.get("estimatedAvailabilityStatus") in ("IN_STOCK", "LIMITED_STOCK")
@@ -164,7 +178,8 @@ def _verify_fixed_price(listing: Listing, data: dict, postcode: str = "") -> Off
         return OfferCheck("review", "eBay did not return a confirmed UK delivery charge.")
     if any(data.get(field) for field in ("importCharges", "deliveryFees")):
         return OfferCheck("review", "Check additional purchase fees on eBay.")
-    return OfferCheck("verified", "Item price and UK delivery checked on eBay.", price, min(postage))
+    purchase = "Buy It Now" if auction else "Item price"
+    return OfferCheck("verified", f"{purchase} and UK delivery checked on eBay.", price, min(postage))
 
 
 class EbaySource(Source):

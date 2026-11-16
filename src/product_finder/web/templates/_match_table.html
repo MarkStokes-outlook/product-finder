@@ -28,11 +28,15 @@
          with an "auction" badge, making a BIN price look like the bid. #}
       <strong>£{{ '%.2f' | format(row['current_bid_price']) }}</strong>
       <br><span class="badge auction">auction{% if row['bid_count'] is not none %} · {{ row['bid_count'] }} bid{{ 's' if row['bid_count'] != 1 else '' }}{% endif %}{% if row['end_time'] %} · <span data-ends="{{ row['end_time'] }}">…</span>{% endif %}</span>
-      {% if row['buy_it_now_price'] %}<br><span class="meta">BIN £{{ '%.2f' | format(row['buy_it_now_price']) }}</span>{% endif %}
+      {% if row['offer_total'] is not none %}
+      <br><span class="meta">Buy It Now · £{{ '%.2f' | format(row['offer_total']) }} delivered · Checked {{ row['offer_checked_at'] | timeago }}</span>
+      {% elif row['buy_it_now_price'] is not none %}
+      <br><span class="meta">Buy It Now £{{ '%.2f' | format(row['buy_it_now_price']) }} · {{ row['offer_reason'] }}</span>
+      {% endif %}
       {% else %}
       <strong>£{{ '%.2f' | format(row['price']) }}</strong>
       {% if row['offer_total'] is not none %}
-      <br><span class="meta">£{{ '%.2f' | format(row['offer_total']) }} delivered · Checked {{ row['offer_checked_at'] | timeago }}</span>
+      <br><span class="meta">{% if row['is_auction'] %}Buy It Now · {% endif %}£{{ '%.2f' | format(row['offer_total']) }} delivered · Checked {{ row['offer_checked_at'] | timeago }}</span>
       {% elif 'AUCTION' not in buying %}
       <br><span class="meta">{{ row['offer_reason'] }}</span>
       {% endif %}

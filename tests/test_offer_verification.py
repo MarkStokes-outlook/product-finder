@@ -1,8 +1,10 @@
 from copy import deepcopy
+from dataclasses import replace
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from product_finder import db, relevance, runner, sources
+from product_finder import auction_watch, db, relevance, runner, sources
 from product_finder.config import AppConfig, ItemConfig
 from product_finder.models import Listing, SearchPage
 from product_finder.identity import derive_canonical_key
@@ -88,6 +90,84 @@ def test_collection_only_lists_the_location_without_a_delivered_total(offer_deta
     check = _verify_fixed_price(ITEM, offer_details)
     assert check.total is None
     assert "Collection only in Bristol" in check.reason
+
+
+def test_changed_condition_requires_review(offer_details):
+    listing = replace(ITEM, condition="Used")
+    offer_details["condition"] = "For parts or not working"
+    check = _verify_fixed_price(listing, offer_details, "SW1A 1AA")
+    assert check.total is None
+    assert "different condition" in check.reason
+
+
+def test_watch_verifies_buy_it_now_and_withdraws_it_when_auction_changes(tmp_path, monkeypatch, offer_details):
+    cfg = AppConfig(db_path=str(tmp_path / "test.db"), postcode="SW1A 1AA")
+    conn = db.connect(cfg.db_path)
+    project_id = db.create_project(conn, "Workshop")
+    item_id = db.create_item(conn, project_id, ItemConfig(
+        "Track Saw", ["track saw"], max_price=180, target_deal_price=175, normal_price=300,
+    ))
+    end_time = (datetime.now(timezone.utc) + timedelta(hours=2)).isoformat()
+    hybrid = replace(ITEM, buying_options=["AUCTION", "FIXED_PRICE"], end_time=end_time,
+                     buy_it_now_price=150, current_bid_price=99, bid_count=0)
+    bid_only = replace(hybrid, external_id="v1|2|0", url="https://example.test/2",
+                       buying_options=["AUCTION"], buy_it_now_price=None, price=99)
+    parts_only = replace(ITEM, external_id="v1|3|0", url="https://example.test/3",
+                         condition="Parts only, no power")
+    offer_details.update(buyingOptions=["FIXED_PRICE", "AUCTION"], itemEndDate=end_time,
+                         currentBidPrice={"value": "99", "currency": "GBP"})
+    details = {
+        hybrid.external_id: offer_details,
+        bid_only.external_id: dict(offer_details, itemId=bid_only.external_id, buyingOptions=["AUCTION"]),
+    }
+    connector = ebay.EbaySource(cfg)
+    detail_checks = []
+
+    def fetch_item(external_id, *, delivery_context=False):
+        if delivery_context:
+            detail_checks.append(external_id)
+        return details[external_id]
+
+    monkeypatch.setattr(connector, "is_automated", lambda: True)
+    monkeypatch.setattr(connector, "search_page", lambda term, item: SearchPage([parts_only, bid_only, hybrid], 3))
+    monkeypatch.setattr(connector, "_fetch_item", fetch_item)
+    monkeypatch.setattr(sources, "build_registry", lambda _: {"ebay": connector})
+    delivered = []
+    monkeypatch.setattr(runner.console_alerts, "send", delivered.append)
+
+    [alert] = runner.run_once(cfg, conn)
+    assert detail_checks == [hybrid.external_id]
+    assert alert.listing.price == 170
+    assert alert.listing.current_bid_price == 99
+    assert alert.evaluation.under_target
+    assert alert.extras["purchase_mode"] == "buy_it_now"
+    assert delivered == [alert]
+    [recommendation] = db.query_matches(conn, item_id=item_id, verified_only=True)
+    assert recommendation["offer_total"] == 170
+    assert db.project_top_picks(conn)[project_id]["price"] == 170
+
+    with create_app(cfg).test_client() as client:
+        assert b"Buy It Now" in client.get("/").data
+        auctions = client.get("/auctions").data
+        assert b"99.00" in auctions
+        assert b"170.00 delivered" in auctions
+
+        # The item endpoint can withdraw Buy It Now before the next search
+        # even when the numeric bid happens to equal the old purchase price.
+        details[hybrid.external_id] = dict(offer_details, buyingOptions=["AUCTION"],
+                                           currentBidPrice=offer_details["price"])
+        assert auction_watch.poll_and_capture(cfg, conn) == 0
+        assert not db.query_matches(conn, item_id=item_id, verified_only=True)
+        assert project_id not in db.project_top_picks(conn)
+        assert b"170.00 delivered" not in client.get("/auctions").data
+        assert b"150.00" in client.get("/auctions").data
+
+    # A previously verified response cannot replace the new bid-only state.
+    db.store_offer_check(conn, recommendation["listing_id"], hybrid,
+                         _verify_fixed_price(hybrid, offer_details, cfg.postcode), postcode=cfg.postcode)
+    assert not db.query_matches(conn, item_id=item_id, verified_only=True)
+    assert runner.run_once(cfg, conn) == []
+    assert delivered == [alert]
 
 
 def test_watch_prices_and_links_the_exact_nvme_variant(tmp_path, monkeypatch, offer_details):

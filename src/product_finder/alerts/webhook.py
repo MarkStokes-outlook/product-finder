@@ -29,6 +29,8 @@ def send(alert: MatchAlert, url: str) -> bool:
         "source": alert.listing.source,
         "url": alert.listing.url,
     }
+    if "purchase_mode" in alert.extras:
+        payload.update(purchase_mode=alert.extras["purchase_mode"], postage=alert.extras["postage"])
     try:
         resp = requests.post(url, json=payload, timeout=15)
         resp.raise_for_status()

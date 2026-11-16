@@ -2026,6 +2026,18 @@ def mark_listing_polled(conn: sqlite3.Connection, listing_id: int) -> None:
     conn.commit()
 
 
+def update_polled_buy_it_now(conn: sqlite3.Connection, listing: sqlite3.Row, price: float | None) -> None:
+    """Clear offer evidence when an auction poll reports a different purchase price."""
+    if price == listing["buy_it_now_price"]:
+        return
+    conn.execute(
+        """UPDATE listings SET buy_it_now_price = ?, offer_checked_at = NULL
+           WHERE id = ? AND last_seen = ? AND offer_checked_at IS ? AND buy_it_now_price IS ?""",
+        (price, listing["id"], listing["last_seen"], listing["offer_checked_at"], listing["buy_it_now_price"]),
+    )
+    conn.commit()
+
+
 def mark_sold_captured(conn: sqlite3.Connection, listing_id: int) -> None:
     conn.execute("UPDATE listings SET sold_captured = 1 WHERE id = ?", (listing_id,))
     conn.commit()
@@ -2115,14 +2127,17 @@ def upsert_listing(conn: sqlite3.Connection, listing: Listing) -> tuple[int, boo
             "image_url = COALESCE(?, image_url), description = ?, condition = ?, "
             "category = ?, variation_group = ?, variation_group_id = ?, variant_capacity_gb = ?, "
             "offer_checked_at = CASE WHEN title IS ? AND price IS ? AND currency IS ? "
-            "AND buying_options IS ? AND condition IS ? AND variation_group IS ? AND variant_capacity_gb IS ? "
+            "AND buying_options IS ? AND condition IS ? AND variation_group IS ? "
+            "AND variant_capacity_gb IS ? AND variation_group_id IS ? AND buy_it_now_price IS ? "
+            "AND (buying_options NOT LIKE '%AUCTION%' OR end_time IS ?) "
             "THEN offer_checked_at END WHERE id = ?",
             (now, listing.price, listing.title, listing.currency, buying_options, listing.bid_count,
              listing.end_time, listing.current_bid_price, listing.buy_it_now_price,
              listing.image_url, listing.description, listing.condition,
              listing.category, int(listing.variation_group), listing.variation_group_id, listing.variant_capacity_gb,
              listing.title, listing.price, listing.currency, buying_options, listing.condition,
-             int(listing.variation_group), listing.variant_capacity_gb, row["id"]),
+             int(listing.variation_group), listing.variant_capacity_gb, listing.variation_group_id,
+             listing.buy_it_now_price, listing.end_time, row["id"]),
         )
         # Commit immediately (as every db.py write function must): the watch
         # loop calls this between network requests, and an uncommitted write
@@ -2661,10 +2676,14 @@ _OFFER_RECENT = f"""(
     )
 )"""
 _OFFER_TOTAL = "round(l.offer_checked_price + l.offer_postage, 2)"
+_HAS_FIXED_PURCHASE = """(l.buying_options NOT LIKE '%AUCTION%' OR (
+    l.buying_options LIKE '%FIXED_PRICE%' AND l.buy_it_now_price IS NOT NULL
+))"""
 _VERIFIED_OFFER = f"""(
     {_OFFER_RECENT} AND l.offer_state = 'verified' AND l.currency = 'GBP'
     AND l.offer_postage IS NOT NULL AND l.variation_group = 0
-    AND l.buying_options NOT LIKE '%AUCTION%'
+    AND {_HAS_FIXED_PURCHASE}
+    AND (l.buying_options NOT LIKE '%AUCTION%' OR (l.buy_it_now_price = l.price AND l.end_time IS NOT NULL))
 )"""
 
 def _destination_key(postcode: str) -> str:
@@ -2686,9 +2705,14 @@ def store_offer_check(
     conn.execute(
         """UPDATE listings SET offer_state = ?, offer_reason = ?, offer_checked_at = ?,
            offer_checked_title = ?, offer_checked_price = ?, offer_postage = ?, offer_destination = ?
-           WHERE id = ? AND title = ? AND price = ?""",
+           WHERE id = ? AND title = ? AND price = ? AND currency = ?
+             AND buying_options = ? AND buy_it_now_price IS ? AND condition = ?
+             AND variation_group = ? AND variant_capacity_gb IS ? AND variation_group_id IS ?
+             AND (buying_options NOT LIKE '%AUCTION%' OR end_time IS ?)""",
         (check.status, check.reason, _now(), listing.title, listing.price, check.postage,
-         _destination_key(postcode), listing_id, listing.title, listing.price),
+         _destination_key(postcode), listing_id, listing.title, listing.price, listing.currency,
+         json.dumps(listing.buying_options), listing.buy_it_now_price, listing.condition,
+         int(listing.variation_group), listing.variant_capacity_gb, listing.variation_group_id, listing.end_time),
     )
     conn.commit()
 
@@ -2723,6 +2747,7 @@ SELECT p.name AS project_name, p.slug AS project_slug, p.id AS project_id,
        m.match_status, m.match_reason, m.search_term, l.variant_capacity_gb,
        CASE WHEN {_VERIFIED_OFFER} THEN {_OFFER_TOTAL} END AS offer_total,
        CASE WHEN {_VERIFIED_OFFER} THEN l.offer_postage END AS offer_postage,
+       CASE WHEN l.buying_options LIKE '%AUCTION%' THEN 1 ELSE 0 END AS is_auction,
        CASE WHEN {_OFFER_RECENT} THEN l.offer_checked_at END AS offer_checked_at,
        CASE WHEN {_OFFER_RECENT} THEN l.offer_reason
             ELSE 'Price and availability still need checking.' END AS offer_reason
@@ -2797,7 +2822,7 @@ def query_matches(
     elif review:
         visibility = (
             f"{_VISIBLE_MATCH} AND {_ACTIVE_WATCH} AND {_CURRENT_LISTING} "
-            f"AND (NOT ({_ELIGIBLE_MATCH}) OR (l.buying_options NOT LIKE '%AUCTION%' "
+            f"AND (NOT ({_ELIGIBLE_MATCH}) OR ({_HAS_FIXED_PURCHASE} "
             f"AND NOT COALESCE({_VERIFIED_OFFER}, 0)))"
         )
     clauses, params = [visibility], []
@@ -2904,6 +2929,7 @@ def project_top_picks(conn: sqlite3.Connection) -> dict[int, sqlite3.Row]:
         SELECT * FROM (
             SELECT p.id AS project_id, i.name AS item_name,
                    l.title, {_OFFER_TOTAL} AS price, l.currency, l.url, l.source, l.image_url,
+                   l.buying_options LIKE '%AUCTION%' AS is_auction,
                    m.grade, m.deal_score, m.margin_pct, m.under_target,
                    ROW_NUMBER() OVER (PARTITION BY p.id
                      ORDER BY m.deal_score DESC, l.last_seen DESC, m.id) AS rn

@@ -1433,7 +1433,8 @@ def test_match_table_shows_current_bid_not_bin_for_auction_with_bin(cfg, client)
 
     resp = client.get(f"/projects/{project_id}")
     assert b"\xc2\xa352.70" in resp.data
-    assert b"BIN \xc2\xa373.50" in resp.data
+    assert b"Buy It Now \xc2\xa373.50" in resp.data
+    assert b"Price and availability still need checking" in resp.data
 
 
 def test_ended_auction_excluded_from_active_auctions_page(cfg, client):
