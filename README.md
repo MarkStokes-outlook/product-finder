@@ -133,6 +133,26 @@ queries with the same price limit can share a response within one watch cycle.
 Use `scripts/benchmark-search.py` to capture or score the eight-watch discovery
 pilot without running the watcher or sending alerts.
 
+### Retailer discovery pilot
+
+Retailer discovery is off by default. When explicitly enabled, a watcher
+cycle searches at most three distinct wanted catalogue products from active
+watches (highest priority first), examines at most five results per search,
+and refreshes at most eight approved URLs. A failed SearXNG search leaves
+existing candidates and unchecked products intact; the next cycle is deferred
+for one, two, four, then six hours after consecutive failures. The Black Friday
+page exposes the last search outcome and links to human review.
+
+Retailer requests are limited to the built-in exact UK retailer hostname
+allowlist over HTTPS, with validated public IP pinning, TLS hostname checks,
+no redirects or proxy, bounded response size, and paced requests. Prices
+require explicit GBP and a finite positive number. Candidate search titles
+must mention the model token; human review is still required to confirm the
+variant and offer. An unsuccessful approval refetch does not create fresh
+price history. Discovery does not establish stock, delivery, historical
+discounts, or a purchase recommendation. Valid empty searches still require
+manual re-search; unknown or redirected retailer pages are not supported.
+
 ### Running on a schedule
 
 `watch` and `web` are independent processes — searches must not depend on the

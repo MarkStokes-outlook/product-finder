@@ -1524,15 +1524,20 @@ def clear_price_candidates(conn: sqlite3.Connection, product_id: int) -> None:
     conn.commit()
 
 
-def list_products_needing_price_search(conn: sqlite3.Connection) -> list[sqlite3.Row]:
-    """Global products still actively tracked by at least one item
-    (archived is now per-item — see item_products), with no canonical
-    retailer URL, that haven't had a Stage-1 search attempt yet."""
-    return conn.execute(
-        "SELECT * FROM products WHERE canonical_price_url IS NULL "
-        "AND price_search_checked = 0 "
-        "AND EXISTS (SELECT 1 FROM item_products ip WHERE ip.product_id = products.id AND ip.archived = 0)"
-    ).fetchall()
+def list_products_needing_price_search(conn: sqlite3.Connection, limit: int = 3) -> list[sqlite3.Row]:
+    """Only active wanted watches, with highest purchase priority first."""
+    return conn.execute("""
+        SELECT p.* FROM products p
+        JOIN item_products ip ON ip.product_id = p.id
+        JOIN items i ON i.id = ip.item_id
+        JOIN projects pr ON pr.id = i.project_id
+        WHERE p.canonical_price_url IS NULL AND p.price_search_checked = 0
+          AND ip.wanted = 1 AND ip.archived = 0 AND i.archived = 0 AND pr.archived = 0
+        GROUP BY p.id
+        ORDER BY MIN(CASE i.priority WHEN 'high' THEN 0 WHEN 'normal' THEN 1 ELSE 2 END),
+                 p.id
+        LIMIT ?
+    """, (max(0, min(limit, 3)),)).fetchall()
 
 
 def approve_price_candidate(
@@ -1556,11 +1561,13 @@ def approve_price_candidate(
         "DELETE FROM product_price_candidates WHERE product_id = ?", (candidate["product_id"],)
     )
     conn.commit()
-    record_new_price_history(conn, candidate["product_id"], price, candidate["domain"])
+    # A failed approval refetch is not a fresh price observation.
+    if refreshed is not None:
+        record_new_price_history(conn, candidate["product_id"], price, candidate["domain"])
 
 
 def list_products_due_for_price_refresh(
-    conn: sqlite3.Connection, max_staleness_hours: int
+    conn: sqlite3.Connection, max_staleness_hours: int, limit: int = 8
 ) -> list[sqlite3.Row]:
     cutoff = (datetime.now(timezone.utc) - timedelta(hours=max_staleness_hours)).isoformat(
         timespec="seconds"
@@ -1568,8 +1575,11 @@ def list_products_due_for_price_refresh(
     return conn.execute(
         "SELECT * FROM products WHERE canonical_price_url IS NOT NULL "
         "AND (last_price_check_at IS NULL OR last_price_check_at < ?) "
-        "AND EXISTS (SELECT 1 FROM item_products ip WHERE ip.product_id = products.id AND ip.archived = 0)",
-        (cutoff,),
+        "AND EXISTS (SELECT 1 FROM item_products ip JOIN items i ON i.id=ip.item_id "
+        "JOIN projects pr ON pr.id=i.project_id WHERE ip.product_id = products.id "
+        "AND ip.wanted=1 AND ip.archived=0 AND i.archived=0 AND pr.archived=0) "
+        "ORDER BY last_price_check_at, id LIMIT ?",
+        (cutoff, max(0, min(limit, 8))),
     ).fetchall()
 
 
