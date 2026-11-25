@@ -23,6 +23,11 @@ def test_event_dates():
         date(2026, 11, 27), date(2026, 11, 20), date(2026, 11, 30))
 
 
+def test_event_dates_when_november_has_five_fridays():
+    assert black_friday.event_dates(2029) == (
+        date(2029, 11, 23), date(2029, 11, 16), date(2029, 11, 26))
+
+
 def test_observed_reduction_ignores_event_prices_other_retailers_and_duplicate_days():
     observations = history() + [
         {"observed_at": "2026-11-25T10:00:00+00:00", "domain": "example.com", "price": 500},
@@ -66,10 +71,15 @@ def test_watchlist_scope_and_route(tmp_path):
     conn.execute("UPDATE item_products SET wanted = 0 WHERE product_id != ?", (pid,))
     conn.commit()
     assert [d["model"] for d in black_friday.dashboard(conn, NOW)["deals"]] == ["WantedSaw"]
+    db.create_item(conn, project, ItemConfig(name="UnresolvedWatch", terms=["drill"], priority="high"))
+    unresolved = black_friday.dashboard(conn, NOW)["unresolved"]
+    assert [w["item"] for w in unresolved] == ["UnresolvedWatch"]
     conn.close()
     response = app.test_client().get("/black-friday")
     assert response.status_code == 200
     assert b"WantedSaw" in response.data
+    assert b"UnresolvedWatch" in response.data
+    assert b"Watches needing product identification" in response.data
     assert b"NotWantedSaw" not in response.data
     assert b"Needs retailer approval" in response.data
     assert b"/black-friday" in app.test_client().get("/").data
