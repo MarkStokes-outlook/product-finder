@@ -144,6 +144,15 @@ def _domain(url: str) -> str:
     return host[4:] if host.startswith("www.") else host
 
 
+# New-retail observations must not silently absorb refurbished/used prices.
+_NON_NEW = re.compile(r"\b(?:refurb(?:ished)?|reconditioned|pre[- ]?owned|used|second[- ]?hand|open[- ]?box)\b", re.I)
+
+
+def _non_new(value):
+    text = str(value or "")
+    return bool(_NON_NEW.search(text) or text.lower().endswith(("usedcondition", "refurbishedcondition", "damagedcondition")))
+
+
 def _price_from_json_ld(html: str) -> tuple[float, str] | None:
     for raw in _JSON_LD_RE.findall(html):
         try:
@@ -160,6 +169,8 @@ def _price_from_json_ld(html: str) -> tuple[float, str] | None:
             offers = offers[0] if isinstance(offers, list) and offers else offers
             if not isinstance(offers, dict):
                 continue
+            if _non_new(entry.get("name")) or _non_new(entry.get("itemCondition")) or _non_new(offers.get("itemCondition")):
+                raise ValueError("Non-new product condition")
             try:
                 return float(offers["price"]), str(offers.get("priceCurrency", ""))
             except (KeyError, TypeError, ValueError):
@@ -187,6 +198,8 @@ def fetch_price(url: str, timeout: int) -> dict | None:
     structured price, or a currency other than GBP (this app is UK-only,
     same filter the eBay source already applies) — never raises."""
     try:
+        if _non_new(urlsplit(url).path):
+            return None
         status, html = _retailer_get(url, timeout)
     except (urllib3.exceptions.HTTPError, OSError, ValueError) as exc:
         log.warning("Retailer page fetch failed for %s: %s", url, exc)
@@ -194,7 +207,10 @@ def fetch_price(url: str, timeout: int) -> dict | None:
     if status != 200:
         log.warning("Retailer page fetch for %s returned HTTP %s", url, status)
         return None
-    result = _price_from_json_ld(html) or _price_from_microdata(html)
+    try:
+        result = _price_from_json_ld(html) or _price_from_microdata(html)
+    except ValueError:
+        return None
     if result is None:
         return None
     price, currency = result
@@ -260,7 +276,7 @@ def search_candidates(manufacturer: str, model: str, cfg: SearxngConfig) -> list
         url = result.get("url")
         title = result.get("title")
         if (not isinstance(url, str) or not isinstance(title, str)
-                or url in seen or not _approved_host(url)):
+                or url in seen or not _approved_host(url) or _non_new(title) or _non_new(urlsplit(url).path)):
             continue
         # Exact model token in the result title; still requires human review.
         if not re.search(r"(?<![a-z0-9])" + re.escape(model.lower()) + r"(?![a-z0-9])", title.lower()):

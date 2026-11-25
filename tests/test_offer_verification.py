@@ -148,6 +148,11 @@ def test_watch_verifies_buy_it_now_and_withdraws_it_when_auction_changes(tmp_pat
 
     with create_app(cfg).test_client() as client:
         assert b"Buy It Now" in client.get("/").data
+        seasonal = client.get("/black-friday")
+        assert seasonal.status_code == 200
+        assert b"Marketplace offers meeting your targets (1)" in seasonal.data
+        assert b"170.00" in seasonal.data
+        assert b"not proof of a Black Friday discount" in seasonal.data
         auctions = client.get("/auctions").data
         assert b"99.00" in auctions
         assert b"170.00 delivered" in auctions

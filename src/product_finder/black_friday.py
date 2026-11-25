@@ -100,6 +100,26 @@ def assess(row, history, now):
     }
 
 
+def marketplace_targets(conn):
+    """Current verified marketplace offers under an explicit watch target.
+
+    No historical-discount claim. Preserve the existing marketplace safety
+    gates, then select the best matching target context per unique listing.
+    """
+    candidates = []
+    for row in db.query_matches(conn, verified_only=True, sort="price"):
+        total, target = _price(row["offer_total"]), _price(row["target_deal_price"])
+        if total is not None and target is not None and total <= target:
+            candidates.append({**dict(row), "below_target": target-total})
+    candidates.sort(key=lambda r: (
+        {"high": 0, "normal": 1, "low": 2}.get(r["priority"], 1),
+        -r["below_target"] / r["target_deal_price"], r["listing_id"], r["match_id"]))
+    unique = {}
+    for row in candidates:
+        unique.setdefault(row["listing_id"], row)
+    return list(unique.values())
+
+
 def dashboard(conn, now=None):
     now = now or datetime.now(timezone.utc)
     friday, start, end = event_dates(now.year)
@@ -143,6 +163,6 @@ def dashboard(conn, now=None):
         return (deal["above_budget"], pct is None, -(pct or 0),
                 deal["project"], deal["manufacturer"], deal["tracking_id"])
     deals.sort(key=rank)
-    return {"deals": deals, "unresolved": [dict(row) for row in unresolved],
+    return {"marketplace_targets": marketplace_targets(conn), "deals": deals, "unresolved": [dict(row) for row in unresolved],
             "friday": friday, "start": start, "end": end,
             "active": start <= now.date() <= end, "year": now.year}

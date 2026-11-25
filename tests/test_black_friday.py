@@ -83,3 +83,18 @@ def test_watchlist_scope_and_route(tmp_path):
     assert b"NotWantedSaw" not in response.data
     assert b"Needs retailer approval" in response.data
     assert b"/black-friday" in app.test_client().get("/").data
+
+
+def test_marketplace_target_selection(monkeypatch):
+    base = dict(listing_id=1, match_id=1, offer_total=80, target_deal_price=100, priority="normal")
+    rows = [base, dict(base, match_id=2, priority="high", target_deal_price=90),
+            dict(base, listing_id=2, target_deal_price=70),
+            dict(base, listing_id=3, target_deal_price=None),
+            dict(base, listing_id=4, offer_total=None)]
+    def query(conn, **kwargs):
+        assert kwargs == {"verified_only": True, "sort": "price"}
+        return rows
+    monkeypatch.setattr(db, "query_matches", query)
+    [result] = black_friday.marketplace_targets(None)
+    assert result["match_id"] == 2
+    assert result["below_target"] == 10

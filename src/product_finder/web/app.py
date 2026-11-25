@@ -42,7 +42,7 @@ HOT_DEAL_SCORE = 70
 # against — see listing_clicks.context. A request with any other value (or
 # none) is recorded as "unknown" rather than rejected: context is an audit
 # label, not something worth failing a redirect over.
-CLICK_CONTEXTS = ("dashboard", "project", "auctions", "offers", "duplicate_review")
+CLICK_CONTEXTS = ("dashboard", "project", "auctions", "offers", "duplicate_review", "black_friday")
 
 
 def _get_conn(cfg: AppConfig):

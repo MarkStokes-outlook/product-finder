@@ -14,6 +14,20 @@
   <p class="meta">Prices must have been successfully checked in the last 24 hours. Baseline: median of daily recorded new prices at the approved retailer's domain over the 60 days before the event (or today if earlier); at least three days spanning seven days.</p>
   <p class="hint">Historical evidence is retailer-domain level, not exact URL history. Prices exclude unverified delivery, stock, coupons and cashback. Confirm the exact variant and delivered total before buying. A missing baseline is not a zero discount.</p>
 </div>
+<div class="card table-card">
+<h2>Marketplace offers meeting your targets ({{ marketplace_targets|length }})</h2>
+<p class="hint">Recently verified fixed-price offers, including delivery, from existing active watches. New, used and refurbished marketplace listings may appear. Below-target prices are not proof of a Black Friday discount. Check condition and exact variant.</p>
+{% if marketplace_targets %}
+<table><thead><tr><th>Listing / watch</th><th>Delivered price</th><th>Your target</th><th>Below target</th><th>Condition / match</th></tr></thead><tbody>
+{% for row in marketplace_targets[:30] %}
+<tr><td><a href="{{ listing_out_url(row.listing_id, 'black_friday', row.project_id) }}" target="_blank" rel="noopener">{{ row.title }}</a><br><a href="{{ url_for('project_detail', project_id=row.project_id) }}">{{ row.project_name }} / {{ row.item_name }}</a></td>
+<td>£{{ "%.2f"|format(row.offer_total) }}</td><td>£{{ "%.2f"|format(row.target_deal_price) }}</td><td>£{{ "%.2f"|format(row.below_target) }}</td><td>{{ row.grade }} · {{ row.match_status }}<div class="hint">Checked {{ row.offer_checked_at }}</div></td></tr>
+{% endfor %}
+</tbody></table>
+{% if marketplace_targets|length > 30 %}<p class="hint">Showing first 30 by watch priority and relative target difference.</p>{% endif %}
+{% else %}<p>No currently verified marketplace offers meet an explicit purchase target.</p>{% endif %}
+</div>
+<h2>New retailer price observations</h2>
 {% if deals %}
 <div class="card table-card">
 <table>
