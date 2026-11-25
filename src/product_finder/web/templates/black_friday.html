@@ -37,4 +37,19 @@
 {% else %}
 <div class="hero-empty">No active wanted catalogue products yet. Add products to an existing project to start tracking deals.</div>
 {% endif %}
+{% if unresolved %}
+<div class="card table-card">
+<h2>Watches needing product identification ({{ unresolved|length }})</h2>
+<p class="hint">These are active buying intentions, not verified products or offers. Open the project to review candidate models and retailer evidence.</p>
+<table>
+<thead><tr><th>Watch</th><th>Priority</th><th>Target / budget</th></tr></thead>
+<tbody>
+{% for w in unresolved %}
+<tr><td><a href="{{ url_for('project_detail', project_id=w.project_id) }}">{{ w.project }} / {{ w.item }}</a></td><td>{{ w.priority }}</td>
+<td>{% if w.target_deal_price is not none %}Target £{{ "%.2f"|format(w.target_deal_price) }}{% endif %}{% if w.max_price is not none %}<br>Max £{{ "%.2f"|format(w.max_price) }}{% endif %}</td></tr>
+{% endfor %}
+</tbody>
+</table>
+</div>
+{% endif %}
 {% endblock %}
