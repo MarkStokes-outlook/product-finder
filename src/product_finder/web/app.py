@@ -570,7 +570,13 @@ def create_app(cfg: AppConfig) -> Flask:
 
     @app.route("/black-friday")
     def black_friday_view():
-        return render_template("black_friday.html", **black_friday.dashboard(_get_conn(cfg)))
+        conn = _get_conn(cfg)
+        discovery = conn.execute(
+            "SELECT ok, run_at, last_error FROM source_runs WHERE source=? ORDER BY id DESC LIMIT 1",
+            (retailer_price.SOURCE_NAME,),
+        ).fetchone()
+        return render_template("black_friday.html", discovery_enabled=cfg.searxng.enabled,
+                               discovery=discovery, **black_friday.dashboard(conn))
 
     # --- Active Auctions / Offers ------------------------------------------------
 
@@ -1004,6 +1010,9 @@ def create_app(cfg: AppConfig) -> Flask:
             flash("Retailer price discovery is disabled (set searxng.enabled in config.yaml).")
             return redirect(url_for("product_edit", product_id=product_id))
         candidates = retailer_price.search_candidates(row["manufacturer"], row["model"] or "", cfg.searxng)
+        if candidates is None:
+            flash("Retailer search unavailable; existing candidates preserved.")
+            return redirect(url_for("product_edit", product_id=product_id))
         db.record_price_candidates(conn, global_id, candidates)
         flash(f"Found {len(candidates)} retailer price candidate(s)." if candidates
               else "No retailer price candidates found.")
@@ -1015,6 +1024,8 @@ def create_app(cfg: AppConfig) -> Flask:
         candidate = db.get_price_candidate(conn, candidate_id)
         if candidate is None:
             abort(404)
+        if not retailer_price._approved_host(candidate["url"]):
+            abort(400, "Retailer destination not approved")
         refreshed = retailer_price.fetch_price(candidate["url"], cfg.searxng.timeout)
         db.approve_price_candidate(conn, candidate_id, refreshed)
         flash(f"Retailer price set from {candidate['domain']}.")

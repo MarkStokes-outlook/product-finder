@@ -106,7 +106,9 @@ def dashboard(conn, now=None):
     rows = conn.execute("""
         SELECT ip.id AS tracking_id, p.id AS product_id, p.manufacturer, p.model,
                p.canonical_price_url, p.typical_new_price, p.last_price_check_at,
-               p.last_price_check_ok, pr.id AS project_id, pr.name AS project,
+               p.last_price_check_ok,
+               (SELECT COUNT(*) FROM product_price_candidates c WHERE c.product_id=p.id) AS candidate_count,
+               pr.id AS project_id, pr.name AS project,
                i.name AS item, i.max_price,
                COALESCE(ip.target_deal_price, i.target_deal_price) AS target_deal_price
         FROM item_products ip

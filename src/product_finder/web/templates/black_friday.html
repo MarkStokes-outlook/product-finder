@@ -10,6 +10,7 @@
   <a class="button" href="{{ url_for('projects') }}">Manage watchlists</a>
 </div>
 <div class="card">
+  <p class="meta">Retailer discovery: {% if not discovery_enabled %}Disabled{% elif not discovery %}Not yet run{% elif not discovery.ok %}Unavailable · retry deferred{% else %}Last search completed{% endif %}{% if discovery %} · {{ discovery.run_at }}{% endif %}</p>
   <p class="meta">Prices must have been successfully checked in the last 24 hours. Baseline: median of daily recorded new prices at the approved retailer's domain over the 60 days before the event (or today if earlier); at least three days spanning seven days.</p>
   <p class="hint">Historical evidence is retailer-domain level, not exact URL history. Prices exclude unverified delivery, stock, coupons and cashback. Confirm the exact variant and delivered total before buying. A missing baseline is not a zero discount.</p>
 </div>
@@ -28,7 +29,7 @@
 <td>{% if d.saving is not none %}£{{ "%.2f"|format(d.saving) }} ({{ "%+.1f"|format(d.percent) }}%){% else %}—{% endif %}</td>
 <td>{% if d.target is not none %}Target £{{ "%.2f"|format(d.target) }}{% if d.target_met %}<br><span class="hint">Item price meets target</span>{% endif %}{% endif %}
 {% if d.budget is not none %}<br>Max £{{ "%.2f"|format(d.budget) }}{% endif %}</td>
-<td>{{ d.verdict }}</td>
+<td>{{ d.verdict }}{% if d.candidate_count %}<br><a href="{{ url_for('product_edit', product_id=d.tracking_id) }}">Review {{ d.candidate_count }} retailer candidates</a>{% endif %}</td>
 </tr>
 {% endfor %}
 </tbody>
