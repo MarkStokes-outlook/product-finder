@@ -19,6 +19,7 @@ from flask import (
 
 from .. import (
     auction_trajectory,
+    black_friday,
     catalogue,
     connector_health,
     db,
@@ -566,6 +567,10 @@ def create_app(cfg: AppConfig) -> Flask:
             message += f" {result['excluded']} candidate(s) left out of current matches."
         flash(message)
         return _match_redirect()
+
+    @app.route("/black-friday")
+    def black_friday_view():
+        return render_template("black_friday.html", **black_friday.dashboard(_get_conn(cfg)))
 
     # --- Active Auctions / Offers ------------------------------------------------
 
