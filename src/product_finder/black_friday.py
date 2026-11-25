@@ -18,8 +18,10 @@ MIN_SPAN_DAYS = 7
 
 
 def event_dates(year):
-    last = date(year, 11, 30)
-    friday = last - timedelta(days=(last.weekday() - 4) % 7)
+    # Thanksgiving is the fourth Thursday in November, not the last.
+    nov1 = date(year, 11, 1)
+    thanksgiving = nov1 + timedelta(days=(3 - nov1.weekday()) % 7 + 21)
+    friday = thanksgiving + timedelta(days=1)
     return friday, friday - timedelta(days=7), friday + timedelta(days=3)
 
 
@@ -120,6 +122,18 @@ def dashboard(conn, now=None):
         if pid not in histories:
             histories[pid] = db.list_new_price_history(conn, pid)
         deals.append({**dict(row), **assess(row, histories[pid], now)})
+    # Surface watches that have not yet resolved to an active wanted product.
+    unresolved = conn.execute("""
+        SELECT i.id AS item_id, i.name AS item, i.priority, i.max_price,
+               i.target_deal_price, pr.id AS project_id, pr.name AS project
+        FROM items i JOIN projects pr ON pr.id = i.project_id
+        WHERE i.archived = 0 AND pr.archived = 0 AND NOT EXISTS (
+            SELECT 1 FROM item_products ip WHERE ip.item_id = i.id
+              AND ip.wanted = 1 AND ip.archived = 0
+        )
+        ORDER BY CASE i.priority WHEN 'high' THEN 0 WHEN 'normal' THEN 1 ELSE 2 END,
+                 pr.name, i.name, i.id
+    """).fetchall()
     # Verified recent *price observations* with positive savings first;
     # above-budget and unknown/stale observations never outrank them.
     def rank(deal):
@@ -127,5 +141,6 @@ def dashboard(conn, now=None):
         return (deal["above_budget"], pct is None, -(pct or 0),
                 deal["project"], deal["manufacturer"], deal["tracking_id"])
     deals.sort(key=rank)
-    return {"deals": deals, "friday": friday, "start": start, "end": end,
+    return {"deals": deals, "unresolved": [dict(row) for row in unresolved],
+            "friday": friday, "start": start, "end": end,
             "active": start <= now.date() <= end, "year": now.year}
