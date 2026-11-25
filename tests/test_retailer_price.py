@@ -526,3 +526,16 @@ def test_black_friday_shows_pending_candidate_link_and_discovery_status(tmp_path
     assert b"Review 1 retailer candidates" in response.data
     assert b"Unavailable" in response.data
     assert b"Needs retailer approval" in response.data
+
+
+def test_refurbished_url_is_not_new_price():
+    with mock.patch("product_finder.retailer_price._retailer_get") as fetch:
+        assert retailer_price.fetch_price("https://screwfix.com/p/refurb-titan-ttb794msw/374ry", 1) is None
+        fetch.assert_not_called()
+
+
+@pytest.mark.parametrize("condition", ["https://schema.org/UsedCondition", "https://schema.org/RefurbishedCondition"])
+def test_structured_non_new_condition_does_not_fall_back_to_microdata(condition):
+    html = JSON_LD_HTML.replace('"priceCurrency": "GBP"', '"priceCurrency": "GBP", "itemCondition": "' + condition + '"') + MICRODATA_HTML
+    with mock.patch("product_finder.retailer_price._retailer_get", return_value=(200, html)):
+        assert retailer_price.fetch_price("https://screwfix.com/p/a", 1) is None
