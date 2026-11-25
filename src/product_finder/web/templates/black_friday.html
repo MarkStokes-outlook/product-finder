@@ -1,0 +1,55 @@
+{% extends "base.html" %}
+{% block title %}Black Friday | Product Finder{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div>
+    <h1>Black Friday {{ year }}</h1>
+    <p class="meta">Black Friday {{ friday.strftime('%d %B') }} · event window {{ start.strftime('%d %b') }} – {{ end.strftime('%d %b') }}{% if active %} · active{% endif %}</p>
+    <p>Real price movements for products you already want. No RRP-based discounts.</p>
+  </div>
+  <a class="button" href="{{ url_for('projects') }}">Manage watchlists</a>
+</div>
+<div class="card">
+  <p class="meta">Prices must have been successfully checked in the last 24 hours. Baseline: median of daily recorded new prices at the approved retailer's domain over the 60 days before the event (or today if earlier); at least three days spanning seven days.</p>
+  <p class="hint">Historical evidence is retailer-domain level, not exact URL history. Prices exclude unverified delivery, stock, coupons and cashback. Confirm the exact variant and delivered total before buying. A missing baseline is not a zero discount.</p>
+</div>
+{% if deals %}
+<div class="card table-card">
+<table>
+<thead><tr><th>Product / watch</th><th>Latest item price</th><th>Historical median</th><th>Observed saving</th><th>Target / budget</th><th>Evidence verdict</th></tr></thead>
+<tbody>
+{% for d in deals %}
+<tr>
+<td><strong>{{ d.manufacturer }} {{ d.model }}</strong><br><a href="{{ url_for('project_detail', project_id=d.project_id) }}">{{ d.project }} / {{ d.item }}</a></td>
+<td>{% if d.current is not none %}<strong>£{{ "%.2f"|format(d.current) }}</strong><br>{% else %}—<br>{% endif %}
+{% if d.url %}<a href="{{ d.url }}" target="_blank" rel="noopener noreferrer">{{ d.domain }}</a>{% endif %}
+{% if d.checked %}<div class="hint">Last check {{ d.checked.isoformat(timespec='minutes') }}</div>{% endif %}</td>
+<td>{% if d.baseline is not none %}£{{ "%.2f"|format(d.baseline) }}{% else %}—{% endif %}<div class="hint">{{ d.sample_days }} observation days</div></td>
+<td>{% if d.saving is not none %}£{{ "%.2f"|format(d.saving) }} ({{ "%+.1f"|format(d.percent) }}%){% else %}—{% endif %}</td>
+<td>{% if d.target is not none %}Target £{{ "%.2f"|format(d.target) }}{% if d.target_met %}<br><span class="hint">Item price meets target</span>{% endif %}{% endif %}
+{% if d.budget is not none %}<br>Max £{{ "%.2f"|format(d.budget) }}{% endif %}</td>
+<td>{{ d.verdict }}</td>
+</tr>
+{% endfor %}
+</tbody>
+</table>
+</div>
+{% else %}
+<div class="hero-empty">No active wanted catalogue products yet. Add products to an existing project to start tracking deals.</div>
+{% endif %}
+{% if unresolved %}
+<div class="card table-card">
+<h2>Watches needing product identification ({{ unresolved|length }})</h2>
+<p class="hint">These are active buying intentions, not verified products or offers. Open the project to review candidate models and retailer evidence.</p>
+<table>
+<thead><tr><th>Watch</th><th>Priority</th><th>Target / budget</th></tr></thead>
+<tbody>
+{% for w in unresolved %}
+<tr><td><a href="{{ url_for('project_detail', project_id=w.project_id) }}">{{ w.project }} / {{ w.item }}</a></td><td>{{ w.priority }}</td>
+<td>{% if w.target_deal_price is not none %}Target £{{ "%.2f"|format(w.target_deal_price) }}{% endif %}{% if w.max_price is not none %}<br>Max £{{ "%.2f"|format(w.max_price) }}{% endif %}</td></tr>
+{% endfor %}
+</tbody>
+</table>
+</div>
+{% endif %}
+{% endblock %}
